@@ -1,3 +1,21 @@
+function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return "";
+}
+
+function csrfHeaders(headers = {}) {
+    const token = getCookie("csrf_token");
+    return token ? Object.assign({}, headers, {"X-CSRF-Token": token}) : headers;
+}
+
+function csrfFetch(url, options = {}) {
+    options.credentials = "include";
+    options.headers = csrfHeaders(options.headers || {});
+    return fetch(url, options);
+}
+
 function auth(c) {
     $(".main").fadeOut(250),
         setTimeout(() => {
@@ -28,9 +46,8 @@ function auth(c) {
                                 "Code waiting timeout exceeded. Reload page and try again.",
                             ),
                                 void $(".auth").fadeOut(250)) :
-                            a.startsWith("heroku_") ?
-                                ($.cookie("session", a),
-                                    (auth_required = !1),
+                            a.startsWith("goroku_") ?
+                                ((auth_required = !1),
                                     $(".authorized").hide().fadeIn(100),
                                     $(".auth").fadeOut(250, () => {
                                         $(".installation").fadeIn(250);
@@ -53,12 +70,18 @@ function login_qr() {
     $("#continue_btn").fadeOut(100),
         $("#denyqr").hide().fadeIn(250),
         $(".title, .description").fadeOut(250),
-        fetch("/init_qr_login", {
+        csrfFetch("/init_qr_login", {
             method: "POST",
             credentials: "include"
         })
             .then((b) => b.text())
             .then((c) => {
+                if (typeof QRCodeStyling === "undefined") {
+                    console.error("QRCodeStyling library is not loaded");
+                    document.querySelector(".qr_inner").innerHTML =
+                        '<a href="' + c + '" target="_blank" rel="noopener noreferrer">Open Telegram QR login link</a>';
+                    return;
+                }
                 const d = new QRCodeStyling({
                     width: window.innerHeight / 3,
                     height: window.innerHeight / 3,
@@ -86,7 +109,7 @@ function login_qr() {
                     (document.querySelector(".qr_inner").style.height = old_qr_sizes[1]),
                     d.append(document.querySelector(".qr_inner")),
                     (qr_interval = setInterval(() => {
-                        fetch("/get_qr_url", {
+                        csrfFetch("/get_qr_url", {
                             method: "POST",
                             credentials: "include"
                         })
@@ -147,18 +170,29 @@ function isValidPhone(b) {
 
 function finish_login() {
     console.log("Done")
-    $(".finish_block").fadeIn()
-    $("#installation_icon").html("")
-    $(".installation").fadeOut()
-    bodymovin.loadAnimation({
-        container: document.getElementById("installation_icon"),
-        renderer: "canvas",
-        loop: !0,
-        autoplay: !0,
-        path: "https://assets1.lottiefiles.com/packages/lf20_n3jgitst.json",
-        rendererSettings: {
-            clearCanvas: !0
-        },
+    csrfFetch("/finish_login", {
+        method: "POST",
+        credentials: "include"
+    }).then((b) => {
+        if (!b.ok) {
+            b.text().then((text) => error_message("Finish login failed: " + text));
+            return;
+        }
+        $(".finish_block").fadeIn()
+        $("#installation_icon").html("")
+        $(".installation").fadeOut()
+        bodymovin.loadAnimation({
+            container: document.getElementById("installation_icon"),
+            renderer: "canvas",
+            loop: !0,
+            autoplay: !0,
+            path: "https://assets1.lottiefiles.com/packages/lf20_n3jgitst.json",
+            rendererSettings: {
+                clearCanvas: !0
+            },
+        })
+    }).catch((b) => {
+        error_message("Finish login failed: " + b.toString());
     })
 }
 
@@ -221,7 +255,7 @@ function show_eula() {
 
 function tg_code(b = false) {
     return b && qr_login ?
-        void fetch("/qr_2fa", {
+        void csrfFetch("/qr_2fa", {
             method: "POST",
             credentials: "include",
             body: _2fa_pass,
@@ -237,7 +271,7 @@ function tg_code(b = false) {
                     }));
         })
         :
-        void fetch("/tg_code", {
+        void csrfFetch("/tg_code", {
             method: "POST",
             body: `${_tg_pass}\n${_phone}\n${_2fa_pass}`,
         })
@@ -313,7 +347,7 @@ function process_next() {
         let b = document.querySelector("#api_hash").value;
         return 32 == b.length ?
             ((_api_hash = b),
-                void fetch("/set_api", {
+                void csrfFetch("/set_api", {
                     method: "PUT",
                     body: _api_hash + _api_id,
                     credentials: "include",
@@ -337,7 +371,7 @@ function process_next() {
         let b = document.querySelector("#phone").value;
         if (!isValidPhone(b)) return void error_state();
         (_phone = b),
-            fetch("/send_tg_code", {
+            csrfFetch("/send_tg_code", {
                 method: "POST",
                 body: _phone,
                 credentials: "include",
@@ -400,7 +434,7 @@ function process_next() {
             }) :
             "" == b ?
                 void finish_login() :
-                void fetch("/custom_bot", {
+                void csrfFetch("/custom_bot", {
                     method: "POST",
                     credentials: "include",
                     body: b,

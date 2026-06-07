@@ -1,3 +1,9 @@
+# Goroku specific
+*.session
+goroku_bin
+heroku_bin
+config-*.json
+
 .ruff_cache
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -174,3 +180,13 @@ Pipfile.lock
 
 heroku.log.*
 unknown_errors.txt
+
+# Go binaries
+heroku_bin
+heroku_linux
+
+# Archives
+*.zip
+
+# Dev scratch
+scratch/
