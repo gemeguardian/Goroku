@@ -124,8 +124,13 @@ func GetBranchName(repoPath string) string {
 }
 
 func ResetToMaster(repoPath string) {
-	exec.Command("git", "reset", "--hard", "HEAD").Run()
-	exec.Command("git", "checkout", "master", "-f").Run()
+	cmd1 := exec.Command("git", "reset", "--hard", "HEAD")
+	cmd1.Dir = repoPath
+	_ = cmd1.Run()
+
+	cmd2 := exec.Command("git", "checkout", "master", "-f")
+	cmd2.Dir = repoPath
+	_ = cmd2.Run()
 }
 
 func RestoreWorktree(repoPath string) bool {

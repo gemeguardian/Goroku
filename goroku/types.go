@@ -138,6 +138,7 @@ type CustomTelegramClient struct {
 	parseMode              string
 	entityCache            map[string]interface{}
 	permsCache             map[string]interface{}
+	cacheMu                sync.RWMutex
 	GorokuEntityCache      map[interface{}]CacheRecordEntity
 	GorokuPermsCache       map[interface{}]map[interface{}]CacheRecordPerms
 	GorokuFullChannelCache map[interface{}]CacheRecordFullChannel

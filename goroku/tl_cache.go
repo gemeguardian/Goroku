@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	stdhtml "html"
 	"io"
 	"log"
 	"math/rand"
@@ -15,6 +16,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
+
+	"goroku/goroku/inline"
 
 	"github.com/gotd/td/bin"
 	"github.com/gotd/td/session"
@@ -156,10 +160,11 @@ func (r CacheRecordFullUser) Expired() bool {
 func (c *CustomTelegramClient) GetEntity(entity interface{}, exp int64, force bool) (interface{}, error) {
 	cacheKey := normalizeEntityCacheKey(entity)
 	if !force {
-		if record, ok := c.GorokuEntityCache[cacheKey]; ok {
-			if exp == 0 || !record.Expired() {
-				return record.Entity, nil
-			}
+		c.cacheMu.RLock()
+		record, ok := c.GorokuEntityCache[cacheKey]
+		c.cacheMu.RUnlock()
+		if ok && (exp == 0 || !record.Expired()) {
+			return record.Entity, nil
 		}
 	}
 
@@ -171,8 +176,10 @@ func (c *CustomTelegramClient) GetEntity(entity interface{}, exp int64, force bo
 			Exp:    time.Now().Unix() + exp,
 			TS:     time.Now().Unix(),
 		}
+		c.cacheMu.Lock()
 		c.GorokuEntityCache[cacheKey] = record
 		cachePeerAliases(c.GorokuEntityCache, peer, record)
+		c.cacheMu.Unlock()
 		return peer, nil
 	}
 
@@ -183,12 +190,15 @@ func (c *CustomTelegramClient) GetPermsCached(entity interface{}, user interface
 	entityKey := normalizeEntityCacheKey(entity)
 	userKey := normalizeEntityCacheKey(user)
 	if !force {
-		if subMap, ok := c.GorokuPermsCache[entityKey]; ok {
-			if record, ok := subMap[userKey]; ok {
-				if exp == 0 || !record.Expired() {
-					return record.Perms, nil
-				}
-			}
+		c.cacheMu.RLock()
+		var record CacheRecordPerms
+		var ok bool
+		if subMap, exists := c.GorokuPermsCache[entityKey]; exists {
+			record, ok = subMap[userKey]
+		}
+		c.cacheMu.RUnlock()
+		if ok && (exp == 0 || !record.Expired()) {
+			return record.Perms, nil
 		}
 	}
 
@@ -210,6 +220,7 @@ func (c *CustomTelegramClient) GetPermsCached(entity interface{}, user interface
 		return nil, err
 	}
 
+	c.cacheMu.Lock()
 	if _, ok := c.GorokuPermsCache[entityKey]; !ok {
 		c.GorokuPermsCache[entityKey] = make(map[interface{}]CacheRecordPerms)
 	}
@@ -219,6 +230,7 @@ func (c *CustomTelegramClient) GetPermsCached(entity interface{}, user interface
 		Exp:   time.Now().Unix() + exp,
 		TS:    time.Now().Unix(),
 	}
+	c.cacheMu.Unlock()
 
 	return perms, nil
 }
@@ -267,10 +279,11 @@ func (c *CustomTelegramClient) fetchPermissions(peer tg.InputPeerClass, userPeer
 func (c *CustomTelegramClient) GetFullChannel(entity interface{}, exp int64, force bool) (interface{}, error) {
 	cacheKey := normalizeEntityCacheKey(entity)
 	if !force {
-		if record, ok := c.GorokuFullChannelCache[cacheKey]; ok {
-			if !record.Expired() {
-				return record.FullChannel, nil
-			}
+		c.cacheMu.RLock()
+		record, ok := c.GorokuFullChannelCache[cacheKey]
+		c.cacheMu.RUnlock()
+		if ok && !record.Expired() {
+			return record.FullChannel, nil
 		}
 	}
 
@@ -288,12 +301,14 @@ func (c *CustomTelegramClient) GetFullChannel(entity interface{}, exp int64, for
 		return nil, err
 	}
 
+	c.cacheMu.Lock()
 	c.GorokuFullChannelCache[cacheKey] = CacheRecordFullChannel{
 		ChannelID:   cacheKey,
 		FullChannel: fullChannel,
 		Exp:         time.Now().Unix() + exp,
 		TS:          time.Now().Unix(),
 	}
+	c.cacheMu.Unlock()
 
 	return fullChannel, nil
 }
@@ -301,10 +316,11 @@ func (c *CustomTelegramClient) GetFullChannel(entity interface{}, exp int64, for
 func (c *CustomTelegramClient) GetFullUser(entity interface{}, exp int64, force bool) (interface{}, error) {
 	cacheKey := normalizeEntityCacheKey(entity)
 	if !force {
-		if record, ok := c.GorokuFullUserCache[cacheKey]; ok {
-			if !record.Expired() {
-				return record.FullUser, nil
-			}
+		c.cacheMu.RLock()
+		record, ok := c.GorokuFullUserCache[cacheKey]
+		c.cacheMu.RUnlock()
+		if ok && !record.Expired() {
+			return record.FullUser, nil
 		}
 	}
 
@@ -322,12 +338,14 @@ func (c *CustomTelegramClient) GetFullUser(entity interface{}, exp int64, force 
 		return nil, err
 	}
 
+	c.cacheMu.Lock()
 	c.GorokuFullUserCache[cacheKey] = CacheRecordFullUser{
 		UserID:   cacheKey,
 		FullUser: fullUser,
 		Exp:      time.Now().Unix() + exp,
 		TS:       time.Now().Unix(),
 	}
+	c.cacheMu.Unlock()
 
 	return fullUser, nil
 }
@@ -341,14 +359,20 @@ func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass,
 		if id == c.TGID {
 			return &tg.InputPeerSelf{}, nil
 		}
-		if record, ok := c.GorokuEntityCache[id]; ok {
+		c.cacheMu.RLock()
+		record, ok := c.GorokuEntityCache[normalizeEntityCacheKey(id)]
+		c.cacheMu.RUnlock()
+		if ok {
 			if peer, ok := record.Entity.(tg.InputPeerClass); ok {
 				return peer, nil
 			}
 		}
 	} else if username, ok := chat.(string); ok {
 		usernameLower := strings.ToLower(strings.TrimPrefix(username, "@"))
-		if record, ok := c.GorokuEntityCache[usernameLower]; ok {
+		c.cacheMu.RLock()
+		record, ok := c.GorokuEntityCache[usernameLower]
+		c.cacheMu.RUnlock()
+		if ok {
 			if peer, ok := record.Entity.(tg.InputPeerClass); ok {
 				return peer, nil
 			}
@@ -372,7 +396,10 @@ func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass,
 		if id == c.TGID {
 			return &tg.InputPeerSelf{}, nil
 		}
-		if record, ok := c.GorokuEntityCache[id]; ok {
+		c.cacheMu.RLock()
+		record, ok := c.GorokuEntityCache[normalizeEntityCacheKey(id)]
+		c.cacheMu.RUnlock()
+		if ok {
 			if peer, ok := record.Entity.(tg.InputPeerClass); ok {
 				return peer, nil
 			}
@@ -399,20 +426,31 @@ func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass,
 			} else {
 				peer = &tg.InputPeerUser{UserID: user.ID, AccessHash: user.AccessHash}
 			}
-			c.GorokuEntityCache[user.ID] = CacheRecordEntity{Entity: peer, Exp: time.Now().Unix() + 86400*30, TS: time.Now().Unix()}
-			c.GorokuEntityCache[vLower] = CacheRecordEntity{Entity: peer, Exp: time.Now().Unix() + 86400*30, TS: time.Now().Unix()}
+			record := CacheRecordEntity{Entity: peer, Exp: time.Now().Unix() + 86400*30, TS: time.Now().Unix()}
+			c.cacheMu.Lock()
+			c.GorokuEntityCache[user.ID] = record
+			c.GorokuEntityCache[vLower] = record
+			c.cacheMu.Unlock()
 			return peer, nil
 		}
 		if len(res.Chats) > 0 {
 			switch ch := res.Chats[0].(type) {
 			case *tg.Chat:
 				peer := &tg.InputPeerChat{ChatID: ch.ID}
-				c.GorokuEntityCache[ch.ID] = CacheRecordEntity{Entity: peer, Exp: time.Now().Unix() + 86400*30, TS: time.Now().Unix()}
+				record := CacheRecordEntity{Entity: peer, Exp: time.Now().Unix() + 86400*30, TS: time.Now().Unix()}
+				c.cacheMu.Lock()
+				c.GorokuEntityCache[ch.ID] = record
+				c.GorokuEntityCache[-ch.ID] = record
+				c.cacheMu.Unlock()
 				return peer, nil
 			case *tg.Channel:
 				peer := &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}
-				c.GorokuEntityCache[ch.ID] = CacheRecordEntity{Entity: peer, Exp: time.Now().Unix() + 86400*30, TS: time.Now().Unix()}
-				c.GorokuEntityCache[vLower] = CacheRecordEntity{Entity: peer, Exp: time.Now().Unix() + 86400*30, TS: time.Now().Unix()}
+				record := CacheRecordEntity{Entity: peer, Exp: time.Now().Unix() + 86400*30, TS: time.Now().Unix()}
+				c.cacheMu.Lock()
+				c.GorokuEntityCache[ch.ID] = record
+				c.GorokuEntityCache[TelegramChannelChatID(ch.ID)] = record
+				c.GorokuEntityCache[vLower] = record
+				c.cacheMu.Unlock()
 				return peer, nil
 			}
 		}
@@ -421,6 +459,8 @@ func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass,
 }
 
 func (c *CustomTelegramClient) cacheEntities(e tg.Entities) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
 	if c.GorokuEntityCache == nil {
 		c.GorokuEntityCache = make(map[interface{}]CacheRecordEntity)
 	}
@@ -449,28 +489,79 @@ func (c *CustomTelegramClient) cacheEntities(e tg.Entities) {
 
 	for _, chat := range e.Chats {
 		peer := &tg.InputPeerChat{ChatID: chat.ID}
-		c.GorokuEntityCache[chat.ID] = CacheRecordEntity{
+		record := CacheRecordEntity{
 			Entity: peer,
 			Exp:    exp,
 			TS:     time.Now().Unix(),
 		}
+		c.GorokuEntityCache[chat.ID] = record
+		c.GorokuEntityCache[-chat.ID] = record
 	}
 
 	for _, channel := range e.Channels {
 		peer := &tg.InputPeerChannel{ChannelID: channel.ID, AccessHash: channel.AccessHash}
-		c.GorokuEntityCache[channel.ID] = CacheRecordEntity{
+		record := CacheRecordEntity{
 			Entity: peer,
 			Exp:    exp,
 			TS:     time.Now().Unix(),
 		}
+		c.GorokuEntityCache[channel.ID] = record
+		c.GorokuEntityCache[TelegramChannelChatID(channel.ID)] = record
 		if channel.Username != "" {
-			c.GorokuEntityCache[strings.ToLower(channel.Username)] = CacheRecordEntity{
-				Entity: peer,
-				Exp:    exp,
-				TS:     time.Now().Unix(),
-			}
+			c.GorokuEntityCache[strings.ToLower(channel.Username)] = record
 		}
 	}
+}
+
+func (c *CustomTelegramClient) buildMessageFromTG(msg *tg.Message) *Message {
+	hMsg := &Message{
+		ID:       int64(msg.ID),
+		ChatID:   0,
+		SenderID: 0,
+		Text:     msg.Message,
+		RawText:  msg.Message,
+		Out:      msg.Out,
+		Client:   c,
+		ViaBotID: msg.ViaBotID,
+	}
+	if msg.ReplyTo != nil {
+		if header, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
+			hMsg.ReplyToMsgID = int64(header.ReplyToMsgID)
+		}
+	}
+	if msg.Media != nil {
+		hMsg.Media = msg.Media
+	}
+	if fwd, ok := msg.GetFwdFrom(); ok {
+		hMsg.IsForwarded = true
+		hMsg.FwdFrom = fwd
+	}
+
+	switch peer := msg.PeerID.(type) {
+	case *tg.PeerUser:
+		hMsg.ChatID = peer.UserID
+		hMsg.IsPrivate = true
+	case *tg.PeerChat:
+		hMsg.ChatID = -peer.ChatID
+		hMsg.IsGroup = true
+	case *tg.PeerChannel:
+		hMsg.ChatID = TelegramChannelChatID(peer.ChannelID)
+		hMsg.IsChannel = true
+	}
+
+	if msg.FromID != nil {
+		switch peer := msg.FromID.(type) {
+		case *tg.PeerUser:
+			hMsg.SenderID = peer.UserID
+		}
+	} else if msg.Out || (hMsg.IsPrivate && hMsg.ChatID == c.TGID) {
+		hMsg.SenderID = c.TGID
+	}
+	if hMsg.IsPrivate && hMsg.ChatID == c.TGID && hMsg.SenderID == c.TGID {
+		hMsg.Out = true
+	}
+
+	return hMsg
 }
 
 type forbiddenInvoker struct {
@@ -614,58 +705,7 @@ func (c *CustomTelegramClient) Connect() error {
 		}
 		log.Printf("[Telegram] New message received: ID=%d, Text=%q, Out=%t, PeerID=%v, FromID=%v\n", msg.ID, msg.Message, msg.Out, msg.PeerID, msg.FromID)
 
-		hMsg := &Message{
-			ID:       int64(msg.ID),
-			ChatID:   0,
-			SenderID: 0,
-			Text:     msg.Message,
-			RawText:  msg.Message,
-			Out:      msg.Out,
-			Client:   c,
-			ViaBotID: msg.ViaBotID,
-		}
-		if msg.FromID != nil {
-			if peerUser, ok := msg.FromID.(*tg.PeerUser); ok {
-				hMsg.SenderID = peerUser.UserID
-			}
-		}
-		if msg.ReplyTo != nil {
-			if header, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
-				hMsg.ReplyToMsgID = int64(header.ReplyToMsgID)
-			}
-		}
-		if msg.Media != nil {
-			hMsg.Media = msg.Media
-		}
-		if msg.FwdFrom != (tg.MessageFwdHeader{}) {
-			hMsg.IsForwarded = true
-			hMsg.FwdFrom = msg.FwdFrom
-		}
-
-		switch peer := msg.PeerID.(type) {
-		case *tg.PeerUser:
-			hMsg.ChatID = peer.UserID
-			hMsg.IsPrivate = true
-		case *tg.PeerChat:
-			hMsg.ChatID = -peer.ChatID
-			hMsg.IsGroup = true
-		case *tg.PeerChannel:
-			hMsg.ChatID = TelegramChannelChatID(peer.ChannelID)
-			hMsg.IsChannel = true
-		}
-
-		if msg.FromID != nil {
-			switch peer := msg.FromID.(type) {
-			case *tg.PeerUser:
-				hMsg.SenderID = peer.UserID
-			}
-		} else if msg.Out || (hMsg.IsPrivate && hMsg.ChatID == c.TGID) {
-			hMsg.SenderID = c.TGID
-		}
-		if hMsg.IsPrivate && hMsg.ChatID == c.TGID && hMsg.SenderID == c.TGID {
-			hMsg.Out = true
-		}
-
+		hMsg := c.buildMessageFromTG(msg)
 		if c.Loader != nil {
 			if modules, ok := c.Loader.(*Modules); ok {
 				disp := modules.GetDispatcher()
@@ -685,58 +725,7 @@ func (c *CustomTelegramClient) Connect() error {
 			return nil
 		}
 
-		hMsg := &Message{
-			ID:       int64(m.ID),
-			ChatID:   0,
-			SenderID: 0,
-			Text:     m.Message,
-			RawText:  m.Message,
-			Out:      m.Out,
-			Client:   c,
-			ViaBotID: m.ViaBotID,
-		}
-		if m.FromID != nil {
-			if peerUser, ok := m.FromID.(*tg.PeerUser); ok {
-				hMsg.SenderID = peerUser.UserID
-			}
-		}
-		if m.ReplyTo != nil {
-			if header, ok := m.ReplyTo.(*tg.MessageReplyHeader); ok {
-				hMsg.ReplyToMsgID = int64(header.ReplyToMsgID)
-			}
-		}
-		if m.Media != nil {
-			hMsg.Media = m.Media
-		}
-		if m.FwdFrom != (tg.MessageFwdHeader{}) {
-			hMsg.IsForwarded = true
-			hMsg.FwdFrom = m.FwdFrom
-		}
-
-		switch peer := m.PeerID.(type) {
-		case *tg.PeerUser:
-			hMsg.ChatID = peer.UserID
-			hMsg.IsPrivate = true
-		case *tg.PeerChat:
-			hMsg.ChatID = -peer.ChatID
-			hMsg.IsGroup = true
-		case *tg.PeerChannel:
-			hMsg.ChatID = TelegramChannelChatID(peer.ChannelID)
-			hMsg.IsChannel = true
-		}
-
-		if m.FromID != nil {
-			switch peer := m.FromID.(type) {
-			case *tg.PeerUser:
-				hMsg.SenderID = peer.UserID
-			}
-		} else if m.Out || (hMsg.IsPrivate && hMsg.ChatID == c.TGID) {
-			hMsg.SenderID = c.TGID
-		}
-		if hMsg.IsPrivate && hMsg.ChatID == c.TGID && hMsg.SenderID == c.TGID {
-			hMsg.Out = true
-		}
-
+		hMsg := c.buildMessageFromTG(m)
 		if c.Loader != nil {
 			if modules, ok := c.Loader.(*Modules); ok {
 				disp := modules.GetDispatcher()
@@ -1089,6 +1078,90 @@ func (c *CustomTelegramClient) EditMessage(chat interface{}, msgID int64, text s
 	return res, err
 }
 
+const telegramMessageLimit = 4096
+
+type answerMode int
+
+const (
+	answerModeDirect answerMode = iota
+	answerModeInlineList
+	answerModeFile
+)
+
+type answerPlan struct {
+	mode     answerMode
+	pages    []string
+	fileText string
+}
+
+func telegramTextLen(text string) int {
+	return len(utf16.Encode([]rune(text)))
+}
+
+func splitPlainTextForTelegram(text string, limit int) []string {
+	if telegramTextLen(text) <= limit {
+		return []string{text}
+	}
+
+	var chunks []string
+	remaining := text
+	for remaining != "" {
+		if telegramTextLen(remaining) <= limit {
+			chunks = append(chunks, remaining)
+			break
+		}
+
+		cut := 0
+		units := 0
+		for idx, r := range remaining {
+			rUnits := telegramTextLen(string(r))
+			if units+rUnits > limit {
+				break
+			}
+			units += rUnits
+			cut = idx + len(string(r))
+		}
+		if cut <= 0 {
+			cut = len([]rune(remaining[:1]))
+		}
+
+		splitAt := cut
+		for _, sep := range []string{"\n", " "} {
+			if idx := strings.LastIndex(remaining[:cut], sep); idx > 0 {
+				splitAt = idx
+				break
+			}
+		}
+
+		chunk := strings.TrimRight(remaining[:splitAt], "\n ")
+		if chunk == "" {
+			chunk = remaining[:cut]
+			splitAt = cut
+		}
+		chunks = append(chunks, chunk)
+		remaining = strings.TrimLeft(remaining[splitAt:], "\n ")
+	}
+	return chunks
+}
+
+func planLongAnswer(rawText string, canUseInline bool) answerPlan {
+	plainText, _ := parseHTML(rawText)
+	if telegramTextLen(plainText) < telegramMessageLimit {
+		return answerPlan{mode: answerModeDirect}
+	}
+
+	plainPages := splitPlainTextForTelegram(plainText, telegramMessageLimit)
+	if canUseInline && len(plainPages) <= 10 {
+		pages := make([]string, len(plainPages))
+		for i, page := range plainPages {
+			pages[i] = stdhtml.EscapeString(page)
+		}
+		return answerPlan{mode: answerModeInlineList, pages: pages}
+	}
+
+	return answerPlan{mode: answerModeFile, fileText: plainText}
+}
+
 func (m *Message) Answer(text string, opts ...MsgOption) error {
 	m.Answered = true
 	if m.GrepQuery != "" {
@@ -1136,10 +1209,13 @@ func (m *Message) Answer(text string, opts ...MsgOption) error {
 		text = strings.Join(lines, "\n")
 	}
 
+	plainText, _ := parseHTML(text)
+
 	// Apply split (send as multiple messages instead of file)
-	if m.SplitOutput && len([]rune(text)) > 4000 {
-		chunks := splitText(text, 4000)
+	if m.SplitOutput && telegramTextLen(plainText) >= telegramMessageLimit {
+		chunks := splitPlainTextForTelegram(plainText, telegramMessageLimit)
 		for i, chunk := range chunks {
+			chunk = stdhtml.EscapeString(chunk)
 			if i == 0 {
 				if m.Out {
 					_, _ = m.Client.EditMessage(m.ChatID, m.ID, chunk, opts...)
@@ -1153,19 +1229,34 @@ func (m *Message) Answer(text string, opts ...MsgOption) error {
 		return nil
 	}
 
-	if len(text) >= 4000 {
+	plan := planLongAnswer(text, m.GrepQuery == "")
+	switch plan.mode {
+	case answerModeInlineList:
+		if m.Client != nil {
+			if im, ok := m.Client.GorokuInline.(*inline.InlineManager); ok && im != nil && im.IsComplete() {
+				if _, err := im.List(m, plan.pages); err == nil {
+					return nil
+				}
+			}
+		}
+		fallthrough
+	case answerModeFile:
+		fileText := plan.fileText
+		if fileText == "" {
+			fileText = plainText
+		}
 		if m.Out {
 			_, _ = m.Client.EditMessage(m.ChatID, m.ID, "💾 <i>Output is too long. Sending as file...</i>")
 		}
 		tmpFile, err := os.CreateTemp("", "command_result_*.txt")
 		if err == nil {
 			defer os.Remove(tmpFile.Name())
-			_, _ = tmpFile.WriteString(text)
+			_, _ = tmpFile.WriteString(fileText)
 			_ = tmpFile.Close()
 			_, err = m.Client.SendFile(m.ChatID, tmpFile.Name(), "💾 Output too long")
 			return err
 		}
-		_, err = m.Client.SendFile(m.ChatID, []byte(text), "💾 Output too long")
+		_, err = m.Client.SendFile(m.ChatID, []byte(fileText), "💾 Output too long")
 		return err
 	}
 	if m.Out {
@@ -1390,54 +1481,7 @@ func (c *CustomTelegramClient) GetMessage(chat interface{}, msgID int64) (*Messa
 		return nil, fmt.Errorf("message not found")
 	}
 
-	hMsg := &Message{
-		ID:       int64(tgMsg.ID),
-		Text:     tgMsg.Message,
-		RawText:  tgMsg.Message,
-		Out:      tgMsg.Out,
-		Client:   c,
-		ViaBotID: tgMsg.ViaBotID,
-	}
-
-	// Resolve chat ID
-	switch p := tgMsg.PeerID.(type) {
-	case *tg.PeerUser:
-		hMsg.ChatID = p.UserID
-		hMsg.IsPrivate = true
-	case *tg.PeerChat:
-		hMsg.ChatID = p.ChatID
-		hMsg.IsGroup = true
-	case *tg.PeerChannel:
-		hMsg.ChatID = p.ChannelID
-		hMsg.IsChannel = true
-	}
-
-	// In self-PM Telegram can omit FromID and mark the message as incoming.
-	if tgMsg.FromID != nil {
-		if peerUser, ok := tgMsg.FromID.(*tg.PeerUser); ok {
-			hMsg.SenderID = peerUser.UserID
-		}
-	} else if tgMsg.Out || (hMsg.IsPrivate && hMsg.ChatID == c.TGID) {
-		hMsg.SenderID = c.TGID
-	}
-	if hMsg.IsPrivate && hMsg.ChatID == c.TGID && hMsg.SenderID == c.TGID {
-		hMsg.Out = true
-	}
-
-	// Set media if present
-	if tgMsg.Media != nil {
-		hMsg.Media = tgMsg.Media
-	}
-	if tgMsg.FwdFrom != (tg.MessageFwdHeader{}) {
-		hMsg.IsForwarded = true
-		hMsg.FwdFrom = tgMsg.FwdFrom
-	}
-
-	if tgMsg.ReplyTo != nil {
-		if header, ok := tgMsg.ReplyTo.(*tg.MessageReplyHeader); ok {
-			hMsg.ReplyToMsgID = int64(header.ReplyToMsgID)
-		}
-	}
+	hMsg := c.buildMessageFromTG(tgMsg)
 
 	return hMsg, nil
 }

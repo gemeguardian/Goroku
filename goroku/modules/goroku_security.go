@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"goroku/goroku"
+	"goroku/goroku/utils"
 	"reflect"
 	"sort"
 	"strconv"
@@ -42,34 +43,34 @@ func (m *GorokuSecurity) ClientReady() error {
 	m.applyGroupsToManager()
 	return nil
 }
-func (m *GorokuSecurity) OnUnload() error    { return nil }
-func (m *GorokuSecurity) OnDlmod() error     { return nil }
+func (m *GorokuSecurity) OnUnload() error { return nil }
+func (m *GorokuSecurity) OnDlmod() error  { return nil }
 
 func (m *GorokuSecurity) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
-		"owner":      m.OwnerCmd,
-		"ownerlist":  m.OwnerCmd,
-		"addowner":   m.AddownerCmd,
-		"owneradd":   m.AddownerCmd,
-		"delowner":   m.DelownerCmd,
-		"ownerrm":    m.DelownerCmd,
-		"sudo":       m.SudoCmd,
-		"sudolist":   m.SudoCmd,
-		"addsudo":    m.AddsudoCmd,
-		"sudoadd":    m.AddsudoCmd,
-		"delsudo":    m.DelsudoCmd,
-		"sudorm":     m.DelsudoCmd,
-		"security":   m.SecurityCmd,
-		"tsec":       m.TsecCmd,
-		"ttsec":      m.TtsecCmd,
-		"tsecrm":     m.TtsecCmd,
-		"tsecclr":    m.TtsecCmd,
-		"newsgroup":  m.NewsgroupCmd,
-		"sgroups":    m.SgroupsCmd,
-		"sgroup":     m.SgroupCmd,
-		"delsgroup":  m.DelsgroupCmd,
-		"sgroupadd":  m.SgroupaddCmd,
-		"sgroupdel":  m.SgroupdelCmd,
+		"owner":     m.OwnerCmd,
+		"ownerlist": m.OwnerCmd,
+		"addowner":  m.AddownerCmd,
+		"owneradd":  m.AddownerCmd,
+		"delowner":  m.DelownerCmd,
+		"ownerrm":   m.DelownerCmd,
+		"sudo":      m.SudoCmd,
+		"sudolist":  m.SudoCmd,
+		"addsudo":   m.AddsudoCmd,
+		"sudoadd":   m.AddsudoCmd,
+		"delsudo":   m.DelsudoCmd,
+		"sudorm":    m.DelsudoCmd,
+		"security":  m.SecurityCmd,
+		"tsec":      m.TsecCmd,
+		"ttsec":     m.TtsecCmd,
+		"tsecrm":    m.TtsecCmd,
+		"tsecclr":   m.TtsecCmd,
+		"newsgroup": m.NewsgroupCmd,
+		"sgroups":   m.SgroupsCmd,
+		"sgroup":    m.SgroupCmd,
+		"delsgroup": m.DelsgroupCmd,
+		"sgroupadd": m.SgroupaddCmd,
+		"sgroupdel": m.SgroupdelCmd,
 	}
 }
 
@@ -88,7 +89,10 @@ type securityGroup struct {
 }
 
 func (m *GorokuSecurity) loadGroups() map[string]securityGroup {
-	raw := m.db.Get("goroku.security", "security_groups", map[string]interface{}{})
+	raw := m.db.Get("goroku.security", "sgroups", nil)
+	if raw == nil {
+		raw = m.db.Get("goroku.security", "security_groups", map[string]interface{}{})
+	}
 	result := make(map[string]securityGroup)
 
 	rawMap, ok := raw.(map[string]interface{})
@@ -115,7 +119,7 @@ func (m *GorokuSecurity) saveGroups(groups map[string]securityGroup) {
 	for k, v := range groups {
 		out[k] = v
 	}
-	m.db.Set("goroku.security", "security_groups", out)
+	m.db.Set("goroku.security", "sgroups", out)
 	m.applyGroupsToManager()
 }
 
@@ -155,30 +159,147 @@ func (m *GorokuSecurity) getSecurityManager() *goroku.SecurityManager {
 	return dispatcher.GetSecurityManager()
 }
 
+type resolvedSecurityUser struct {
+	ID   int64
+	Name string
+	URL  string
+}
+
+func inputPeerUserID(peer tg.InputPeerClass, selfID int64) int64 {
+	switch p := peer.(type) {
+	case *tg.InputPeerSelf:
+		return selfID
+	case *tg.InputPeerUser:
+		return p.UserID
+	default:
+		return 0
+	}
+}
+
+func userClassFromFull(full interface{}) interface{} {
+	switch f := full.(type) {
+	case *tg.UsersUserFull:
+		if len(f.Users) > 0 {
+			return f.Users[0]
+		}
+	}
+	return nil
+}
+
+func (m *GorokuSecurity) resolveSecurityUser(ref interface{}) (resolvedSecurityUser, bool) {
+	var res resolvedSecurityUser
+	if m.client == nil {
+		return res, false
+	}
+	peer, err := m.client.ResolvePeer(ref)
+	if err != nil {
+		if id, ok := ref.(int64); ok && id > 0 {
+			res.ID = id
+			res.Name = fmt.Sprintf("User%d", id)
+			res.URL = fmt.Sprintf("tg://user?id=%d", id)
+			return res, true
+		}
+		return res, false
+	}
+	id := inputPeerUserID(peer, m.client.TGID)
+	if id == 0 {
+		return res, false
+	}
+	res.ID = id
+	res.Name = fmt.Sprintf("User%d", id)
+	res.URL = fmt.Sprintf("tg://user?id=%d", id)
+	if full, err := m.client.GetFullUser(ref, 3600, false); err == nil {
+		entity := userClassFromFull(full)
+		if name := getDisplayName(entity); name != "" {
+			res.Name = name
+		}
+		if url := utils.GetEntityURL(entity, false); url != "" {
+			res.URL = url
+		}
+	}
+	return res, true
+}
+
+func (m *GorokuSecurity) resolveUserFromMessage(msg *goroku.Message) (resolvedSecurityUser, bool) {
+	parts := strings.SplitN(msg.Text, " ", 2)
+	if len(parts) >= 2 && strings.TrimSpace(parts[1]) != "" {
+		arg := strings.TrimSpace(strings.TrimPrefix(parts[1], "@"))
+		if id, err := strconv.ParseInt(arg, 10, 64); err == nil {
+			return m.resolveSecurityUser(id)
+		}
+		return m.resolveSecurityUser(arg)
+	}
+	if msg.ReplyToMsgID != 0 {
+		if replyMsg, err := msg.GetReplyMessage(); err == nil && replyMsg != nil && replyMsg.SenderID != 0 {
+			return m.resolveSecurityUser(replyMsg.SenderID)
+		}
+	}
+	return resolvedSecurityUser{}, false
+}
+
+func pointerContainsID(pl *goroku.PointerList, id int64) bool {
+	if pl == nil {
+		return false
+	}
+	for _, item := range pl.ToSlice() {
+		if interfaceToInt64(item) == id {
+			return true
+		}
+	}
+	return false
+}
+
+func pointerRemoveID(pl *goroku.PointerList, id int64) bool {
+	if pl == nil {
+		return false
+	}
+	slice := pl.ToSlice()
+	for i, item := range slice {
+		if interfaceToInt64(item) == id {
+			pl.Remove(i)
+			return true
+		}
+	}
+	return false
+}
+
+func interfaceToInt64(v interface{}) int64 {
+	switch x := v.(type) {
+	case int:
+		return int64(x)
+	case int64:
+		return x
+	case float64:
+		return int64(x)
+	case json.Number:
+		id, _ := x.Int64()
+		return id
+	}
+	return 0
+}
+
 func parseUserID(client *goroku.CustomTelegramClient, arg string) (int64, string) {
-	arg = strings.TrimSpace(arg)
+	arg = strings.TrimSpace(strings.TrimPrefix(arg, "@"))
 	if arg == "" {
 		return 0, ""
 	}
-	if strings.HasPrefix(arg, "@") {
-		if client != nil {
-			peer, err := client.ResolvePeer(arg)
-			if err == nil {
-				switch p := peer.(type) {
-				case *tg.InputPeerUser:
-					return p.UserID, arg
-				case *tg.InputPeerChat:
-					return p.ChatID, arg
-				case *tg.InputPeerChannel:
-					return p.ChannelID, arg
+	if id, err := strconv.ParseInt(arg, 10, 64); err == nil {
+		return id, fmt.Sprintf("User%d", id)
+	}
+	if client != nil {
+		peer, err := client.ResolvePeer(arg)
+		if err == nil {
+			id := inputPeerUserID(peer, client.TGID)
+			if id != 0 {
+				name := arg
+				if full, err := client.GetFullUser(arg, 3600, false); err == nil {
+					if display := getDisplayName(userClassFromFull(full)); display != "" {
+						name = display
+					}
 				}
+				return id, name
 			}
 		}
-		return 12345, arg
-	}
-	id, err := strconv.ParseInt(arg, 10, 64)
-	if err == nil {
-		return id, fmt.Sprintf("User%d", id)
 	}
 	return 0, ""
 }
@@ -189,30 +310,43 @@ func (m *GorokuSecurity) OwnerCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("no_owner", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Нет пользователей в группе</b> <code>owner</code>"))
 	}
 
-	slice := ol.ToSlice()
-	var lines []string
-	meIncluded := false
-	for _, item := range slice {
-		var id int64
-		switch v := item.(type) {
-		case float64:
-			id = int64(v)
-		case int64:
-			id = v
+	seen := map[int64]bool{}
+	var users []resolvedSecurityUser
+	for _, item := range ol.ToSlice() {
+		id := interfaceToInt64(item)
+		if id == 0 || seen[id] {
+			continue
 		}
-		if id != 0 {
-			if id == m.client.TGID {
-				meIncluded = true
-			}
-			lines = append(lines, fmt.Sprintf("<tg-emoji emoji-id=4974307891025543730>▫️</tg-emoji> <b><a href=\"tg://user?id=%d\">User%d</a></b>", id, id))
+		seen[id] = true
+		if u, ok := m.resolveSecurityUser(id); ok {
+			users = append(users, u)
+		} else {
+			users = append(users, resolvedSecurityUser{ID: id, Name: fmt.Sprintf("User%d", id), URL: fmt.Sprintf("tg://user?id=%d", id)})
 		}
 	}
-	if !meIncluded {
-		lines = append(lines, fmt.Sprintf("<tg-emoji emoji-id=4974307891025543730>▫️</tg-emoji> <b><a href=\"tg://user?id=%d\">User%d (Me)</a></b>", m.client.TGID, m.client.TGID))
+	if m.client != nil && m.client.TGID != 0 && !seen[m.client.TGID] {
+		if u, ok := m.resolveSecurityUser(m.client.TGID); ok {
+			users = append(users, u)
+		} else {
+			users = append(users, resolvedSecurityUser{ID: m.client.TGID, Name: fmt.Sprintf("User%d", m.client.TGID), URL: fmt.Sprintf("tg://user?id=%d", m.client.TGID)})
+		}
 	}
 
-	if len(lines) == 0 {
+	if len(users) == 0 {
 		return msg.Answer(m.getTrans("no_owner", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Нет пользователей в группе</b> <code>owner</code>"))
+	}
+
+	prefixes := map[string]interface{}{}
+	if raw, ok := m.db.Get("goroku.main", "command_prefixes", map[string]interface{}{}).(map[string]interface{}); ok {
+		prefixes = raw
+	}
+	var lines []string
+	for _, u := range users {
+		line := fmt.Sprintf("<tg-emoji emoji-id=4974307891025543730>▫️</tg-emoji> <b><a href=\"%s\">%s</a></b>", u.URL, utils.EscapeHTML(u.Name))
+		if p, ok := prefixes[strconv.FormatInt(u.ID, 10)]; ok && fmt.Sprintf("%v", p) != "" {
+			line += fmt.Sprintf(" (%s)", utils.EscapeHTML(fmt.Sprintf("%v", p)))
+		}
+		lines = append(lines, line)
 	}
 
 	template := m.getTrans("owner_list", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Пользователи группы</b> <code>owner</code><b>:</b>\n\n<blockquote expandable>{0}</blockquote>")
@@ -220,100 +354,35 @@ func (m *GorokuSecurity) OwnerCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
-	parts := strings.SplitN(msg.Text, " ", 2)
-	var targetUserID int64
-	var targetUserName string
-
-	if len(parts) >= 2 && strings.TrimSpace(parts[1]) != "" {
-		targetUserID, targetUserName = parseUserID(m.client, parts[1])
-	} else if msg.ReplyToMsgID != 0 {
-		replyMsg, err := msg.GetReplyMessage()
-		if err == nil && replyMsg != nil {
-			targetUserID = replyMsg.SenderID
-			targetUserName = fmt.Sprintf("User%d", targetUserID)
-		}
+	user, ok := m.resolveUserFromMessage(msg)
+	if !ok {
+		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Укажи, кому выдавать права</b>"))
 	}
-
-	if targetUserID == 0 {
-		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
-	}
-
-	if targetUserID == m.client.TGID {
-		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
+	if user.ID == m.client.TGID {
+		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</tg-emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
 	ol := m.getOwnerList()
-	if ol != nil {
-		alreadyPresent := false
-		for _, item := range ol.ToSlice() {
-			var oid int64
-			switch v := item.(type) {
-			case float64:
-				oid = int64(v)
-			case int64:
-				oid = v
-			}
-			if oid == targetUserID {
-				alreadyPresent = true
-				break
-			}
-		}
-		if !alreadyPresent {
-			ol.Append(targetUserID)
-		}
+	if ol != nil && !pointerContainsID(ol, user.ID) {
+		ol.Append(user.ID)
 	}
 
 	template := m.getTrans("owner_added", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> добавлен в группу</b> <code>owner</code>")
-	return msg.Answer(formatTrans(template, strconv.FormatInt(targetUserID, 10), targetUserName))
+	return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), utils.EscapeHTML(user.Name)))
 }
 
 func (m *GorokuSecurity) DelownerCmd(msg *goroku.Message) error {
-	parts := strings.SplitN(msg.Text, " ", 2)
-	var targetUserID int64
-	var targetUserName string
-
-	if len(parts) >= 2 && strings.TrimSpace(parts[1]) != "" {
-		targetUserID, targetUserName = parseUserID(m.client, parts[1])
-	} else if msg.ReplyToMsgID != 0 {
-		replyMsg, err := msg.GetReplyMessage()
-		if err == nil && replyMsg != nil {
-			targetUserID = replyMsg.SenderID
-			targetUserName = fmt.Sprintf("User%d", targetUserID)
-		}
+	user, ok := m.resolveUserFromMessage(msg)
+	if !ok {
+		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Укажи, кому выдавать права</b>"))
+	}
+	if user.ID == m.client.TGID {
+		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</tg-emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
-	if targetUserID == 0 {
-		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
-	}
-
-	if targetUserID == m.client.TGID {
-		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
-	}
-
-	ol := m.getOwnerList()
-	if ol != nil {
-		slice := ol.ToSlice()
-		foundIdx := -1
-		for idx, item := range slice {
-			var oid int64
-			switch v := item.(type) {
-			case float64:
-				oid = int64(v)
-			case int64:
-				oid = v
-			}
-			if oid == targetUserID {
-				foundIdx = idx
-				break
-			}
-		}
-		if foundIdx != -1 {
-			ol.Remove(foundIdx)
-		}
-	}
-
+	pointerRemoveID(m.getOwnerList(), user.ID)
 	template := m.getTrans("owner_removed", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> удален из группы</b> <code>owner</code>")
-	return msg.Answer(formatTrans(template, strconv.FormatInt(targetUserID, 10), targetUserName))
+	return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), utils.EscapeHTML(user.Name)))
 }
 
 func (m *GorokuSecurity) SudoCmd(msg *goroku.Message) error {

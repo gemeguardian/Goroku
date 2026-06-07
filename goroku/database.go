@@ -433,15 +433,44 @@ func (db *Database) GetAll() map[string]map[string]interface{} {
 }
 
 func (db *Database) deepCopy(src map[string]map[string]interface{}) map[string]map[string]interface{} {
-	dst := make(map[string]map[string]interface{})
+	dst := make(map[string]map[string]interface{}, len(src))
 	for k, v := range src {
-		inner := make(map[string]interface{})
-		for ik, iv := range v {
-			inner[ik] = iv // Note: shallow copies inner objects, but enough for basic module configs
+		inner, _ := deepCopyValue(v).(map[string]interface{})
+		if inner == nil {
+			inner = make(map[string]interface{})
 		}
 		dst[k] = inner
 	}
 	return dst
+}
+
+func deepCopyValue(src interface{}) interface{} {
+	switch v := src.(type) {
+	case map[string]interface{}:
+		m := make(map[string]interface{}, len(v))
+		for key, value := range v {
+			m[key] = deepCopyValue(value)
+		}
+		return m
+	case []interface{}:
+		s := make([]interface{}, len(v))
+		for i, value := range v {
+			s[i] = deepCopyValue(value)
+		}
+		return s
+	case []string:
+		return append([]string(nil), v...)
+	case []int:
+		return append([]int(nil), v...)
+	case []int64:
+		return append([]int64(nil), v...)
+	case []float64:
+		return append([]float64(nil), v...)
+	case []bool:
+		return append([]bool(nil), v...)
+	default:
+		return v
+	}
 }
 
 // StoreAsset stores a message or file to the assets channel.
