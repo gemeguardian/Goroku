@@ -67,11 +67,20 @@ func (m *GorokuConfig) OnDlmod() error     { return nil }
 func (m *GorokuConfig) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
 		"config":     m.ConfigCmd,
-		"cfg":        m.ConfigCmd,
 		"fconfig":    m.FConfigCmd,
-		"fcfg":       m.FConfigCmd,
 		"setvalue":   m.SetValueCmd,
 		"resetvalue": m.ResetValueCmd,
+	}
+}
+
+func (m *GorokuConfig) CommandMetas() map[string]goroku.CommandMeta {
+	return map[string]goroku.CommandMeta{
+		"config": {
+			Aliases: []string{"cfg"},
+		},
+		"fconfig": {
+			Aliases: []string{"fcfg"},
+		},
 	}
 }
 
@@ -224,6 +233,10 @@ func getDefaultValue(modName, key string) interface{} {
 			return false
 		case "invert_media":
 			return false
+		case "ping_emoji":
+			return "🪐"
+		case "hint":
+			return ""
 		}
 	}
 	return ""

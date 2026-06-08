@@ -77,8 +77,15 @@ func (m *InlineStuff) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
 		"ch_goroku_bot": m.ChGorokuBotCmd,
 		"ch_bot_token":  m.ChBotTokenCmd,
-		"inlinetoken":   m.ChBotTokenCmd,
 		"inlineinfo":    m.InlineinfoCmd,
+	}
+}
+
+func (m *InlineStuff) CommandMetas() map[string]goroku.CommandMeta {
+	return map[string]goroku.CommandMeta{
+		"ch_bot_token": {
+			Aliases: []string{"inlinetoken"},
+		},
 	}
 }
 

@@ -109,13 +109,35 @@ func (m *InlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarkup) 
 	return err
 }
 
+type deletableClient interface {
+	DeleteMessage(chat interface{}, msgID int64) error
+}
+
 func (m *InlineMessage) Delete() (bool, error) {
+	// First check if we have mapped ChatID and MessageID for this Unit ID
+	m.InlineManager.mu.RLock()
+	info, hasInfo := m.InlineManager.activeMessageIDs[m.UnitID]
+	m.InlineManager.mu.RUnlock()
+
+	if hasInfo && info.MessageID != 0 {
+		if delClient, ok := m.InlineManager.client.(deletableClient); ok {
+			err := delClient.DeleteMessage(info.ChatID, info.MessageID)
+			if err == nil {
+				m.InlineManager.mu.Lock()
+				delete(m.InlineManager.activeMessageIDs, m.UnitID)
+				m.InlineManager.mu.Unlock()
+				return true, nil
+			}
+		}
+	}
+
 	// Inline query messages cannot be deleted by bot API, but we can wipe their text/markup
 	editMsg := tgbotapi.EditMessageTextConfig{
 		BaseEdit: tgbotapi.BaseEdit{
 			InlineMessageID: m.InlineMessageID,
 		},
-		Text: "🗑 <i>Message closed.</i>",
+		Text:      "🗑 <i>Message closed.</i>",
+		ParseMode: tgbotapi.ModeHTML,
 	}
 	_, err := m.InlineManager.bot.Request(editMsg)
 	return err == nil, err

@@ -122,7 +122,6 @@ func (m *Test) ConfigReady(config map[string]interface{}) error {
 func (m *Test) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
 		"ping":      m.PingCmd,
-		"pong":      m.PingCmd,
 		"clearlogs": m.ClearLogsCmd,
 		"suspend":   m.SuspendCmd,
 		"logs":      m.LogsCmd,
@@ -182,10 +181,15 @@ func (m *Test) PingCmd(msg *goroku.Message) error {
 		emoji = "🪐"
 	}
 
+	var targetMsgID int64
 	if msg.Out {
 		_ = msg.Edit(emoji)
+		targetMsgID = msg.ID
 	} else {
-		_, _ = m.client.GetMe()
+		sentMsg, err := m.client.SendMessage(msg.ChatID, emoji)
+		if err == nil {
+			targetMsgID = goroku.GetSentMessageID(sentMsg)
+		}
 	}
 
 	pingMs := float64(time.Since(startNs).Nanoseconds()) / 1e6
@@ -212,7 +216,12 @@ func (m *Test) PingCmd(msg *goroku.Message) error {
 		tmpl = "<tg-emoji emoji-id=5920515922505765329>⚡️</tg-emoji> <b>𝙿𝚒𝚗𝚐: </b><code>{ping}</code><b> 𝚖𝚜 </b>\n<tg-emoji emoji-id=5900104897885376843>🕓</tg-emoji><b> 𝚄𝚙𝚝𝚒𝚖𝚎: </b><code>{uptime}</code>"
 	}
 
-	return msg.Answer(formatCustomMessage(tmpl, data))
+	response := formatCustomMessage(tmpl, data)
+	if targetMsgID != 0 {
+		_, err := m.client.EditMessage(msg.ChatID, targetMsgID, response)
+		return err
+	}
+	return msg.Answer(response)
 }
 
 // ClearLogsCmd clears the in-memory log buffer.

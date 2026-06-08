@@ -1002,6 +1002,34 @@ func GetSentMessageID(resp interface{}) int64 {
 				}
 			}
 		}
+	case *tg.UpdatesCombined:
+		for _, update := range v.Updates {
+			if u, ok := update.(*tg.UpdateNewMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			} else if u, ok := update.(*tg.UpdateNewChannelMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			}
+		}
+	case *tg.UpdateShortSentMessage:
+		return int64(v.ID)
+	case *tg.UpdateShortMessage:
+		return int64(v.ID)
+	case *tg.UpdateShortChatMessage:
+		return int64(v.ID)
+	case *tg.UpdateShort:
+		if u, ok := v.Update.(*tg.UpdateNewMessage); ok {
+			if msg, ok := u.Message.(*tg.Message); ok {
+				return int64(msg.ID)
+			}
+		} else if u, ok := v.Update.(*tg.UpdateNewChannelMessage); ok {
+			if msg, ok := u.Message.(*tg.Message); ok {
+				return int64(msg.ID)
+			}
+		}
 	case tgbotapi.Message:
 		return int64(v.MessageID)
 	case *tgbotapi.Message:
@@ -1298,6 +1326,35 @@ func (c *CustomTelegramClient) EditMessage(chat interface{}, msgID int64, text s
 	}
 	res, err := c.rawAPI.MessagesEditMessage(c.ctx, req)
 	return res, err
+}
+
+func (c *CustomTelegramClient) DeleteMessage(chat interface{}, msgID int64) error {
+	peer, err := c.ResolvePeer(chat)
+	if err != nil {
+		if id, ok := chat.(int64); ok {
+			peer = &tg.InputPeerUser{UserID: id}
+		} else {
+			return err
+		}
+	}
+
+	_, err = c.rawAPI.MessagesDeleteMessages(c.ctx,
+		&tg.MessagesDeleteMessagesRequest{
+			ID: []int{int(msgID)},
+		})
+	if err != nil {
+		if ch, ok := peer.(*tg.InputPeerChannel); ok {
+			_, err = c.rawAPI.ChannelsDeleteMessages(c.ctx,
+				&tg.ChannelsDeleteMessagesRequest{
+					Channel: &tg.InputChannel{
+						ChannelID:  ch.ChannelID,
+						AccessHash: ch.AccessHash,
+					},
+					ID: []int{int(msgID)},
+				})
+		}
+	}
+	return err
 }
 
 const telegramMessageLimit = 4096

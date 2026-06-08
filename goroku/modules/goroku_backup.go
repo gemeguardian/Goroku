@@ -212,10 +212,19 @@ func (m *GorokuBackup) Commands() map[string]goroku.CommandHandler {
 		"backupmods":        m.BackupModsCmd,
 		"restoremods":       m.RestoreModsCmd,
 		"backupall":         m.BackupAllCmd,
-		"backup":            m.BackupAllCmd,
 		"restoreall":        m.RestoreAllCmd,
 		"set_backup_period": m.SetBackupPeriodCmd,
-		"setbackupperiod":   m.SetBackupPeriodCmd,
+	}
+}
+
+func (m *GorokuBackup) CommandMetas() map[string]goroku.CommandMeta {
+	return map[string]goroku.CommandMeta{
+		"backupall": {
+			Aliases: []string{"backup"},
+		},
+		"set_backup_period": {
+			Aliases: []string{"setbackupperiod"},
+		},
 	}
 }
 

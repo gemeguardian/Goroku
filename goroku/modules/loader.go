@@ -159,15 +159,29 @@ func (m *LoaderModule) OnDlmod() error  { return nil }
 func (m *LoaderModule) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
 		"loadmod":      m.LoadmodCmd,
-		"lm":           m.LoadmodCmd,
 		"unloadmod":    m.UnloadmodCmd,
-		"ulm":          m.UnloadmodCmd,
 		"dlmod":        m.DlmodCmd,
-		"dlm":          m.DlmodCmd,
 		"clearmodules": m.ClearmodulesCmd,
 		"addrepo":      m.AddrepoCmd,
 		"delrepo":      m.DelrepoCmd,
-		"mlcmd":        m.MlcmdCmd,
+		"modload":      m.ModloadCmd,
+	}
+}
+
+func (m *LoaderModule) CommandMetas() map[string]goroku.CommandMeta {
+	return map[string]goroku.CommandMeta{
+		"loadmod": {
+			Aliases: []string{"lm"},
+		},
+		"unloadmod": {
+			Aliases: []string{"ulm"},
+		},
+		"dlmod": {
+			Aliases: []string{"dlm"},
+		},
+		"modload": {
+			Aliases: []string{"ml"},
+		},
 	}
 }
 
@@ -732,7 +746,7 @@ func (m *LoaderModule) DelrepoCmd(msg *goroku.Message) error {
 	return nil
 }
 
-func (m *LoaderModule) MlcmdCmd(msg *goroku.Message) error {
+func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
 	if rawArgs == "" {
 		msg.Text = m.getTrans("args", "🚫 <b>You must specify arguments</b>")

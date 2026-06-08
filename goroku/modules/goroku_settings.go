@@ -743,10 +743,7 @@ func (m *GorokuSettings) getSettingsMarkup(im *inline.InlineManager) [][]inline.
 		Data: "hset_close",
 		Handler: func(c inline.CallbackQuery) error {
 			_ = c.Answer("Settings closed.", false)
-			if c.BotMessage != nil {
-				_, _ = c.BotMessage.Delete()
-			}
-			return nil
+			return closeForm(c)
 		},
 	}
 

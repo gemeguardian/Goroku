@@ -389,8 +389,7 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 			{
 				Text: m.getTrans("cancel", "🚫 Отмена"),
 				Handler: func(call inline.CallbackQuery) error {
-					_, err := call.InlineMessage.Delete()
-					return err
+					return closeForm(call)
 				},
 			},
 			{
@@ -412,8 +411,7 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 							{
 								Text: m.getTrans("cancel", "🚫 Отмена"),
 								Handler: func(callSub inline.CallbackQuery) error {
-									_, err := callSub.InlineMessage.Delete()
-									return err
+									return closeForm(callSub)
 								},
 							},
 							{
@@ -1618,8 +1616,7 @@ func (m *GorokuSecurity) buildMarkupGlobal(isInline bool) [][]inline.Button {
 	closeBtn := inline.Button{
 		Text: m.getTrans("close_menu", "🙈 Закрыть это меню"),
 		Handler: func(call inline.CallbackQuery) error {
-			_, err := call.InlineMessage.Delete()
-			return err
+			return closeForm(call)
 		},
 	}
 	markup = append(markup, []inline.Button{closeBtn})
@@ -1714,8 +1711,7 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 	closeBtn := inline.Button{
 		Text: m.getTrans("close_menu", "🙈 Закрыть это меню"),
 		Handler: func(call inline.CallbackQuery) error {
-			_, err := call.InlineMessage.Delete()
-			return err
+			return closeForm(call)
 		},
 	}
 	markup = append(markup, []inline.Button{closeBtn})
@@ -1754,8 +1750,7 @@ func (m *GorokuSecurity) buildMarkupQuerysec() [][]inline.Button {
 			{
 				Text: m.getTrans("close_menu", "🙈 Закрыть это меню"),
 				Handler: func(call inline.CallbackQuery) error {
-					_, err := call.InlineMessage.Delete()
-					return err
+					return closeForm(call)
 				},
 			},
 		},
@@ -1878,8 +1873,7 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 			{
 				Text: m.getTrans("cancel", "🚫 Отмена"),
 				Handler: func(call inline.CallbackQuery) error {
-					_, err := call.InlineMessage.Delete()
-					return err
+					return closeForm(call)
 				},
 			},
 			{

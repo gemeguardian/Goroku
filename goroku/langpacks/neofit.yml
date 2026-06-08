@@ -195,7 +195,7 @@ goroku_web:
   tunnel_opened: "🎉 <b>Tunnel established. TTL: ~1200s</b>"
   host_denied: "<tg-emoji emoji-id=6037254263187443802>💬</tg-emoji> Port forwarded denied by host."
   web_btn: "🌍 WebUI"
-  _cmd_doc_weburl: "Start tunnel to WebUI"
+  _cmd_doc_webpanel: "Start tunnel to WebUI"
   btn_yes: "🚸 Connect"
   btn_no: "🔻 Close"
   lavhost_web: "✌️ <b>Redirecting to lavHost WebUI</b>\n\n<i>💡 Auth token required</i>"
@@ -599,6 +599,7 @@ loader:
   _cmd_doc_delrepo: "Remove Repo"
   _cmd_doc_dlmod: "Install from URL"
   _cmd_doc_loadmod: "Install file"
+  _cmd_doc_modload: "Send module file to chat"
   _cmd_doc_unloadmod: "Unload class"
   _cls_doc: "Module Loader"
   basic_auth_doc: "Basic Auth credentials"
@@ -648,7 +649,7 @@ translate:
   error: "<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>TranslationError</b>"
   language: "en"
   translated_text: "<tg-emoji emoji-id=5787344001862471785>🔁</tg-emoji> Output:\n<blockquote>{tr_text}</blockquote>"
-  _cmd_doc_tr: "[lang] [text] - Translate"
+  _cmd_doc_translate: "[lang] [text] - Translate"
   _cls_doc: "Translation Utils"
 
 quickstart:

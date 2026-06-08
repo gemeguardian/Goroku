@@ -64,7 +64,14 @@ func (m *Translate) ConfigReady(config map[string]interface{}) error {
 func (m *Translate) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
 		"translate": m.TranslateCmd,
-		"tr":        m.TranslateCmd,
+	}
+}
+
+func (m *Translate) CommandMetas() map[string]goroku.CommandMeta {
+	return map[string]goroku.CommandMeta{
+		"translate": {
+			Aliases: []string{"tr"},
+		},
 	}
 }
 

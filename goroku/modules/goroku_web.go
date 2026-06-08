@@ -48,10 +48,17 @@ func (m *GorokuWeb) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
 		"webrestart":  m.WebrestartCmd,
 		"webpanel":    m.WebpanelCmd,
-		"weburl":      m.WebpanelCmd,
 		"webstop":     m.WebstopCmd,
 		"approve_web": m.ApproveWebCmd,
 		"addacc":      m.AddaccCmd,
+	}
+}
+
+func (m *GorokuWeb) CommandMetas() map[string]goroku.CommandMeta {
+	return map[string]goroku.CommandMeta{
+		"webpanel": {
+			Aliases: []string{"weburl"},
+		},
 	}
 }
 

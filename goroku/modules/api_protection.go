@@ -112,10 +112,19 @@ func (m *APIProtection) updateForbiddenMethods(config map[string]interface{}) {
 
 func (m *APIProtection) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
-		"antiflood":           m.AntifloodCmd,
-		"setflood":            m.SetfloodCmd,
 		"api_fw_protection":   m.APIFWProtectionCmd,
 		"suspend_api_protect": m.SuspendAPIProtectCmd,
+	}
+}
+
+func (m *APIProtection) CommandMetas() map[string]goroku.CommandMeta {
+	return map[string]goroku.CommandMeta{
+		"api_fw_protection": {
+			Aliases: []string{"antiflood"},
+		},
+		"suspend_api_protect": {
+			Aliases: []string{"setflood"},
+		},
 	}
 }
 
@@ -160,8 +169,7 @@ func (m *APIProtection) APIFWProtectionCmd(msg *goroku.Message) error {
 						Text: m.getTrans("btn_no", "🚫 No"),
 						Data: "api_fw_no",
 						Handler: func(c inline.CallbackQuery) error {
-							_, err := c.InlineMessage.Delete()
-							return err
+							return closeForm(c)
 						},
 					},
 					{

@@ -195,7 +195,7 @@ goroku_web:
   tunnel_opened: "🎉 <b>7unn3l 0p3n3d. 7h15 l1nk 15 v4l1d 4 4b0u7 20 m1n5</b>"
   host_denied: "<tg-emoji emoji-id=6037254263187443802>💬</tg-emoji> S35510n 4dd1710n cmd5 r n07 4v41l4bl3 0n ur h0571ng, plz c0n74c7 ur h0571ng 4dm1n157r4710n."
   web_btn: "🌍 W3b 1n73rf4c3"
-  _cmd_doc_weburl: "0p3n5 w3b 7unn3l 2 ur H3r0ku w3b 1n73rf4c3"
+  _cmd_doc_webpanel: "0p3n5 w3b 7unn3l 2 ur H3r0ku w3b 1n73rf4c3"
   btn_yes: "🚸 C0nf1rm 4nyw4y"
   btn_no: "🔻 Cl053"
   lavhost_web: "✌️ <b>7h15 l1nk l34d5 2 ur H3r0ku w3b 1n73rf4c3 0n lavHost</b>\n\n<i>💡 U'll n33d 2 4u7h u51ng lavHost cr3d5, sp3c1f13d 0n r3g157r4710n</i>"
@@ -599,6 +599,7 @@ loader:
   _cmd_doc_delrepo: "R3m0v3 4 r3p0 fr0m 7h3 l157 0f r3p05"
   _cmd_doc_dlmod: "1n574ll 4 m0dul3 fr0m 7h3 0ff1c14l m0dul3 r3p0"
   _cmd_doc_loadmod: "L04d5 7h3 m0dul3 f1l3"
+  _cmd_doc_modload: "53nd 7h3 f1l3 0f 4n 1n574ll3d m0dul3 70 ch47"
   _cmd_doc_unloadmod: "Unl04d m0dul3 by cl455 n4m3"
   _cls_doc: "L04d5 m0dul35"
   basic_auth_doc: "B451c 4u7h 4 m0dul3 r3p0"
@@ -648,7 +649,7 @@ translate:
   error: "<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>Un4bl3 2 7r4n5l473 73x7</b>"
   language: "en"
   translated_text: "<tg-emoji emoji-id=5787344001862471785>🔁</tg-emoji> 7r4n5l473d 73x7:\n<blockquote>{tr_text}</blockquote>"
-  _cmd_doc_tr: "[language] [text] - 7r4n5l473 73x7"
+  _cmd_doc_translate: "[language] [text] - 7r4n5l473 73x7"
   _cls_doc: "7r4n5l4735 73x7 (0bv10u5ly)"
 
 quickstart:

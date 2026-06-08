@@ -195,7 +195,7 @@ goroku_web:
   tunnel_opened: "🎉 <b>トンネルが開かれました。このリンクは約20分間有効です</b>"
   host_denied: "<tg-emoji emoji-id=6037254263187443802>💬</tg-emoji> セッション追加コマンドはご利用のホスティングでは利用できません。ホスティング管理者にお問い合わせください。"
   web_btn: "🌍 Web インターフェース"
-  _cmd_doc_weburl: "Goroku Web インターフェースへの Web トンネルを開きます"
+  _cmd_doc_webpanel: "Goroku Web インターフェースへの Web トンネルを開きます"
   btn_yes: "🚸 とにかく確認"
   btn_no: "🔻 閉じる"
   lavhost_web: "✌️ <b>このリンクは lavHost 上の Goroku Web インターフェースにつながります</b>\n\n<i>💡 登録時に指定した lavHost の認証情報を使用してログインする必要があります</i>"
@@ -599,6 +599,7 @@ loader:
   _cmd_doc_delrepo: "リポジトリをリポジトリリストから削除します"
   _cmd_doc_dlmod: "公式モジュールリポジトリからモジュールをインストールします"
   _cmd_doc_loadmod: "モジュールファイルを読み込みます"
+  _cmd_doc_modload: "インストールされているモジュールのファイルをチャットに送信します"
   _cmd_doc_unloadmod: "クラス名でモジュールをアンロードします"
   _cls_doc: "モジュールを読み込みます"
   basic_auth_doc: "モジュールリポジトリの基本認証"
@@ -648,7 +649,7 @@ translate:
   error: "<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>テキストを翻訳できません</b>"
   language: "ja"
   translated_text: "<tg-emoji emoji-id=5787344001862471785>🔁</tg-emoji> 翻訳されたテキスト:\n<blockquote>{tr_text}</blockquote>"
-  _cmd_doc_tr: "[language] [text] - テキストを翻訳します"
+  _cmd_doc_translate: "[language] [text] - テキストを翻訳します"
   _cls_doc: "テキストを翻訳します（当たり前ですが）"
 
 quickstart:

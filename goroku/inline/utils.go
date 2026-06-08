@@ -118,15 +118,26 @@ func (im *InlineManager) EditUnit(unitID string, text string, buttons [][]Button
 func (im *InlineManager) DeleteUnitMessage(unitID string) error {
 	im.mu.Lock()
 	inlineMsgID := im.activeInlineMessages[unitID]
+	info, hasInfo := im.activeMessageIDs[unitID]
 	im.removeUnitLocked(unitID)
 	im.mu.Unlock()
+
+	if hasInfo && info.MessageID != 0 {
+		if delClient, ok := im.client.(deletableClient); ok {
+			err := delClient.DeleteMessage(info.ChatID, info.MessageID)
+			if err == nil {
+				return nil
+			}
+		}
+	}
 
 	if inlineMsgID != "" {
 		editMsg := tgbotapi.EditMessageTextConfig{
 			BaseEdit: tgbotapi.BaseEdit{
 				InlineMessageID: inlineMsgID,
 			},
-			Text: "🗑 <i>Message closed.</i>",
+			Text:      "🗑 <i>Message closed.</i>",
+			ParseMode: tgbotapi.ModeHTML,
 		}
 		_, err := im.bot.Request(editMsg)
 		return err
@@ -155,4 +166,5 @@ func (im *InlineManager) removeUnitLocked(unitID string) {
 	}
 	delete(im.units, unitID)
 	delete(im.activeInlineMessages, unitID)
+	delete(im.activeMessageIDs, unitID)
 }

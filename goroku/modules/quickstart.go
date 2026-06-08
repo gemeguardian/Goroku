@@ -174,8 +174,15 @@ func (m *Quickstart) OnDlmod() error  { return nil }
 
 func (m *Quickstart) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
-		"start":      m.StartCmd,
 		"quickstart": m.QuickstartCmd,
+	}
+}
+
+func (m *Quickstart) CommandMetas() map[string]goroku.CommandMeta {
+	return map[string]goroku.CommandMeta{
+		"quickstart": {
+			Aliases: []string{"start"},
+		},
 	}
 }
 

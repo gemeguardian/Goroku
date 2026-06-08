@@ -51,13 +51,21 @@ func (m *Eval) OnDlmod() error     { return nil }
 func (m *Eval) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
 		"eval":   m.EvalCmd,
-		"e":      m.EvalCmd,
-		"epy":    m.EvalPyCmd,
 		"evalpy": m.EvalPyCmd,
-		"py":     m.EvalPyCmd,
 		"ec":     m.ECCmd,
 		"ecpp":   m.ECPPCmd,
 		"enode":  m.ENodeCmd,
+	}
+}
+
+func (m *Eval) CommandMetas() map[string]goroku.CommandMeta {
+	return map[string]goroku.CommandMeta{
+		"eval": {
+			Aliases: []string{"e"},
+		},
+		"evalpy": {
+			Aliases: []string{"epy", "py"},
+		},
 	}
 }
 

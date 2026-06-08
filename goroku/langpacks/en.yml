@@ -226,7 +226,7 @@ goroku_web:
   tunnel_opened: "🎉 <b>Tunnel opened. This link is valid for about 20 minutes</b>"
   host_denied: "<tg-emoji emoji-id=6037254263187443802>💬</tg-emoji> Session addition commands are not available on your hosting, please contact your hosting administration."
   web_btn: "🌍 Web interface"
-  _cmd_doc_weburl: "Opens web tunnel to your Goroku web interface"
+  _cmd_doc_webpanel: "Opens web tunnel to your Goroku web interface"
   btn_yes: "🚸 Confirm anyway"
   btn_no: "🔻 Close"
   lavhost_web: "✌️ <b>This link leads to your Goroku web interface on lavHost</b>\n\n<i>💡 You'll need to authorize using lavHost credentials, specified on registration</i>"
@@ -630,6 +630,7 @@ loader:
   _cmd_doc_delrepo: "Remove a repository from the list of repositories"
   _cmd_doc_dlmod: "Install a module from the official module repo"
   _cmd_doc_loadmod: "Loads the module file"
+  _cmd_doc_modload: "Send the file of an installed module to chat"
   _cmd_doc_unloadmod: "Unload module by class name"
   _cls_doc: "Loads modules"
   basic_auth_doc: "Basic auth for module repo"
@@ -679,7 +680,7 @@ translate:
   error: "<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>Unable to translate text</b>"
   language: "en"
   translated_text: "<tg-emoji emoji-id=5787344001862471785>🔁</tg-emoji> Translated text:\n<blockquote>{tr_text}</blockquote>"
-  _cmd_doc_tr: "[language] [text] - Translate text"
+  _cmd_doc_translate: "[language] [text] - Translate text"
   _cls_doc: "Translates text (obviously)"
 
 quickstart:

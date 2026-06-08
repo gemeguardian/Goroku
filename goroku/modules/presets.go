@@ -152,17 +152,34 @@ func (m *Presets) Commands() map[string]goroku.CommandHandler {
 		"delpreset":        m.DelPresetCmd,
 		"listpresets":      m.ListPresetsCmd,
 		"loadpreset":       m.LoadPresetCmd,
-		"lp":               m.LoadPresetCmd,
 		"addtofolder":      m.AddToFolderCmd,
-		"af":               m.AddToFolderCmd,
 		"folderload":       m.FolderLoadCmd,
-		"fl":               m.FolderLoadCmd,
 		"removefromfolder": m.RemoveFromFolderCmd,
-		"rff":              m.RemoveFromFolderCmd,
 		"loadaliases":      m.LoadAliasesCmd,
-		"la":               m.LoadAliasesCmd,
 		"aliasload":        m.AliasLoadCmd,
-		"al":               m.AliasLoadCmd,
+	}
+}
+
+func (m *Presets) CommandMetas() map[string]goroku.CommandMeta {
+	return map[string]goroku.CommandMeta{
+		"loadpreset": {
+			Aliases: []string{"lp"},
+		},
+		"addtofolder": {
+			Aliases: []string{"af"},
+		},
+		"folderload": {
+			Aliases: []string{"fl"},
+		},
+		"removefromfolder": {
+			Aliases: []string{"rff"},
+		},
+		"loadaliases": {
+			Aliases: []string{"la"},
+		},
+		"aliasload": {
+			Aliases: []string{"al"},
+		},
 	}
 }
 

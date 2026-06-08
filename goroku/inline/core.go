@@ -10,6 +10,11 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+type MessageIDInfo struct {
+	ChatID    int64
+	MessageID int64
+}
+
 type InlineManager struct {
 	mu                   sync.RWMutex
 	registerMu           sync.Mutex
@@ -19,6 +24,7 @@ type InlineManager struct {
 	allModules           interface{}
 	units                map[string]*Unit
 	activeInlineMessages map[string]string
+	activeMessageIDs     map[string]MessageIDInfo
 	customMap            map[string]Button
 	buttonUnits          map[string]string
 	QueryGalleries       map[string]QueryGalleryItem
@@ -40,6 +46,7 @@ func NewInlineManager(client, db, allModules interface{}) *InlineManager {
 		allModules:           allModules,
 		units:                make(map[string]*Unit),
 		activeInlineMessages: make(map[string]string),
+		activeMessageIDs:     make(map[string]MessageIDInfo),
 		customMap:            make(map[string]Button),
 		buttonUnits:          make(map[string]string),
 		QueryGalleries:       make(map[string]QueryGalleryItem),
@@ -299,6 +306,60 @@ type TelegramClient interface {
 	SendInlineBotResult(chatID int64, queryID int64, resultID string, replyToMsgID int64) (tg.UpdatesClass, error)
 }
 
+func getSentMessageID(resp interface{}) int64 {
+	switch v := resp.(type) {
+	case *tg.Updates:
+		for _, update := range v.Updates {
+			if u, ok := update.(*tg.UpdateNewMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			} else if u, ok := update.(*tg.UpdateNewChannelMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			} else if u, ok := update.(*tg.UpdateEditMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			} else if u, ok := update.(*tg.UpdateEditChannelMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			}
+		}
+	case *tg.UpdatesCombined:
+		for _, update := range v.Updates {
+			if u, ok := update.(*tg.UpdateNewMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			} else if u, ok := update.(*tg.UpdateNewChannelMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			}
+		}
+	case *tg.UpdateShortSentMessage:
+		return int64(v.ID)
+	case *tg.UpdateShortMessage:
+		return int64(v.ID)
+	case *tg.UpdateShortChatMessage:
+		return int64(v.ID)
+	case *tg.UpdateShort:
+		if u, ok := v.Update.(*tg.UpdateNewMessage); ok {
+			if msg, ok := u.Message.(*tg.Message); ok {
+				return int64(msg.ID)
+			}
+		} else if u, ok := v.Update.(*tg.UpdateNewChannelMessage); ok {
+			if msg, ok := u.Message.(*tg.Message); ok {
+				return int64(msg.ID)
+			}
+		}
+	}
+	return 0
+}
+
 func (im *InlineManager) InvokeUnit(unitID string, chatID int64, replyToMsgID int64) (interface{}, error) {
 	client, ok := im.client.(TelegramClient)
 	if !ok {
@@ -338,9 +399,19 @@ func (im *InlineManager) InvokeUnit(unitID string, chatID int64, replyToMsgID in
 		return nil, fmt.Errorf("no query results returned")
 	}
 
-	_, err = client.SendInlineBotResult(chatID, queryID, resultID, replyToMsgID)
+	updates, err := client.SendInlineBotResult(chatID, queryID, resultID, replyToMsgID)
 	if err != nil {
 		return nil, err
+	}
+
+	msgID := getSentMessageID(updates)
+	if msgID != 0 {
+		im.mu.Lock()
+		im.activeMessageIDs[unitID] = MessageIDInfo{
+			ChatID:    chatID,
+			MessageID: msgID,
+		}
+		im.mu.Unlock()
 	}
 
 	// Wait for ChosenInlineResult or timeout

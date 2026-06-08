@@ -204,7 +204,7 @@ goroku_web:
   2fa_enabled: "Sie haben die Zwei-Faktor-Authentifizierung aktiviert. Geben Sie das Passwort ein."
   request_code: "🔃 Code erneut anfordern"
   code_expired: "Der Code ist abgelaufen."
-  _cmd_doc_weburl: "Öffnet einen Tunnel zur Goroku-Weboberfläche"
+  _cmd_doc_webpanel: "Öffnet einen Tunnel zur Goroku-Weboberfläche"
 
 goroku_backup:
   period: "⌚️ <b>Die Unit «ALPHA»</b> erstellt regelmäßig Backups. Diese Einstellungen können später geändert werden.\n\nBitte wählen Sie die Backup-Häufigkeit\n\n<b>🚫 Es ist daher nicht möglich, Module, die mit dem Befehl .lm aus Dateien heruntergeladen wurden, wiederherzustellen! Seien Sie vorsichtig und führen Sie vor der Wiederherstellung .backupmods aus.</b>"
@@ -539,6 +539,7 @@ loader:
   inline_init_failed: "<tg-emoji emoji-id=5454225457916420314>😖</tg-emoji> <b>Dieses Modul benötigt GorokuInline, und die Inline-Manager-Initialisierung war fehlgeschlagen</b>\n<i>Versuchen Sie, einen der alten Bots bei @BotFather zu löschen und den Userbot neu zu starten</i>"
   _cmd_doc_dlmod: "Lädt und installiert ein Modul aus dem Repository"
   _cmd_doc_loadmod: "Lädt und installiert ein Modul aus einer Datei"
+  _cmd_doc_modload: "Sendet die Datei eines installierten Moduls an den Chat"
   _cmd_doc_unloadmod: "Entlädt (löscht) ein Modul"
   _cmd_doc_clearmodules: "Entlädt alle installierten Module"
   _cls_doc: "Lädt Module"
@@ -612,7 +613,7 @@ translate:
   language: "de"
   translated_text: "<tg-emoji emoji-id=5787344001862471785>🔁</tg-emoji> Übersetzter Text:\n<blockquote>{tr_text} </blockquote>"
   _cls_doc: "Übersetzt Text (offensichtlich)"
-  _cmd_doc_tr: "[Sprache] [Text] - Übersetzt den Text"
+  _cmd_doc_translate: "[Sprache] [Text] - Übersetzt den Text"
 
 quickstart:
   base: "<tg-emoji emoji-id=5463379725441341739>🪐</tg-emoji> <b>Hallo.</b> Dein <b>{}</b> Userbot ist jetzt installiert.\n\n<tg-emoji emoji-id=5134202243486057363>💫</tg-emoji> <b>Brauchst du Hilfe?</b> Tritt <a href=\"https://t.me/goroku_talks\">unserem Support-Chat</a> bei. Wir helfen <b>jedem</b>.\n\n<tg-emoji emoji-id=4940480187436369099>💁‍♀️</tg-emoji> <b>Kurzanleitung:</b>\n\n<tg-emoji emoji-id=5456197350416486261>1️⃣</tg-emoji> <b>Schreibe</b> <code>.help</code><b>, um die Liste der Module zu sehen</b>\n<tg-emoji emoji-id=5456261689026581678>2️⃣</tg-emoji> <b>Schreibe</b> <code>.help &lt;Modulname/Befehl&gt;</code><b>, um die Beschreibung des Moduls zu sehen</b>\n<tg-emoji emoji-id=5458366235886522404>3️⃣</tg-emoji> <b>Schreibe</b> <code>.dlmod &lt;Link&gt;</code><b>, um ein Modul von einem Link zu laden</b>\n<tg-emoji emoji-id=5456207331920483861>4️⃣</tg-emoji> <b>Schreibe</b> <code>.loadmod</code> <b>als Antwort auf eine Datei, um ein Modul daraus zu laden</b>\n<tg-emoji emoji-id=5456185418997340146>5️⃣</tg-emoji> <b>Schreibe</b> <code>.unloadmod &lt;Modulname&gt;</code><b>, um ein Modul zu entladen</b>\n\n<tg-emoji emoji-id=5456178297941561360>💡</tg-emoji> <b>Goroku unterstützt Module von Hikka, Friendly-Telegram und GeekTG, sowie seine eigenen.</b>\n"

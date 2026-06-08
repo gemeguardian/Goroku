@@ -195,7 +195,7 @@ goroku_web:
   tunnel_opened: "🎉 <b>Tunnyew opened. Dis wink is vawid fow about 20 minyutes</b>"
   host_denied: "<tg-emoji emoji-id=6037254263187443802>💬</tg-emoji> Session addition commands awe nyot avaiwabwe on youw hosting, pwease contact youw hosting administwation."
   web_btn: "🌍 Web intewface"
-  _cmd_doc_weburl: "Opens web tunnyew to youw Hewoku web intewface"
+  _cmd_doc_webpanel: "Opens web tunnyew to youw Hewoku web intewface"
   btn_yes: "🚸 Confiwm anyway"
   btn_no: "🔻 Cwose"
   lavhost_web: "✌️ <b>Dis wink weads to youw Hewoku web intewface on wavHost</b>\n\n<i>💡 You'ww nyeed to audowize using wavHost cwedentiaws, specified on wegistwation</i>"
@@ -599,6 +599,7 @@ loader:
   _cmd_doc_delrepo: "Wemove a wepositowy fwom da wist of wepositowies"
   _cmd_doc_dlmod: "Instaww a moduwe fwom da officiaw moduwe wepo"
   _cmd_doc_loadmod: "Woads da moduwe fiwe"
+  _cmd_doc_modload: "Send da fiwe of an instawwed moduwe to chat"
   _cmd_doc_unloadmod: "Unwoad moduwe by cwass nyame"
   _cls_doc: "Woads moduwes"
   basic_auth_doc: "Basic aud fow moduwe wepo"
@@ -648,7 +649,7 @@ translate:
   error: "<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>Unyabwe to twanswate text >_<</b>"
   language: "en"
   translated_text: "<tg-emoji emoji-id=5787344001862471785>🔁</tg-emoji> Twanswated text:\n<blockquote>{tr_text}</blockquote>"
-  _cmd_doc_tr: "[wanguage] [text] - Twanswate text"
+  _cmd_doc_translate: "[wanguage] [text] - Twanswate text"
   _cls_doc: "Twanswates text (obviouswy)"
 
 quickstart:

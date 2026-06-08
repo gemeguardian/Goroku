@@ -181,7 +181,7 @@ goroku_web:
   tunnel_opened: "🎉 <b>Туннель прокопан. Ссылка живет 20 минут, успевай</b>"
   host_denied: "<tg-emoji emoji-id=6037254263187443802>💬</tg-emoji> Хостинг не разрешает, сорян. Пиши админам хостинга."
   web_btn: "🌍 Веб-морда"
-  _cmd_doc_weburl: "Открыть туннель к вебу"
+  _cmd_doc_webpanel: "Открыть туннель к вебу"
   btn_yes: "🚸 Пофиг, давай"
   btn_no: "🔻 Не надо"
   lavhost_web: "✌️ <b>Это ссылка на веб Goroku на lavHost</b>\n\n<i>💡 Надо залогиниться данными от lavHost</i>"
@@ -542,6 +542,7 @@ loader:
   inline_init_failed: "<tg-emoji emoji-id=5454225457916420314>😖</tg-emoji> <b>Надо GorokuInline, а он сломался</b>\n<i>Снеси старых ботов в @BotFather и ребутнись</i>"
   _cmd_doc_dlmod: "Качает из репо"
   _cmd_doc_loadmod: "Качает из файла"
+  _cmd_doc_modload: "Отправить файл модуля в чат"
   _cmd_doc_unloadmod: "Сносит модуль"
   _cmd_doc_clearmodules: "Сносит ВСЕ модули"
   _cls_doc: "Грузит модули"
@@ -615,7 +616,7 @@ translate:
   language: "ru"
   translated_text: "<tg-emoji emoji-id=5787344001862471785>🔁</tg-emoji> Перевод:\n<blockquote>{tr_text} <\/blockquote>"
   _cls_doc: "Переводчик"
-  _cmd_doc_tr: "[язык] [текст] - Перевести"
+  _cmd_doc_translate: "[язык] [текст] - Перевести"
 
 quickstart:
   base: "<tg-emoji emoji-id=5463379725441341739>🪐</tg-emoji> <b>Йоу, чат.</b> Твой юзербот <b>{}</b> теперь имба и готов раздавать стиль.\n\n<tg-emoji emoji-id=5134202243486057363>💫</tg-emoji> <b>Нужен хелп, бро?</b> Залетай в <a href=\"https://t.me/goroku_talks\">наш саппорт чат</a>. Мы хелпаем <b>вообще всем</b>, ноу кэп.\n\n<tg-emoji emoji-id=4940480187436369099>💁‍♀️</tg-emoji> <b>Быстрый гайд, бести:</b>\n\n<tg-emoji emoji-id=5456197350416486261>1️⃣</tg-emoji> <b>Дропай</b> <code>.help</code><b>, чтобы чекнуть список модулей</b>\n<tg-emoji emoji-id=5456261689026581678>2️⃣</tg-emoji> <b>Дропай</b> <code>.help &lt;Имя модуля/команда&gt;</code><b>, чтобы выкупить лор модуля</b>\n<tg-emoji emoji-id=5458366235886522404>3️⃣</tg-emoji> <b>Дропай</b> <code>.dlmod &lt;ссылка&gt;</code><b>, чтобы залутать модуль по ссылке</b>\n<tg-emoji emoji-id=5456207331920483861>4️⃣</tg-emoji> <b>Дропай</b> <code>.loadmod</code> <b>реплаем на файл, чтобы вытянуть из него модуль</b>\n<tg-emoji emoji-id=5456185418997340146>5️⃣</tg-emoji> <b>Дропай</b> <code>.unloadmod &lt;Имя модуля&gt;</code><b>, чтобы снести модуль</b>\n\n<tg-emoji emoji-id=5456178297941561360>💡</tg-emoji> <b>Goroku проходит вайб-чек и поддерживает модули от Hikka, Friendly-Telegram и GeekTG, ну и свои собственные, рил.</b>\n"
