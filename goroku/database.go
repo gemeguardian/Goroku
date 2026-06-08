@@ -636,7 +636,7 @@ func (db *Database) FetchAsset(assetID int) (*Message, error) {
 
 	hMsg := &Message{
 		ID:      int64(msg.ID),
-		Text:    msg.Message,
+		Text:    entitiesToHTML(msg.Message, msg.Entities),
 		RawText: msg.Message,
 		Out:     msg.Out,
 		Client:  db.client,

@@ -190,3 +190,30 @@ heroku_linux
 
 # Dev scratch
 scratch/
+
+# Goroku downloaded plugins
+.goroku_plugins/
+goroku/modules/*
+!goroku/modules/api_protection.go
+!goroku/modules/eval.go
+!goroku/modules/goroku_backup.go
+!goroku/modules/goroku_config.go
+!goroku/modules/goroku_info.go
+!goroku/modules/goroku_plugin_security.go
+!goroku/modules/goroku_security.go
+!goroku/modules/goroku_settings.go
+!goroku/modules/goroku_web.go
+!goroku/modules/help.go
+!goroku/modules/helpers.go
+!goroku/modules/hot_plugin_linux.go
+!goroku/modules/hot_plugin_other.go
+!goroku/modules/inline_stuff.go
+!goroku/modules/loader.go
+!goroku/modules/presets.go
+!goroku/modules/quickstart.go
+!goroku/modules/settings.go
+!goroku/modules/terminal.go
+!goroku/modules/test.go
+!goroku/modules/translate.go
+!goroku/modules/translations.go
+!goroku/modules/updater.go

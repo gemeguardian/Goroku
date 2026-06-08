@@ -141,7 +141,7 @@ func formatPythonTraceback(tb string) string {
 }
 
 func (m *Eval) EvalCmd(msg *goroku.Message) error {
-	code := utils.GetArgsRaw(msg.Text)
+	code := utils.GetArgsRaw(msg.RawText)
 	if code == "" {
 		reply, err := msg.GetReplyMessage()
 		if err == nil && reply != nil && reply.RawText != "" {
@@ -165,7 +165,7 @@ func (m *Eval) EvalCmd(msg *goroku.Message) error {
 		errTrans := m.getTrans("err", "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Error:</b>\n<pre><code class=\"language-{}\">{}</code></pre>")
 		return msg.Answer(formatTrans(
 			errTrans,
-			"4985626654563894116",
+			"4994652309293105740",
 			"go",
 			utils.EscapeHTML(code),
 			"error",
@@ -174,7 +174,7 @@ func (m *Eval) EvalCmd(msg *goroku.Message) error {
 	}
 
 	evalPyTrans := m.getTrans("eval_py", "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>")
-	outStr := formatTrans(evalPyTrans, "4985626654563894116", "go", utils.EscapeHTML(code))
+	outStr := formatTrans(evalPyTrans, "4994652309293105740", "go", utils.EscapeHTML(code))
 
 	if result != "" || stdout == "" {
 		evalResultTrans := m.getTrans("eval_result", "\n\n<tg-emoji emoji-id=5197688912457245639>✅</tg-emoji><b> Result:</b>\n<pre><code class=\"language-{}\">{}</code></pre>")
@@ -218,6 +218,8 @@ import contextlib
 import io
 import json
 import traceback
+import datetime
+import time
 from types import SimpleNamespace
 
 _ctx = json.loads(%q)
@@ -229,6 +231,116 @@ def _ns(value):
         return [_ns(v) for v in value]
     return value
 
+class PeerUser:
+    def __init__(self, user_id):
+        self.user_id = user_id
+    def __repr__(self):
+        return f"PeerUser(\n  user_id={self.user_id}\n )"
+
+class Message:
+    def __init__(self, data):
+        self._data = data or {}
+        for k, v in self._data.items():
+            setattr(self, k, v)
+        self.peer_id = PeerUser(self._data.get("chat_id") or 0)
+        self.date = datetime.datetime.now(datetime.timezone.utc)
+        self.mentioned = False
+        self.media_unread = False
+        self.silent = False
+        self.post = False
+        self.from_scheduled = False
+        self.legacy = False
+        self.edit_hide = False
+        self.pinned = False
+        self.noforwards = False
+        self.invert_media = False
+        self.offline = False
+        self.video_processing_pending = False
+        self.paid_suggested_post_stars = False
+        self.paid_suggested_post_ton = False
+        self.from_id = PeerUser(self._data.get("sender_id") or 0)
+        self.from_boosts_applied = None
+        self.from_rank = None
+        self.saved_peer_id = None
+        self.fwd_from = None
+        self.via_bot_id = self._data.get("via_bot_id")
+        self.via_business_bot_id = None
+        self.guestchat_via_from = None
+        self.reply_to = None
+        self.media = None
+        self.reply_markup = None
+        self.entities = []
+        self.views = None
+        self.forwards = None
+        self.replies = None
+        self.edit_date = None
+        self.post_author = None
+        self.grouped_id = None
+        self.reactions = None
+        self.restriction_reason = []
+        self.ttl_period = None
+        self.quick_reply_shortcut_id = None
+        self.effect = None
+        self.factcheck = None
+        self.report_delivery_until_date = None
+        self.paid_message_stars = None
+        self.suggested_post = None
+        self.schedule_repeat_period = None
+        self.summary_from_language = None
+
+    def __repr__(self):
+        lines = [
+            f" id={self.id}",
+            f" peer_id={repr(self.peer_id)}",
+            f" date={repr(self.date)}",
+            f" message={repr(self.message)}",
+            f" out={self.out}",
+            f" mentioned={self.mentioned}",
+            f" media_unread={self.media_unread}",
+            f" silent={self.silent}",
+            f" post={self.post}",
+            f" from_scheduled={self.from_scheduled}",
+            f" legacy={self.legacy}",
+            f" edit_hide={self.edit_hide}",
+            f" pinned={self.pinned}",
+            f" noforwards={self.noforwards}",
+            f" invert_media={self.invert_media}",
+            f" offline={self.offline}",
+            f" video_processing_pending={self.video_processing_pending}",
+            f" paid_suggested_post_stars={self.paid_suggested_post_stars}",
+            f" paid_suggested_post_ton={self.paid_suggested_post_ton}",
+            f" from_id={repr(self.from_id)}",
+            f" from_boosts_applied={self.from_boosts_applied}",
+            f" from_rank={self.from_rank}",
+            f" saved_peer_id={self.saved_peer_id}",
+            f" fwd_from={self.fwd_from}",
+            f" via_bot_id={self.via_bot_id}",
+            f" via_business_bot_id={self.via_business_bot_id}",
+            f" guestchat_via_from={self.guestchat_via_from}",
+            f" reply_to={self.reply_to}",
+            f" media={self.media}",
+            f" reply_markup={self.reply_markup}",
+            f" entities={repr(self.entities)}",
+            f" views={self.views}",
+            f" forwards={self.forwards}",
+            f" replies={self.replies}",
+            f" edit_date={self.edit_date}",
+            f" post_author={self.post_author}",
+            f" grouped_id={self.grouped_id}",
+            f" reactions={self.reactions}",
+            f" restriction_reason={repr(self.restriction_reason)}",
+            f" ttl_period={self.ttl_period}",
+            f" quick_reply_shortcut_id={self.quick_reply_shortcut_id}",
+            f" effect={self.effect}",
+            f" factcheck={self.factcheck}",
+            f" report_delivery_until_date={self.report_delivery_until_date}",
+            f" paid_message_stars={self.paid_message_stars}",
+            f" suggested_post={self.suggested_post}",
+            f" schedule_repeat_period={self.schedule_repeat_period}",
+            f" summary_from_language={self.summary_from_language}"
+        ]
+        return "Message(\n" + ",\n".join(lines) + "\n)"
+
 class DBProxy:
     def __init__(self, data):
         self._data = data or {}
@@ -239,8 +351,8 @@ class DBProxy:
     def __getitem__(self, key):
         return self._data[key]
 
-message = m = event = _ns(_ctx.get("message") or {})
-reply = r = _ns(_ctx.get("reply") or {})
+message = m = event = Message(_ctx.get("message") or {})
+reply = r = Message(_ctx.get("reply")) if _ctx.get("reply") else None
 client = c = _ns(_ctx.get("client") or {})
 db = DBProxy(_ctx.get("db") or {})
 
@@ -294,7 +406,7 @@ print(json.dumps(_res_data))
 }
 
 func (m *Eval) EvalPyCmd(msg *goroku.Message) error {
-	code := utils.GetArgsRaw(msg.Text)
+	code := utils.GetArgsRaw(msg.RawText)
 	if code == "" {
 		reply, err := msg.GetReplyMessage()
 		if err == nil && reply != nil && reply.RawText != "" {
@@ -493,7 +605,7 @@ func (m *Eval) ECPPCmd(msg *goroku.Message) error {
 }
 
 func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
-	code := utils.GetArgsRaw(msg.Text)
+	code := utils.GetArgsRaw(msg.RawText)
 	if code == "" {
 		reply, err := msg.GetReplyMessage()
 		if err == nil && reply != nil && reply.RawText != "" {
@@ -622,7 +734,7 @@ func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
 }
 
 func (m *Eval) ENodeCmd(msg *goroku.Message) error {
-	code := utils.GetArgsRaw(msg.Text)
+	code := utils.GetArgsRaw(msg.RawText)
 	if code == "" {
 		reply, err := msg.GetReplyMessage()
 		if err == nil && reply != nil && reply.RawText != "" {

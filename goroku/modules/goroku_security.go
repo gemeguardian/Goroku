@@ -243,6 +243,9 @@ func (m *GorokuSecurity) resolveUserFromMessage(msg *goroku.Message) (resolvedSe
 			return m.resolveSecurityUser(replyMsg.SenderID)
 		}
 	}
+	if msg.IsPrivate && msg.ChatID != m.client.TGID {
+		return m.resolveSecurityUser(msg.ChatID)
+	}
 	return resolvedSecurityUser{}, false
 }
 
@@ -377,6 +380,9 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 		if ol != nil && !pointerContainsID(ol, user.ID) {
 			ol.Append(user.ID)
 		}
+		if sm := m.getSecurityManager(); sm != nil {
+			sm.ReloadRights()
+		}
 		template := m.getTrans("owner_added", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> добавлен в группу</b> <code>owner</code>")
 		return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), utils.EscapeHTML(user.Name)))
 	}
@@ -398,6 +404,9 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 					ol := m.getOwnerList()
 					if ol != nil && !pointerContainsID(ol, user.ID) {
 						ol.Append(user.ID)
+					}
+					if sm := m.getSecurityManager(); sm != nil {
+						sm.ReloadRights()
 					}
 
 					addedTemplate := m.getTrans("owner_added", "добавлен в группу owner")
@@ -462,6 +471,9 @@ func (m *GorokuSecurity) DelownerCmd(msg *goroku.Message) error {
 	}
 
 	pointerRemoveID(m.getOwnerList(), user.ID)
+	if sm := m.getSecurityManager(); sm != nil {
+		sm.ReloadRights()
+	}
 	template := m.getTrans("owner_removed", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> удален из группы</b> <code>owner</code>")
 	return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), utils.EscapeHTML(user.Name)))
 }
@@ -495,25 +507,12 @@ func (m *GorokuSecurity) SudoCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuSecurity) AddsudoCmd(msg *goroku.Message) error {
-	parts := strings.SplitN(msg.Text, " ", 2)
-	var targetUserID int64
-	var targetUserName string
-
-	if len(parts) >= 2 && strings.TrimSpace(parts[1]) != "" {
-		targetUserID, targetUserName = parseUserID(m.client, parts[1])
-	} else if msg.ReplyToMsgID != 0 {
-		replyMsg, err := msg.GetReplyMessage()
-		if err == nil && replyMsg != nil {
-			targetUserID = replyMsg.SenderID
-			targetUserName = fmt.Sprintf("User%d", targetUserID)
-		}
-	}
-
-	if targetUserID == 0 {
+	user, ok := m.resolveUserFromMessage(msg)
+	if !ok {
 		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
 	}
 
-	if targetUserID == m.client.TGID {
+	if user.ID == m.client.TGID {
 		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
@@ -523,49 +522,32 @@ func (m *GorokuSecurity) AddsudoCmd(msg *goroku.Message) error {
 	if slice, ok := raw.([]interface{}); ok {
 		sudoList = slice
 		for _, item := range slice {
-			var sid int64
-			switch v := item.(type) {
-			case float64:
-				sid = int64(v)
-			case int64:
-				sid = v
-			}
-			if sid == targetUserID {
+			if interfaceToInt64(item) == user.ID {
 				alreadyPresent = true
 				break
 			}
 		}
 	}
 	if !alreadyPresent {
-		sudoList = append(sudoList, targetUserID)
+		sudoList = append(sudoList, user.ID)
 		m.db.Set("goroku.security", "sudo", sudoList)
+		if sm := m.getSecurityManager(); sm != nil {
+			sm.ReloadRights()
+		}
 	}
 
 	template := m.getTrans("owner_added", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> добавлен в группу</b> <code>owner</code>")
 	template = strings.ReplaceAll(template, "owner", "sudo")
-	return msg.Answer(formatTrans(template, strconv.FormatInt(targetUserID, 10), targetUserName))
+	return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), user.Name))
 }
 
 func (m *GorokuSecurity) DelsudoCmd(msg *goroku.Message) error {
-	parts := strings.SplitN(msg.Text, " ", 2)
-	var targetUserID int64
-	var targetUserName string
-
-	if len(parts) >= 2 && strings.TrimSpace(parts[1]) != "" {
-		targetUserID, targetUserName = parseUserID(m.client, parts[1])
-	} else if msg.ReplyToMsgID != 0 {
-		replyMsg, err := msg.GetReplyMessage()
-		if err == nil && replyMsg != nil {
-			targetUserID = replyMsg.SenderID
-			targetUserName = fmt.Sprintf("User%d", targetUserID)
-		}
-	}
-
-	if targetUserID == 0 {
+	user, ok := m.resolveUserFromMessage(msg)
+	if !ok {
 		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
 	}
 
-	if targetUserID == m.client.TGID {
+	if user.ID == m.client.TGID {
 		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
@@ -574,14 +556,7 @@ func (m *GorokuSecurity) DelsudoCmd(msg *goroku.Message) error {
 	foundIdx := -1
 	if slice, ok := raw.([]interface{}); ok {
 		for idx, item := range slice {
-			var sid int64
-			switch v := item.(type) {
-			case float64:
-				sid = int64(v)
-			case int64:
-				sid = v
-			}
-			if sid == targetUserID {
+			if interfaceToInt64(item) == user.ID {
 				foundIdx = idx
 				break
 			}
@@ -589,12 +564,15 @@ func (m *GorokuSecurity) DelsudoCmd(msg *goroku.Message) error {
 		if foundIdx != -1 {
 			sudoList = append(slice[:foundIdx], slice[foundIdx+1:]...)
 			m.db.Set("goroku.security", "sudo", sudoList)
+			if sm := m.getSecurityManager(); sm != nil {
+				sm.ReloadRights()
+			}
 		}
 	}
 
 	template := m.getTrans("owner_removed", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> удален из группы</b> <code>owner</code>")
 	template = strings.ReplaceAll(template, "owner", "sudo")
-	return msg.Answer(formatTrans(template, strconv.FormatInt(targetUserID, 10), targetUserName))
+	return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), user.Name))
 }
 
 func (m *GorokuSecurity) SecurityCmd(msg *goroku.Message) error {

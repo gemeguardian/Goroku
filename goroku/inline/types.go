@@ -33,6 +33,7 @@ type Unit struct {
 	AlwaysAllow     []int64
 	DisableSecurity bool
 	OnUnload        func()
+	Module          string
 }
 
 type Button struct {
@@ -93,6 +94,18 @@ func NewInlineMessage(im *InlineManager, unitID, inlineMessageID string) *Inline
 }
 
 func (m *InlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarkup) error {
+	if m.UnitID != "" && m.InlineManager != nil {
+		m.InlineManager.mu.Lock()
+		for _, row := range markup.InlineKeyboard {
+			for _, btn := range row {
+				if btn.CallbackData != nil && *btn.CallbackData != "" {
+					m.InlineManager.buttonUnits[*btn.CallbackData] = m.UnitID
+				}
+			}
+		}
+		m.InlineManager.mu.Unlock()
+	}
+
 	var replyMarkup *tgbotapi.InlineKeyboardMarkup
 	if len(markup.InlineKeyboard) > 0 {
 		replyMarkup = &markup
@@ -166,6 +179,18 @@ func NewBotInlineMessage(im *InlineManager, unitID string, chatID, messageID int
 }
 
 func (m *BotInlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarkup) error {
+	if m.UnitID != "" && m.InlineManager != nil {
+		m.InlineManager.mu.Lock()
+		for _, row := range markup.InlineKeyboard {
+			for _, btn := range row {
+				if btn.CallbackData != nil && *btn.CallbackData != "" {
+					m.InlineManager.buttonUnits[*btn.CallbackData] = m.UnitID
+				}
+			}
+		}
+		m.InlineManager.mu.Unlock()
+	}
+
 	var replyMarkup *tgbotapi.InlineKeyboardMarkup
 	if len(markup.InlineKeyboard) > 0 {
 		replyMarkup = &markup

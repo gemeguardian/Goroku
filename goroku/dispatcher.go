@@ -16,6 +16,7 @@ import (
 var (
 	ruRunes = []rune("ёйцукенгшщзхъфывапролджэячсмитьбю.Ё\"№;%:?ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭ/ЯЧСМИТЬБЮ,")
 	enRunes = []rune("`qwertyuiop[]asdfghjkl;'zxcvbnm,./~@#$%^&QWERTYUIOP{}ASDFGHJKL:\"|ZXCVBNM<>?")
+	cmdNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9_\p{L}]+$`)
 )
 
 var layoutTranslation = func() map[rune]rune {
@@ -419,13 +420,26 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	}
 
 	if strings.HasPrefix(msgText, prefix+prefix) {
-		// Python: message.edit(message.message[len(prefix):])
-		// — edit the same message, stripping one prefix, do NOT send a new message
-		cleaned := msgText[len(prefix):]
 		if msg.Out {
-			_, _ = cd.client.EditMessage(msg.ChatID, msg.ID, cleaned)
-		} else {
-			_, _ = cd.client.SendMessage(msg.ChatID, cleaned)
+			cleaned := msgText[len(prefix):]
+			shouldEdit := false
+			if strings.HasPrefix(cleaned, prefix) {
+				cmdBody := cleaned[len(prefix):]
+				parts := strings.Fields(cmdBody)
+				if len(parts) > 0 {
+					commandName := parts[0]
+					tagParts := strings.Split(commandName, "@")
+					actualCmd := tagParts[0]
+					if cmdNameRegexp.MatchString(actualCmd) {
+						shouldEdit = true
+					}
+				}
+			}
+			if shouldEdit {
+				// Python: message.edit(message.message[len(prefix):])
+				// — edit the same message, stripping one prefix, do NOT send a new message
+				_, _ = cd.client.EditMessage(msg.ChatID, msg.ID, cleaned)
+			}
 		}
 		return
 	}
@@ -504,6 +518,10 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	}
 
 	actualCmd := tagParts[0]
+	actualCmdL := strings.ToLower(actualCmd)
+	if realCmd, exists := cd.modules.aliases[actualCmdL]; exists {
+		actualCmd = realCmd
+	}
 	handler, exists := cd.modules.Dispatch(actualCmd)
 	if !exists {
 		log.Printf("[Dispatcher] Command %q not found in registry\n", actualCmd)

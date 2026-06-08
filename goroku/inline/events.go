@@ -21,6 +21,13 @@ func (im *InlineManager) HandleUpdate(update tgbotapi.Update) {
 	}
 }
 
+func unpackInterface(v reflect.Value) reflect.Value {
+	for v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+	return v
+}
+
 func (im *InlineManager) isUserAuthorizedForInline(userID int64) bool {
 	if userID == im.ownerID() {
 		return true
@@ -45,22 +52,37 @@ func (im *InlineManager) isUserAuthorizedForInline(userID int64) bool {
 		if vClient.Kind() == reflect.Struct {
 			fLoader := vClient.FieldByName("Loader")
 			if fLoader.IsValid() && !fLoader.IsNil() {
-				mDispatcher := fLoader.MethodByName("GetDispatcher")
+				vLoader := unpackInterface(fLoader)
+				mDispatcher := vLoader.MethodByName("GetDispatcher")
 				if mDispatcher.IsValid() {
 					resDisp := mDispatcher.Call(nil)
 					if len(resDisp) > 0 && !resDisp[0].IsNil() {
-						mSec := resDisp[0].MethodByName("GetSecurityManager")
+						vDisp := unpackInterface(resDisp[0])
+						mSec := vDisp.MethodByName("GetSecurityManager")
 						if mSec.IsValid() {
 							resSec := mSec.Call(nil)
 							if len(resSec) > 0 && !resSec[0].IsNil() {
-								vSec := resSec[0]
-								if vSec.Kind() == reflect.Ptr {
-									vSec = vSec.Elem()
+								vSec := unpackInterface(resSec[0])
+								
+								// First try the new IsUserInAllUsers method
+								mCheck := vSec.MethodByName("IsUserInAllUsers")
+								if mCheck.IsValid() {
+									res := mCheck.Call([]reflect.Value{reflect.ValueOf(userID)})
+									if len(res) > 0 && res[0].Kind() == reflect.Bool && res[0].Bool() {
+										return true
+									}
 								}
-								if vSec.Kind() == reflect.Struct {
-									fAllUsers := vSec.FieldByName("allUsers")
+								
+								// Fallback: reflection on allUsers if IsUserInAllUsers is not found
+								vSecStruct := vSec
+								if vSecStruct.Kind() == reflect.Ptr {
+									vSecStruct = vSecStruct.Elem()
+								}
+								if vSecStruct.Kind() == reflect.Struct {
+									fAllUsers := vSecStruct.FieldByName("allUsers")
 									if fAllUsers.IsValid() && !fAllUsers.IsNil() {
-										mToSlice := fAllUsers.MethodByName("ToSlice")
+										vAllUsers := unpackInterface(fAllUsers)
+										mToSlice := vAllUsers.MethodByName("ToSlice")
 										if mToSlice.IsValid() {
 											resSlice := mToSlice.Call(nil)
 											if len(resSlice) > 0 && resSlice[0].Kind() == reflect.Slice {
@@ -285,18 +307,16 @@ func (im *InlineManager) handleCallbackQuery(c *tgbotapi.CallbackQuery) {
 		cb.InlineMessage = NewInlineMessage(im, "", c.InlineMessageID)
 	}
 
-	im.dispatchModuleCallbacks(cb)
-
-	if im.HandleGalleryCallback(cb) {
-		return
-	}
-	if im.HandleListCallback(cb) {
-		return
-	}
-
+	// Resolve the unit and check security first, before running any callbacks or handlers
 	im.mu.RLock()
 	btn, exists := im.customMap[c.Data]
 	unitID := im.buttonUnits[c.Data]
+	if unitID == "" {
+		parts := strings.Split(c.Data, "_")
+		if len(parts) >= 2 && (parts[0] == "gal" || parts[0] == "lst") {
+			unitID = parts[1]
+		}
+	}
 	unit := im.units[unitID]
 	if unit == nil {
 		unit = im.findUnitByButtonDataLocked(c.Data)
@@ -313,16 +333,25 @@ func (im *InlineManager) handleCallbackQuery(c *tgbotapi.CallbackQuery) {
 		cb.BotMessage.UnitID = unitID
 	}
 
+	if unit != nil && !im.isCallbackAllowed(unit, c.From.ID) {
+		_ = cb.Answer("You are not allowed to press this button", true)
+		return
+	}
+
+	im.dispatchModuleCallbacks(cb)
+
+	if im.HandleGalleryCallback(cb) {
+		return
+	}
+	if im.HandleListCallback(cb) {
+		return
+	}
+
 	if !exists {
 		callbackConfig := tgbotapi.CallbackConfig{
 			CallbackQueryID: c.ID,
 		}
 		_, _ = im.bot.Request(callbackConfig)
-		return
-	}
-
-	if unit != nil && !im.isCallbackAllowed(unit, c.From.ID) {
-		_ = cb.Answer("You are not allowed to press this button", true)
 		return
 	}
 
@@ -406,6 +435,22 @@ func (im *InlineManager) answerInlineHelp(q *tgbotapi.InlineQuery) {
 
 func (im *InlineManager) dispatchModuleCallbacks(cb CallbackQuery) {
 	for _, mod := range im.callbackModules() {
+		modName := ""
+		if named, ok := mod.(interface{ Name() string }); ok {
+			modName = named.Name()
+		}
+		// Security check: only allow owners or those who have trust on this module
+		if sm := im.getSecurityManager(); sm != nil {
+			if !im.isUserOwnerOrTrustedForModule(sm, cb.FromID, modName) {
+				continue
+			}
+		} else {
+			// fallback if security manager is not available: only owner
+			if cb.FromID != im.ownerID() {
+				continue
+			}
+		}
+
 		for _, handler := range mod.CallbackHandlers() {
 			if handler == nil {
 				continue
@@ -479,18 +524,141 @@ func (im *InlineManager) findUnitByButtonDataLocked(data string) *Unit {
 }
 
 func (im *InlineManager) isCallbackAllowed(unit *Unit, userID int64) bool {
+	log.Printf("[SecurityDebug] isCallbackAllowed called: userID=%d, ownerID=%d, unit.Module=%q, DisableSecurity=%t, ForceMe=%t\n",
+		userID, im.ownerID(), unit.Module, unit.DisableSecurity, unit.ForceMe)
+
 	if unit.DisableSecurity {
+		log.Printf("[SecurityDebug] Allow click: security is disabled for this unit.\n")
 		return true
 	}
 	for _, allowed := range unit.AlwaysAllow {
 		if allowed == userID {
+			log.Printf("[SecurityDebug] Allow click: userID=%d is in AlwaysAllow list.\n", userID)
 			return true
 		}
 	}
 	if unit.ForceMe {
-		return userID == im.ownerID()
+		res := userID == im.ownerID()
+		log.Printf("[SecurityDebug] ForceMe check: allowed=%t (userID=%d, ownerID=%d)\n", res, userID, im.ownerID())
+		return res
 	}
-	return true
+
+	// Default security check
+	if userID == im.ownerID() {
+		log.Printf("[SecurityDebug] Allow click: userID=%d matches ownerID=%d.\n", userID, im.ownerID())
+		return true
+	}
+
+	if sm := im.getSecurityManager(); sm != nil {
+		// Check owner first using SecurityManager
+		vSec := unpackInterface(reflect.ValueOf(sm))
+		mIsOwner := vSec.MethodByName("IsOwner")
+		if mIsOwner.IsValid() {
+			resVals := mIsOwner.Call([]reflect.Value{reflect.ValueOf(userID)})
+			if len(resVals) > 0 && resVals[0].Kind() == reflect.Bool && resVals[0].Bool() {
+				log.Printf("[SecurityDebug] Allow click: userID=%d is verified owner by SecurityManager.\n", userID)
+				return true
+			}
+		}
+
+		// Check module trust
+		if unit.Module != "" {
+			res := im.isUserOwnerOrTrustedForModule(sm, userID, unit.Module)
+			log.Printf("[SecurityDebug] Module trust check: userID=%d, module=%q, allowed=%t\n", userID, unit.Module, res)
+			return res
+		} else {
+			log.Printf("[SecurityDebug] unit.Module is empty!\n")
+		}
+	} else {
+		log.Printf("[SecurityDebug] SecurityManager is not available!\n")
+	}
+
+	log.Printf("[SecurityDebug] Deny click: userID=%d has no permission for module=%q.\n", userID, unit.Module)
+	return false
+}
+
+func (im *InlineManager) getSecurityManager() interface{} {
+	if im.client == nil {
+		return nil
+	}
+	vClient := reflect.ValueOf(im.client)
+	if vClient.Kind() == reflect.Ptr {
+		vClient = vClient.Elem()
+	}
+	if vClient.Kind() == reflect.Struct {
+		fLoader := vClient.FieldByName("Loader")
+		if fLoader.IsValid() && !fLoader.IsNil() {
+			vLoader := unpackInterface(fLoader)
+			mDispatcher := vLoader.MethodByName("GetDispatcher")
+			if mDispatcher.IsValid() {
+				resDisp := mDispatcher.Call(nil)
+				if len(resDisp) > 0 && !resDisp[0].IsNil() {
+					vDisp := unpackInterface(resDisp[0])
+					mSec := vDisp.MethodByName("GetSecurityManager")
+					if mSec.IsValid() {
+						resSec := mSec.Call(nil)
+						if len(resSec) > 0 && !resSec[0].IsNil() {
+							return resSec[0].Interface()
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (im *InlineManager) isUserOwnerOrTrustedForModule(sm interface{}, userID int64, moduleName string) bool {
+	if userID == im.ownerID() {
+		return true
+	}
+
+	vSec := unpackInterface(reflect.ValueOf(sm))
+	
+	// Try calling IsOwner
+	mIsOwner := vSec.MethodByName("IsOwner")
+	if mIsOwner.IsValid() {
+		res := mIsOwner.Call([]reflect.Value{reflect.ValueOf(userID)})
+		if len(res) > 0 && res[0].Kind() == reflect.Bool && res[0].Bool() {
+			return true
+		}
+	}
+
+	// Try calling CheckModuleAccess
+	mCheck := vSec.MethodByName("CheckModuleAccess")
+	if mCheck.IsValid() {
+		// Try exact module name
+		res := mCheck.Call([]reflect.Value{
+			reflect.ValueOf(userID),
+			reflect.ValueOf(moduleName),
+		})
+		if len(res) > 0 && res[0].Kind() == reflect.Bool && res[0].Bool() {
+			return true
+		}
+
+		// Try without "Goroku" prefix
+		if modTrim := strings.TrimPrefix(moduleName, "Goroku"); modTrim != moduleName {
+			res := mCheck.Call([]reflect.Value{
+				reflect.ValueOf(userID),
+				reflect.ValueOf(modTrim),
+			})
+			if len(res) > 0 && res[0].Kind() == reflect.Bool && res[0].Bool() {
+				return true
+			}
+		}
+
+		// Try without "GorokuPlugin" prefix
+		if modTrimPlugin := strings.TrimPrefix(moduleName, "GorokuPlugin"); modTrimPlugin != moduleName {
+			res := mCheck.Call([]reflect.Value{
+				reflect.ValueOf(userID),
+				reflect.ValueOf(modTrimPlugin),
+			})
+			if len(res) > 0 && res[0].Kind() == reflect.Bool && res[0].Bool() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (im *InlineManager) ownerID() int64 {

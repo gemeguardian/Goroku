@@ -1,18 +1,13 @@
 package modules
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"goroku/goroku"
 	"goroku/goroku/inline"
-	"goroku/goroku/utils"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 )
 
 func closeForm(call inline.CallbackQuery) error {
@@ -66,55 +61,7 @@ func RegisterModulesAndRebuild(msg *goroku.Message, structNames []string) error 
 	if msg != nil && msg.Client != nil {
 		return RegisterModulesHot(msg, structNames)
 	}
-
-	_ = msg.Answer("🛠 <b>Registering modules and compiling...</b>")
-
-	mainPath := filepath.Join(goroku.BasePath, "main.go")
-	mainBytes, err := os.ReadFile(mainPath)
-	if err != nil {
-		return fmt.Errorf("failed to read main.go: %v", err)
-	}
-
-	mainStr := string(mainBytes)
-	modified := false
-
-	for _, structName := range structNames {
-		regStr := fmt.Sprintf("&modules.%s{}", structName)
-		if strings.Contains(mainStr, regStr) {
-			continue
-		}
-
-		anchor := "goroku.Main([]goroku.Module{"
-		idx := strings.Index(mainStr, anchor)
-		if idx == -1 {
-			return fmt.Errorf("could not find module registration list in main.go")
-		}
-
-		insertIdx := idx + len(anchor)
-		mainStr = mainStr[:insertIdx] + "\n\t\t" + regStr + "," + mainStr[insertIdx:]
-		modified = true
-	}
-
-	if !modified {
-		return RebuildAndRestart(msg)
-	}
-
-	backupPath := mainPath + ".bak"
-	_ = os.WriteFile(backupPath, mainBytes, 0644)
-	defer os.Remove(backupPath)
-
-	err = os.WriteFile(mainPath, []byte(mainStr), 0644)
-	if err != nil {
-		return fmt.Errorf("failed to update main.go: %v", err)
-	}
-
-	err = RebuildAndRestart(msg)
-	if err != nil {
-		_ = os.WriteFile(mainPath, mainBytes, 0644)
-		return err
-	}
-
-	return nil
+	return fmt.Errorf("client is required for hot module loading")
 }
 
 func findModuleSource(structName string) (string, error) {
@@ -141,28 +88,6 @@ func findModuleSource(structName string) (string, error) {
 	}
 
 	return "", fmt.Errorf("source for module struct %s not found", structName)
-}
-
-func RebuildAndRestart(msg *goroku.Message) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	goPath := utils.GetGoPath()
-	cmd := exec.CommandContext(ctx, goPath, "build", "-o", "goroku_bin")
-	cmd.Dir = goroku.BasePath
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("compilation failed:\n%s", out.String())
-	}
-
-	_ = msg.Answer("✅ <b>Rebuild successful! Restarting bot...</b>")
-	time.Sleep(1 * time.Second)
-	goroku.Restart()
-	return nil
 }
 
 func formatTrans(trans string, args ...string) string {

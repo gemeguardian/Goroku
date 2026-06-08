@@ -25,6 +25,7 @@ var (
 	MemeLanguages = map[string]string{
 		"leet":   "🏴‍☠️ 1337",
 		"uwu":    "🏴‍☠️ UwU",
+		"uwu_ru": "🏴‍☠️ UwU(Ru)",
 		"tiktok": "🏴‍☠️ TikTokKid",
 		"neofit": "🏴‍☠️ Neofit",
 	}

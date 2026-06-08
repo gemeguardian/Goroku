@@ -3,6 +3,7 @@ package modules
 import (
 	"fmt"
 	"html"
+	"regexp"
 	"goroku/goroku"
 	"goroku/goroku/utils"
 	"sort"
@@ -542,12 +543,17 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 			name = val
 		}
 		name = getTrans(m.translator, found.Name(), "name", name)
+		nameEsc := escapeHTMLExceptAllowed(name)
 
-		reply := fmt.Sprintf("%s <b>%s</b>:", descIcon, html.EscapeString(name))
+		reply := fmt.Sprintf("%s <b>%s</b>:", descIcon, nameEsc)
 
-		clsDoc := getTrans(m.translator, found.Name(), "_cls_doc", "")
+		defClsDoc := ""
+		if val, exists := found.Strings()["_cls_doc"]; exists {
+			defClsDoc = val
+		}
+		clsDoc := getTrans(m.translator, found.Name(), "_cls_doc", defClsDoc)
 		if clsDoc != "" {
-			reply += fmt.Sprintf("\n<i>ℹ️ %s\n</i>", html.EscapeString(clsDoc))
+			reply += fmt.Sprintf("\n<i>ℹ️ %s\n</i>", escapeHTMLExceptAllowed(clsDoc))
 		}
 
 		cmds := found.Commands()
@@ -571,8 +577,12 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 				aliasStr = fmt.Sprintf(" (%s)", strings.Join(aliasPieces, ", "))
 			}
 
-			doc := getTrans(m.translator, found.Name(), "_cmd_doc_"+cmd, getTrans(m.translator, "Help", "undoc", "🦥 No docs"))
-			escapedDoc := html.EscapeString(doc)
+			defDoc := getTrans(m.translator, "Help", "undoc", "🦥 No docs")
+			if val, exists := found.Strings()["_cmd_doc_"+cmd]; exists {
+				defDoc = val
+			}
+			doc := getTrans(m.translator, found.Name(), "_cmd_doc_"+cmd, defDoc)
+			escapedDoc := escapeHTMLExceptAllowed(doc)
 
 			lines = append(lines, fmt.Sprintf("%s <code>%s%s</code>%s %s", commandEmoji, html.EscapeString(prefix), cmd, aliasStr, escapedDoc))
 		}
@@ -601,4 +611,26 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 	}
 
 	return msg.Answer(responseText, opts...)
+}
+
+var allowedTags = regexp.MustCompile(`(?i)</?(b|i|u|s|code|pre|tg-emoji|blockquote|a|tg-spoiler)(?:\s+[^>]*)?>`)
+
+func escapeHTMLExceptAllowed(s string) string {
+	type placeholder struct {
+		id  string
+		tag string
+	}
+	var phs []placeholder
+	i := 0
+	result := allowedTags.ReplaceAllStringFunc(s, func(tag string) string {
+		ph := fmt.Sprintf("__TAG_PH_%d__", i)
+		phs = append(phs, placeholder{id: ph, tag: tag})
+		i++
+		return ph
+	})
+	result = html.EscapeString(result)
+	for _, ph := range phs {
+		result = strings.Replace(result, ph.id, ph.tag, 1)
+	}
+	return result
 }

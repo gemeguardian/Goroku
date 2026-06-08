@@ -2,6 +2,9 @@ package inline
 
 import (
 	"fmt"
+	"regexp"
+	"runtime"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -12,6 +15,9 @@ func (im *InlineManager) StoreUnit(unitID string, unit *Unit) {
 	defer im.mu.Unlock()
 	if unit.TTL.IsZero() {
 		unit.TTL = time.Now().Add(im.markupTTL)
+	}
+	if unit.Module == "" {
+		unit.Module = im.detectCallingModule()
 	}
 	for rowIdx := range unit.Buttons {
 		for btnIdx := range unit.Buttons[rowIdx] {
@@ -43,13 +49,20 @@ func (im *InlineManager) GetUnit(unitID string) (*Unit, bool) {
 	return unit, ok
 }
 
+var htmlTagRegex = regexp.MustCompile(`<[^>]+>`)
+
+func stripHTML(s string) string {
+	return htmlTagRegex.ReplaceAllString(s, "")
+}
+
 func (im *InlineManager) GenerateMarkup(buttons [][]Button) tgbotapi.InlineKeyboardMarkup {
 	var rows [][]tgbotapi.InlineKeyboardButton
 	for _, row := range buttons {
 		var line []tgbotapi.InlineKeyboardButton
 		for _, btn := range row {
+			btnText := stripHTML(btn.Text)
 			if btn.URL != "" {
-				line = append(line, tgbotapi.NewInlineKeyboardButtonURL(btn.Text, btn.URL))
+				line = append(line, tgbotapi.NewInlineKeyboardButtonURL(btnText, btn.URL))
 			} else if btn.Input != "" {
 				switchQuery := btn.SwitchQuery
 				if switchQuery == "" {
@@ -61,7 +74,7 @@ func (im *InlineManager) GenerateMarkup(buttons [][]Button) tgbotapi.InlineKeybo
 				}
 				swVal := switchQuery + " "
 				line = append(line, tgbotapi.InlineKeyboardButton{
-					Text:                         btn.Text,
+					Text:                         btnText,
 					SwitchInlineQueryCurrentChat: &swVal,
 				})
 			} else {
@@ -73,7 +86,7 @@ func (im *InlineManager) GenerateMarkup(buttons [][]Button) tgbotapi.InlineKeybo
 					im.customMap[btn.Data] = btn
 					im.mu.Unlock()
 				}
-				line = append(line, tgbotapi.NewInlineKeyboardButtonData(btn.Text, btn.Data))
+				line = append(line, tgbotapi.NewInlineKeyboardButtonData(btnText, btn.Data))
 			}
 		}
 		rows = append(rows, line)
@@ -95,6 +108,16 @@ func (im *InlineManager) EditUnit(unitID string, text string, buttons [][]Button
 	unit.Text = text
 	if buttons != nil {
 		unit.Buttons = buttons
+		for _, row := range buttons {
+			for _, btn := range row {
+				if btn.Data != "" {
+					im.buttonUnits[btn.Data] = unitID
+				}
+				if btn.SwitchQuery != "" {
+					im.buttonUnits[btn.SwitchQuery] = unitID
+				}
+			}
+		}
 	}
 	im.mu.Unlock()
 
@@ -167,4 +190,48 @@ func (im *InlineManager) removeUnitLocked(unitID string) {
 	delete(im.units, unitID)
 	delete(im.activeInlineMessages, unitID)
 	delete(im.activeMessageIDs, unitID)
+}
+
+func (im *InlineManager) detectCallingModule() string {
+	pcs := make([]uintptr, 15)
+	n := runtime.Callers(2, pcs) // start from caller of the current function
+	if n == 0 {
+		return ""
+	}
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		frame, more := frames.Next()
+		// Skip all frames inside the inline package
+		if strings.Contains(frame.Function, "goroku/inline") {
+			if !more {
+				break
+			}
+			continue
+		}
+
+		// This is the first frame outside "goroku/inline"!
+		funcName := frame.Function
+
+		// Parse the struct/receiver name
+		if idx := strings.LastIndex(funcName, "/"); idx != -1 {
+			funcName = funcName[idx+1:]
+		}
+		if idx := strings.Index(funcName, "."); idx != -1 {
+			rest := funcName[idx+1:] // "(*GorokuBackup).SomeMethod" or "SomeFunction"
+			rest = strings.TrimPrefix(rest, "*")
+			rest = strings.TrimPrefix(rest, "(")
+			rest = strings.TrimPrefix(rest, "*")
+			if closeIdx := strings.Index(rest, ")"); closeIdx != -1 {
+				return rest[:closeIdx]
+			}
+			if dotIdx := strings.Index(rest, "."); dotIdx != -1 {
+				return rest[:dotIdx]
+			}
+			return rest
+		}
+		if !more {
+			break
+		}
+	}
+	return ""
 }

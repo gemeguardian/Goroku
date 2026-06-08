@@ -131,10 +131,17 @@ func (sm *SecurityManager) Stop() {
 	}
 }
 
+func (sm *SecurityManager) ReloadRights() {
+	sm.reloadRights()
+}
+
 func (sm *SecurityManager) reloadRights() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	sm.reloadRightsLocked()
+}
 
+func (sm *SecurityManager) reloadRightsLocked() {
 	// Ensure client owner ID is in the list of owners
 	hasOwner := false
 	ownerSlice := sm.owner.ToSlice()
@@ -229,6 +236,7 @@ func (sm *SecurityManager) ApplySgroups(sgroups map[string]SecurityGroup) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.sgroups = sgroups
+	sm.reloadRightsLocked()
 }
 
 func (sm *SecurityManager) Check(msg *Message, command string) bool {
@@ -595,6 +603,8 @@ func (sm *SecurityManager) AddRule(targetType string, targetID int64, ruleType, 
 	} else if targetType == "chat" {
 		sm.tsecChat.Append(newRule)
 	}
+
+	sm.reloadRightsLocked()
 }
 
 func (sm *SecurityManager) AddSecurityRule(targetType string, rule SecurityRule) {
@@ -605,6 +615,7 @@ func (sm *SecurityManager) AddSecurityRule(targetType string, rule SecurityRule)
 	} else if targetType == "chat" {
 		sm.tsecChat.Append(rule)
 	}
+	sm.reloadRightsLocked()
 }
 
 // RemoveRules removes all security rules for a given target ID.
@@ -628,6 +639,9 @@ func (sm *SecurityManager) RemoveRules(targetType string, targetID int64) bool {
 			list.Remove(i)
 			any = true
 		}
+	}
+	if any {
+		sm.reloadRightsLocked()
 	}
 	return any
 }
@@ -653,6 +667,9 @@ func (sm *SecurityManager) RemoveRule(targetType string, targetID int64, ruleNam
 			list.Remove(i)
 			any = true
 		}
+	}
+	if any {
+		sm.reloadRightsLocked()
 	}
 	return any
 }
@@ -744,4 +761,103 @@ func (sm *SecurityManager) CheckTsecInline(userID int64, command string) bool {
 	}
 	return false
 }
+
+func (sm *SecurityManager) IsOwner(userID int64) bool {
+	if userID == sm.client.TGID {
+		return true
+	}
+	for _, ownerVal := range sm.owner.ToSlice() {
+		var id int64
+		switch v := ownerVal.(type) {
+		case float64:
+			id = int64(v)
+		case int64:
+			id = v
+		}
+		if userID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (sm *SecurityManager) IsUserInAllUsers(userID int64) bool {
+	if sm.IsOwner(userID) {
+		return true
+	}
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	for _, idVal := range sm.allUsers.ToSlice() {
+		var id int64
+		switch v := idVal.(type) {
+		case float64:
+			id = int64(v)
+		case int64:
+			id = v
+		}
+		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+
+func (sm *SecurityManager) CheckModuleAccess(userID int64, moduleName string) bool {
+	if sm.IsOwner(userID) {
+		return true
+	}
+
+	// Read blacklist user IDs
+	blacklistVal := sm.db.Get("goroku.main", "blacklist_users", []interface{}{})
+	if blacklistSlice, ok := blacklistVal.([]interface{}); ok {
+		for _, bVal := range blacklistSlice {
+			var bid int64
+			switch v := bVal.(type) {
+			case float64:
+				bid = int64(v)
+			case int64:
+				bid = v
+			}
+			if userID == bid {
+				return false
+			}
+		}
+	}
+
+	// Check temporary tsec user rules
+	for _, rule := range sm.GetUserRules() {
+		if rule.Target == userID {
+			if rule.RuleType == "module" && strings.EqualFold(rule.Rule, moduleName) {
+				return true
+			}
+		}
+	}
+
+	// Check security groups (sgroups)
+	sm.mu.RLock()
+	for _, sgroup := range sm.sgroups {
+		hasUser := false
+		for _, u := range sgroup.Users {
+			if u == userID {
+				hasUser = true
+				break
+			}
+		}
+		if hasUser {
+			for _, perm := range sgroup.Permissions {
+				ruleType, _ := perm["rule_type"].(string)
+				ruleName, _ := perm["rule"].(string)
+				if ruleType == "module" && strings.EqualFold(ruleName, moduleName) {
+					sm.mu.RUnlock()
+					return true
+				}
+			}
+		}
+	}
+	sm.mu.RUnlock()
+
+	return false
+}
+
 

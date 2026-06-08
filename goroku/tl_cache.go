@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sort"
 	"time"
 	"unicode/utf16"
 
@@ -386,6 +387,9 @@ func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass,
 		return v, nil
 	case int64:
 		id := v
+		if peer, err := c.resolvePeerFromTelegram(id); err == nil {
+			return peer, nil
+		}
 		idStr := strconv.FormatInt(id, 10)
 		if strings.HasPrefix(idStr, "-100") {
 			return nil, fmt.Errorf("channel %d not found in entity cache", id)
@@ -405,6 +409,9 @@ func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass,
 			if peer, ok := record.Entity.(tg.InputPeerClass); ok {
 				return peer, nil
 			}
+		}
+		if peer, err := c.resolvePeerFromTelegram(id); err == nil {
+			return peer, nil
 		}
 		idStr := strconv.FormatInt(id, 10)
 		if strings.HasPrefix(idStr, "-100") {
@@ -458,6 +465,96 @@ func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass,
 		}
 	}
 	return nil, fmt.Errorf("cannot resolve peer: %v", chat)
+}
+
+func (c *CustomTelegramClient) resolvePeerFromTelegram(id int64) (tg.InputPeerClass, error) {
+	idStr := strconv.FormatInt(id, 10)
+	if strings.HasPrefix(idStr, "-100") {
+		rawChanID, err := strconv.ParseInt(strings.TrimPrefix(idStr, "-100"), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		res, err := c.rawAPI.ChannelsGetChannels(c.ctx, []tg.InputChannelClass{&tg.InputChannel{ChannelID: rawChanID, AccessHash: 0}})
+		if err != nil {
+			return nil, err
+		}
+		var chats []tg.ChatClass
+		switch cVal := res.(type) {
+		case *tg.MessagesChats:
+			chats = cVal.Chats
+		case *tg.MessagesChatsSlice:
+			chats = cVal.Chats
+		}
+		if len(chats) > 0 {
+			entChans := make(map[int64]*tg.Channel)
+			for _, chatClass := range chats {
+				if ch, ok := chatClass.(*tg.Channel); ok {
+					entChans[ch.ID] = ch
+				}
+			}
+			c.cacheEntities(tg.Entities{Channels: entChans})
+			c.cacheMu.RLock()
+			record, ok := c.GorokuEntityCache[normalizeEntityCacheKey(id)]
+			c.cacheMu.RUnlock()
+			if ok {
+				if peer, ok := record.Entity.(tg.InputPeerClass); ok {
+					return peer, nil
+				}
+			}
+		}
+	} else if id < 0 {
+		res, err := c.rawAPI.MessagesGetChats(c.ctx, []int64{-id})
+		if err != nil {
+			return nil, err
+		}
+		var chats []tg.ChatClass
+		switch cVal := res.(type) {
+		case *tg.MessagesChats:
+			chats = cVal.Chats
+		case *tg.MessagesChatsSlice:
+			chats = cVal.Chats
+		}
+		if len(chats) > 0 {
+			entChats := make(map[int64]*tg.Chat)
+			for _, chatClass := range chats {
+				if ch, ok := chatClass.(*tg.Chat); ok {
+					entChats[ch.ID] = ch
+				}
+			}
+			c.cacheEntities(tg.Entities{Chats: entChats})
+			c.cacheMu.RLock()
+			record, ok := c.GorokuEntityCache[normalizeEntityCacheKey(id)]
+			c.cacheMu.RUnlock()
+			if ok {
+				if peer, ok := record.Entity.(tg.InputPeerClass); ok {
+					return peer, nil
+				}
+			}
+		}
+	} else {
+		res, err := c.rawAPI.UsersGetUsers(c.ctx, []tg.InputUserClass{&tg.InputUser{UserID: id, AccessHash: 0}})
+		if err != nil {
+			return nil, err
+		}
+		if len(res) > 0 {
+			entUsers := make(map[int64]*tg.User)
+			for _, uClass := range res {
+				if u, ok := uClass.(*tg.User); ok {
+					entUsers[u.ID] = u
+				}
+			}
+			c.cacheEntities(tg.Entities{Users: entUsers})
+			c.cacheMu.RLock()
+			record, ok := c.GorokuEntityCache[normalizeEntityCacheKey(id)]
+			c.cacheMu.RUnlock()
+			if ok {
+				if peer, ok := record.Entity.(tg.InputPeerClass); ok {
+					return peer, nil
+				}
+			}
+		}
+	}
+	return nil, fmt.Errorf("peer %d not resolved from Telegram", id)
 }
 
 func (c *CustomTelegramClient) cacheEntities(e tg.Entities) {
@@ -520,7 +617,7 @@ func (c *CustomTelegramClient) buildMessageFromTG(msg *tg.Message) *Message {
 		ID:       int64(msg.ID),
 		ChatID:   0,
 		SenderID: 0,
-		Text:     msg.Message,
+		Text:     entitiesToHTML(msg.Message, msg.Entities),
 		RawText:  msg.Message,
 		Out:      msg.Out,
 		Client:   c,
@@ -558,6 +655,8 @@ func (c *CustomTelegramClient) buildMessageFromTG(msg *tg.Message) *Message {
 		}
 	} else if msg.Out || (hMsg.IsPrivate && hMsg.ChatID == c.TGID) {
 		hMsg.SenderID = c.TGID
+	} else if hMsg.IsPrivate {
+		hMsg.SenderID = hMsg.ChatID
 	}
 	if c.TGID != 0 && hMsg.SenderID == c.TGID {
 		hMsg.Out = true
@@ -565,6 +664,128 @@ func (c *CustomTelegramClient) buildMessageFromTG(msg *tg.Message) *Message {
 
 	return hMsg
 }
+
+type htmlTagEvent struct {
+	offset  int
+	isClose bool
+	tagType string
+	tagArg  string
+	length  int
+	order   int
+}
+
+func entitiesToHTML(text string, entities []tg.MessageEntityClass) string {
+	if len(entities) == 0 {
+		return stdhtml.EscapeString(text)
+	}
+
+	u16 := utf16.Encode([]rune(text))
+	var events []htmlTagEvent
+
+	for idx, entity := range entities {
+		var offset, length int
+		var tagType, tagArg string
+		valid := false
+
+		switch e := entity.(type) {
+		case *tg.MessageEntityBold:
+			offset, length, tagType = e.Offset, e.Length, "b"
+			valid = true
+		case *tg.MessageEntityItalic:
+			offset, length, tagType = e.Offset, e.Length, "i"
+			valid = true
+		case *tg.MessageEntityUnderline:
+			offset, length, tagType = e.Offset, e.Length, "u"
+			valid = true
+		case *tg.MessageEntityStrike:
+			offset, length, tagType = e.Offset, e.Length, "s"
+			valid = true
+		case *tg.MessageEntityCode:
+			offset, length, tagType = e.Offset, e.Length, "code"
+			valid = true
+		case *tg.MessageEntityPre:
+			offset, length, tagType = e.Offset, e.Length, "pre"
+			valid = true
+		case *tg.MessageEntitySpoiler:
+			offset, length, tagType = e.Offset, e.Length, "tg-spoiler"
+			valid = true
+		case *tg.MessageEntityBlockquote:
+			offset, length, tagType = e.Offset, e.Length, "blockquote"
+			if e.Collapsed {
+				tagArg = " expandable"
+			}
+			valid = true
+		case *tg.MessageEntityTextURL:
+			offset, length, tagType, tagArg = e.Offset, e.Length, "a", fmt.Sprintf(" href=\"%s\"", e.URL)
+			valid = true
+		case *tg.MessageEntityMentionName:
+			offset, length, tagType, tagArg = e.Offset, e.Length, "a", fmt.Sprintf(" href=\"tg://user?id=%d\"", e.UserID)
+			valid = true
+		case *tg.MessageEntityCustomEmoji:
+			offset, length, tagType, tagArg = e.Offset, e.Length, "tg-emoji", fmt.Sprintf(" emoji-id=\"%d\"", e.DocumentID)
+			valid = true
+		}
+
+		if valid && offset >= 0 && offset <= len(u16) && offset+length <= len(u16) {
+			events = append(events, htmlTagEvent{
+				offset:  offset,
+				isClose: false,
+				tagType: tagType,
+				tagArg:  tagArg,
+				length:  length,
+				order:   idx,
+			})
+			events = append(events, htmlTagEvent{
+				offset:  offset + length,
+				isClose: true,
+				tagType: tagType,
+				order:   idx,
+			})
+		}
+	}
+
+	sort.Slice(events, func(i, j int) bool {
+		ei, ej := events[i], events[j]
+		if ei.offset != ej.offset {
+			return ei.offset < ej.offset
+		}
+		if ei.isClose != ej.isClose {
+			return ei.isClose
+		}
+		if ei.isClose {
+			return ei.order > ej.order
+		}
+		if ei.length != ej.length {
+			return ei.length > ej.length
+		}
+		return ei.order < ej.order
+	})
+
+	var result strings.Builder
+	lastOffset := 0
+
+	for _, ev := range events {
+		if ev.offset > lastOffset {
+			chunk := string(utf16.Decode(u16[lastOffset:ev.offset]))
+			result.WriteString(stdhtml.EscapeString(chunk))
+			lastOffset = ev.offset
+		}
+
+		if ev.isClose {
+			result.WriteString("</" + ev.tagType + ">")
+		} else {
+			result.WriteString("<" + ev.tagType + ev.tagArg + ">")
+		}
+	}
+
+	if lastOffset < len(u16) {
+		chunk := string(utf16.Decode(u16[lastOffset:]))
+		result.WriteString(stdhtml.EscapeString(chunk))
+	}
+
+	return result.String()
+}
+
 
 type forbiddenInvoker struct {
 	parent tg.Invoker
@@ -1182,12 +1403,18 @@ func (c *CustomTelegramClient) SendFileWithOptions(chat interface{}, file interf
 		}
 	case []byte:
 		filename = "file.bin"
+		if named, ok := file.(interface{ Name() string }); ok {
+			filename = named.Name()
+		}
 		inputFile, err = up.FromBytes(c.ctx, filename, v)
 		if err != nil {
 			return nil, err
 		}
 	case io.Reader:
 		filename = "file.bin"
+		if named, ok := v.(interface{ Name() string }); ok {
+			filename = named.Name()
+		}
 		inputFile, err = up.FromReader(c.ctx, filename, v)
 		if err != nil {
 			return nil, err

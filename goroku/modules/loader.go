@@ -417,6 +417,19 @@ func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 func (m *LoaderModule) LoadmodCmd(msg *goroku.Message) error {
 	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
 	if rawArgs == "" {
+		if msg.ReplyToMsgID != 0 {
+			replyMsg, err := msg.GetReplyMessage()
+			if err == nil && replyMsg != nil && replyMsg.Media != nil {
+				var buf bytes.Buffer
+				err = m.client.DownloadMedia(replyMsg.Media, &buf)
+				if err == nil {
+					rawArgs = buf.String()
+				}
+			}
+		}
+	}
+
+	if rawArgs == "" {
 		msg.Text = m.getTrans("provide_module", "⚠️ <b>Provide a module to load</b>")
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
@@ -508,10 +521,13 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 	}
 
 	// Check if this is a system module (statically registered, not in loaded_modules)
+	var matchedKey string
 	isSystem := true
 	for k := range loadedMods {
-		if strings.ToLower(k) == modName {
+		kClean := strings.ReplaceAll(strings.ToLower(k), "module", "")
+		if strings.ToLower(k) == modName || kClean == modName {
 			isSystem = false
+			matchedKey = k
 			break
 		}
 	}
@@ -549,13 +565,10 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	destPathGo := filepath.Join(goroku.BasePath, "goroku", "modules", foundName+".go")
-	_ = os.Remove(destPathGo)
-
-	for k := range loadedMods {
-		if strings.ToLower(k) == modName {
-			delete(loadedMods, k)
-		}
+	if matchedKey != "" {
+		destPathGo := filepath.Join(goroku.BasePath, "goroku", "modules", matchedKey+".go")
+		_ = os.Remove(destPathGo)
+		delete(loadedMods, matchedKey)
 	}
 	m.db.Set("Loader", "loaded_modules", loadedMods)
 	m.db.Save()
