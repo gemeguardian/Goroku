@@ -862,7 +862,7 @@ func (m *SettingsModule) GorokuCmd(msg *goroku.Message) error {
 
 	var opts []goroku.MsgOption
 	if msg.ReplyToMsgID != 0 {
-		opts = append(opts, WithReplyTo(int32(msg.ReplyToMsgID)))
+		opts = append(opts, goroku.WithReplyTo(int64(msg.ReplyToMsgID)))
 	}
 
 	if msg.Out {
@@ -931,7 +931,7 @@ func (m *SettingsModule) InstallationCmd(msg *goroku.Message) error {
 
 	var opts []goroku.MsgOption
 	if msg.ReplyToMsgID != 0 {
-		opts = append(opts, WithReplyTo(int32(msg.ReplyToMsgID)))
+		opts = append(opts, goroku.WithReplyTo(int64(msg.ReplyToMsgID)))
 	}
 
 	if msg.Out {

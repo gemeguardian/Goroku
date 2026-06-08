@@ -12,10 +12,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"html"
 
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"gopkg.in/natefinch/lumberjack.v2"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"goroku/goroku/inline"
 )
 
 type TelegramLogsHandler struct {
@@ -94,7 +98,13 @@ func (h *TelegramLogsHandler) flush() {
 
 	peer, err := h.client.ResolvePeer(h.logChatID)
 	if err != nil {
-		peer = &tg.InputPeerChannel{ChannelID: h.logChatID}
+		cid := h.logChatID
+		if cid < -1000000000000 {
+			cid = -cid - 1000000000000
+		} else if cid < 0 {
+			cid = -cid
+		}
+		peer = &tg.InputPeerChannel{ChannelID: cid}
 	}
 
 	// Retrieve "Logs" topic ID if available from the database cache
@@ -121,6 +131,36 @@ func (h *TelegramLogsHandler) flush() {
 				}
 			}
 		}
+	}
+
+	// Route logs through the helper inline bot if it is complete and ready
+	var botClient *tgbotapi.BotAPI
+	if h.client.GorokuInline != nil {
+		if im, ok := h.client.GorokuInline.(*inline.InlineManager); ok && im != nil && im.IsComplete() {
+			botClient = im.GetBotAPI()
+		}
+	}
+
+	if botClient != nil {
+		targetBotChatID := h.client.ToBotAPIChatID(h.logChatID)
+		if len(chunks) > 5 {
+			allText := strings.Join(records, "")
+			fileBytes := tgbotapi.FileBytes{Name: "goroku-logs.txt", Bytes: []byte(allText)}
+			_, err = SendDocumentWithTopic(botClient, targetBotChatID, fileBytes, "📋 Goroku Logs (too large to send as text)", int(topicID))
+			if err != nil {
+				log.Printf("Failed to send logs file via bot: %v\n", err)
+			}
+			return
+		}
+
+		for _, chunk := range chunks {
+			msgText := fmt.Sprintf("<code>%s</code>", html.EscapeString(chunk))
+			_, err = SendMessageWithTopic(botClient, targetBotChatID, msgText, int(topicID))
+			if err != nil {
+				log.Printf("Failed to send logs message via bot: %v\n", err)
+			}
+		}
+		return
 	}
 
 	var replyTo tg.InputReplyToClass
@@ -161,9 +201,11 @@ func (h *TelegramLogsHandler) flush() {
 
 	for _, chunk := range chunks {
 		msg := fmt.Sprintf("<code>%s</code>", chunk)
+		plainText, entities := parseHTML(msg)
 		_, err := h.client.rawAPI.MessagesSendMessage(h.client.ctx, &tg.MessagesSendMessageRequest{
 			Peer:     peer,
-			Message:  msg,
+			Message:  plainText,
+			Entities: entities,
 			ReplyTo:  replyTo,
 			RandomID: rand.Int63(),
 		})

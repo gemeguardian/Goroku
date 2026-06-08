@@ -20,6 +20,8 @@ import (
 
 	"goroku/goroku/inline"
 
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
 	"github.com/gotd/td/bin"
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
@@ -557,7 +559,7 @@ func (c *CustomTelegramClient) buildMessageFromTG(msg *tg.Message) *Message {
 	} else if msg.Out || (hMsg.IsPrivate && hMsg.ChatID == c.TGID) {
 		hMsg.SenderID = c.TGID
 	}
-	if hMsg.IsPrivate && hMsg.ChatID == c.TGID && hMsg.SenderID == c.TGID {
+	if c.TGID != 0 && hMsg.SenderID == c.TGID {
 		hMsg.Out = true
 	}
 
@@ -678,7 +680,13 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 			}
 		}
 	}
-	return f.parent.Invoke(ctx, input, output)
+	err := f.parent.Invoke(ctx, input, output)
+	if err != nil {
+		if strings.Contains(err.Error(), "AUTH_KEY_UNREGISTERED") {
+			HandleAuthKeyUnregistered(f.client.TGID, f.client.SessionPath)
+		}
+	}
+	return err
 }
 
 func (c *CustomTelegramClient) Connect() error {
@@ -703,7 +711,26 @@ func (c *CustomTelegramClient) Connect() error {
 		if !ok {
 			return nil
 		}
-		log.Printf("[Telegram] New message received: ID=%d, Text=%q, Out=%t, PeerID=%v, FromID=%v\n", msg.ID, msg.Message, msg.Out, msg.PeerID, msg.FromID)
+
+		hMsg := c.buildMessageFromTG(msg)
+		if c.Loader != nil {
+			if modules, ok := c.Loader.(*Modules); ok {
+				disp := modules.GetDispatcher()
+				if disp != nil {
+					disp.HandleCommand(hMsg)
+					disp.HandleIncoming(hMsg)
+				}
+			}
+		}
+		return nil
+	})
+
+	dispatcher.OnNewChannelMessage(func(ctx context.Context, e tg.Entities, u *tg.UpdateNewChannelMessage) error {
+		c.cacheEntities(e)
+		msg, ok := u.Message.(*tg.Message)
+		if !ok {
+			return nil
+		}
 
 		hMsg := c.buildMessageFromTG(msg)
 		if c.Loader != nil {
@@ -822,6 +849,9 @@ func (c *CustomTelegramClient) Connect() error {
 		})
 		if err != nil {
 			log.Printf("gotd client run error: %v\n", err)
+			if strings.Contains(err.Error(), "AUTH_KEY_UNREGISTERED") {
+				HandleAuthKeyUnregistered(c.TGID, c.SessionPath)
+			}
 			select {
 			case connectErrCh <- err:
 			default:
@@ -912,11 +942,169 @@ func (c *CustomTelegramClient) CheckBot(username string) (bool, error) {
 	return false, fmt.Errorf("inline manager not available or does not support CheckBot")
 }
 
+func (c *CustomTelegramClient) GetLogChatID() int64 {
+	if c.GorokuDB == nil {
+		return 0
+	}
+	if db, ok := c.GorokuDB.(*Database); ok && db != nil {
+		if val := db.Get("goroku.forums", "channel_id", nil); val != nil {
+			switch v := val.(type) {
+			case float64:
+				return int64(v)
+			case int64:
+				return v
+			case int:
+				return int64(v)
+			}
+		}
+	}
+	return 0
+}
+
+func getRawChannelID(id int64) int64 {
+	if id < -1000000000000 {
+		return -(id + 1000000000000)
+	}
+	if id < 0 {
+		return -id
+	}
+	return id
+}
+
+func (c *CustomTelegramClient) ToBotAPIChatID(id int64) int64 {
+	raw := getRawChannelID(id)
+	return -1000000000000 - raw
+}
+
+func isSameChat(id1, id2 int64) bool {
+	return getRawChannelID(id1) == getRawChannelID(id2)
+}
+
+func GetSentMessageID(resp interface{}) int64 {
+	switch v := resp.(type) {
+	case *tg.Updates:
+		for _, update := range v.Updates {
+			if u, ok := update.(*tg.UpdateNewMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			} else if u, ok := update.(*tg.UpdateNewChannelMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			} else if u, ok := update.(*tg.UpdateEditMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			} else if u, ok := update.(*tg.UpdateEditChannelMessage); ok {
+				if msg, ok := u.Message.(*tg.Message); ok {
+					return int64(msg.ID)
+				}
+			}
+		}
+	case tgbotapi.Message:
+		return int64(v.MessageID)
+	case *tgbotapi.Message:
+		return int64(v.MessageID)
+	}
+	return 0
+}
+
+func WithReplyTo(msgID int64) MsgOption {
+	return func(req interface{}) {
+		if msgID == 0 {
+			return
+		}
+		if r, ok := req.(*tg.MessagesSendMessageRequest); ok {
+			r.ReplyTo = &tg.InputReplyToMessage{ReplyToMsgID: int(msgID)}
+		} else if r, ok := req.(*tg.MessagesSendMediaRequest); ok {
+			r.ReplyTo = &tg.InputReplyToMessage{ReplyToMsgID: int(msgID)}
+		}
+	}
+}
+
 func (c *CustomTelegramClient) SendFile(chat interface{}, file interface{}, caption string) (interface{}, error) {
 	return c.SendFileWithOptions(chat, file, caption)
 }
 
 func (c *CustomTelegramClient) SendFileWithOptions(chat interface{}, file interface{}, caption string, opts ...MsgOption) (interface{}, error) {
+	var targetChatID int64
+	switch v := chat.(type) {
+	case int64:
+		targetChatID = v
+	case int:
+		targetChatID = int64(v)
+	case string:
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			targetChatID = id
+		}
+	}
+
+	logChatID := c.GetLogChatID()
+	if logChatID != 0 && targetChatID != 0 && isSameChat(targetChatID, logChatID) && c.GorokuInline != nil {
+		if im, ok := c.GorokuInline.(*inline.InlineManager); ok && im != nil && im.IsComplete() {
+			botClient := im.GetBotAPI()
+			if botClient != nil {
+				var topicID int
+				dummyReq := &tg.MessagesSendMessageRequest{}
+				for _, opt := range opts {
+					opt(dummyReq)
+				}
+				if dummyReq.ReplyTo != nil {
+					if replyObj, ok := dummyReq.ReplyTo.(*tg.InputReplyToMessage); ok {
+						topicID = replyObj.ReplyToMsgID
+					}
+				}
+
+				targetBotChatID := c.ToBotAPIChatID(targetChatID)
+				var fileBytes []byte
+				var filename string = "file.bin"
+				var isURL bool
+
+				switch f := file.(type) {
+				case string:
+					if strings.HasPrefix(f, "http://") || strings.HasPrefix(f, "https://") {
+						isURL = true
+					} else {
+						data, err := os.ReadFile(f)
+						if err == nil {
+							fileBytes = data
+							filename = filepath.Base(f)
+						}
+					}
+				case []byte:
+					fileBytes = f
+				case io.Reader:
+					data, err := io.ReadAll(f)
+					if err == nil {
+						fileBytes = data
+					}
+				}
+
+				if isURL {
+					fileURL := file.(string)
+					ext := strings.ToLower(filepath.Ext(fileURL))
+					if idx := strings.Index(ext, "?"); idx != -1 {
+						ext = ext[:idx]
+					}
+					if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
+						return SendPhotoWithTopic(botClient, targetBotChatID, tgbotapi.FileURL(fileURL), caption, topicID)
+					} else {
+						return SendDocumentWithTopic(botClient, targetBotChatID, tgbotapi.FileURL(fileURL), caption, topicID)
+					}
+				} else if len(fileBytes) > 0 {
+					fb := tgbotapi.FileBytes{Name: filename, Bytes: fileBytes}
+					ext := strings.ToLower(filepath.Ext(filename))
+					if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
+						return SendPhotoWithTopic(botClient, targetBotChatID, fb, caption, topicID)
+					} else {
+						return SendDocumentWithTopic(botClient, targetBotChatID, fb, caption, topicID)
+					}
+				}
+			}
+		}
+	}
+
 	peer, err := c.ResolvePeer(chat)
 	if err != nil {
 		if id, ok := chat.(int64); ok {
@@ -1031,6 +1219,40 @@ func (c *CustomTelegramClient) SendMessage(chat interface{}, message string) (in
 }
 
 func (c *CustomTelegramClient) SendMessageWithOptions(chat interface{}, message string, opts ...MsgOption) (interface{}, error) {
+	var targetChatID int64
+	switch v := chat.(type) {
+	case int64:
+		targetChatID = v
+	case int:
+		targetChatID = int64(v)
+	case string:
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			targetChatID = id
+		}
+	}
+
+	logChatID := c.GetLogChatID()
+	if logChatID != 0 && targetChatID != 0 && isSameChat(targetChatID, logChatID) && c.GorokuInline != nil {
+		if im, ok := c.GorokuInline.(*inline.InlineManager); ok && im != nil && im.IsComplete() {
+			botClient := im.GetBotAPI()
+			if botClient != nil {
+				var topicID int
+				dummyReq := &tg.MessagesSendMessageRequest{}
+				for _, opt := range opts {
+					opt(dummyReq)
+				}
+				if dummyReq.ReplyTo != nil {
+					if replyObj, ok := dummyReq.ReplyTo.(*tg.InputReplyToMessage); ok {
+						topicID = replyObj.ReplyToMsgID
+					}
+				}
+
+				targetBotChatID := c.ToBotAPIChatID(targetChatID)
+				return SendMessageWithTopic(botClient, targetBotChatID, message, topicID)
+			}
+		}
+	}
+
 	peer, err := c.ResolvePeer(chat)
 	if err != nil {
 		if id, ok := chat.(int64); ok {
@@ -1586,43 +1808,103 @@ func (c *CustomTelegramClient) FindChannelByTitle(title string) (interface{}, er
 	if c.rawAPI == nil {
 		return nil, fmt.Errorf("client not connected")
 	}
-	res, err := c.rawAPI.MessagesGetDialogs(c.ctx, &tg.MessagesGetDialogsRequest{
-		Limit: 100,
-	})
-	if err != nil {
-		return nil, err
-	}
 
-	var chats []tg.ChatClass
-	switch dlg := res.(type) {
-	case *tg.MessagesDialogsSlice:
-		chats = dlg.Chats
-	case *tg.MessagesDialogs:
-		chats = dlg.Chats
-	}
+	var offsetPeer tg.InputPeerClass = &tg.InputPeerEmpty{}
+	var offsetDate int
+	var offsetID int
 
-	for _, chat := range chats {
-		var chatTitle string
-		switch ch := chat.(type) {
-		case *tg.Chat:
-			chatTitle = ch.Title
-		case *tg.Channel:
-			chatTitle = ch.Title
-		case *tg.ChatForbidden:
-			chatTitle = ch.Title
-		case *tg.ChannelForbidden:
-			chatTitle = ch.Title
+	for page := 0; page < 5; page++ { // Scan up to 500 dialogs (5 pages of 100)
+		res, err := c.rawAPI.MessagesGetDialogs(c.ctx, &tg.MessagesGetDialogsRequest{
+			Limit:      100,
+			OffsetPeer: offsetPeer,
+			OffsetDate: offsetDate,
+			OffsetID:   offsetID,
+		})
+		if err != nil {
+			return nil, err
 		}
-		if chatTitle == title {
+
+		var chats []tg.ChatClass
+		var messages []tg.MessageClass
+		switch dlg := res.(type) {
+		case *tg.MessagesDialogsSlice:
+			chats = dlg.Chats
+			messages = dlg.Messages
+		case *tg.MessagesDialogs:
+			chats = dlg.Chats
+			messages = dlg.Messages
+		}
+
+		if len(chats) == 0 {
+			break
+		}
+
+		c.cacheMu.Lock()
+		if c.GorokuEntityCache == nil {
+			c.GorokuEntityCache = make(map[interface{}]CacheRecordEntity)
+		}
+		exp := time.Now().Unix() + 86400*30
+		for _, chat := range chats {
 			switch ch := chat.(type) {
 			case *tg.Chat:
-				return &tg.InputPeerChat{ChatID: ch.ID}, nil
+				peer := &tg.InputPeerChat{ChatID: ch.ID}
+				record := CacheRecordEntity{Entity: peer, Exp: exp, TS: time.Now().Unix()}
+				c.GorokuEntityCache[ch.ID] = record
+				c.GorokuEntityCache[-ch.ID] = record
 			case *tg.Channel:
-				return &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}, nil
+				peer := &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}
+				record := CacheRecordEntity{Entity: peer, Exp: exp, TS: time.Now().Unix()}
+				c.GorokuEntityCache[ch.ID] = record
+				c.GorokuEntityCache[TelegramChannelChatID(ch.ID)] = record
+				if ch.Username != "" {
+					c.GorokuEntityCache[strings.ToLower(ch.Username)] = record
+				}
 			}
 		}
+		c.cacheMu.Unlock()
+
+		for _, chat := range chats {
+			var chatTitle string
+			switch ch := chat.(type) {
+			case *tg.Chat:
+				chatTitle = ch.Title
+			case *tg.Channel:
+				chatTitle = ch.Title
+			case *tg.ChatForbidden:
+				chatTitle = ch.Title
+			case *tg.ChannelForbidden:
+				chatTitle = ch.Title
+			}
+			if chatTitle == title {
+				switch ch := chat.(type) {
+				case *tg.Chat:
+					return &tg.InputPeerChat{ChatID: ch.ID}, nil
+				case *tg.Channel:
+					return &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}, nil
+				}
+			}
+		}
+
+		// Paginate to next page
+		if len(messages) > 0 {
+			lastMsg := messages[len(messages)-1]
+			if msg, ok := lastMsg.(*tg.Message); ok {
+				offsetDate = msg.Date
+				offsetID = msg.ID
+				offsetPeer, _ = c.ResolvePeer(msg.PeerID)
+			} else if msg, ok := lastMsg.(*tg.MessageService); ok {
+				offsetDate = msg.Date
+				offsetID = msg.ID
+				offsetPeer, _ = c.ResolvePeer(msg.PeerID)
+			} else {
+				break
+			}
+		} else {
+			break
+		}
 	}
-	return nil, fmt.Errorf("channel not found by title: %s", title)
+
+	return nil, fmt.Errorf("channel not found")
 }
 
 func (c *CustomTelegramClient) CreateChannel(title, description string, megagroup, forum bool) (interface{}, error) {
@@ -1654,6 +1936,28 @@ func (c *CustomTelegramClient) CreateChannel(title, description string, megagrou
 	if createdChat == nil {
 		return nil, fmt.Errorf("no chat created in updates")
 	}
+
+	c.cacheMu.Lock()
+	if c.GorokuEntityCache == nil {
+		c.GorokuEntityCache = make(map[interface{}]CacheRecordEntity)
+	}
+	exp := time.Now().Unix() + 86400*30
+	switch ch := createdChat.(type) {
+	case *tg.Chat:
+		peer := &tg.InputPeerChat{ChatID: ch.ID}
+		record := CacheRecordEntity{Entity: peer, Exp: exp, TS: time.Now().Unix()}
+		c.GorokuEntityCache[ch.ID] = record
+		c.GorokuEntityCache[-ch.ID] = record
+	case *tg.Channel:
+		peer := &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}
+		record := CacheRecordEntity{Entity: peer, Exp: exp, TS: time.Now().Unix()}
+		c.GorokuEntityCache[ch.ID] = record
+		c.GorokuEntityCache[TelegramChannelChatID(ch.ID)] = record
+		if ch.Username != "" {
+			c.GorokuEntityCache[strings.ToLower(ch.Username)] = record
+		}
+	}
+	c.cacheMu.Unlock()
 
 	switch ch := createdChat.(type) {
 	case *tg.Chat:
@@ -1690,16 +1994,80 @@ func (c *CustomTelegramClient) InviteBotToChannel(channelPeer interface{}) error
 		return fmt.Errorf("bot user not found or unresolved")
 	}
 
+	resolvedPeer, err := c.ResolvePeer(channelPeer)
+	if err != nil {
+		return fmt.Errorf("failed to resolve channel peer: %w", err)
+	}
+
 	var inputChannel tg.InputChannelClass
-	if ch, ok := channelPeer.(*tg.InputPeerChannel); ok {
+	if ch, ok := resolvedPeer.(*tg.InputPeerChannel); ok {
 		inputChannel = &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash}
 	} else {
 		return fmt.Errorf("peer is not a channel")
 	}
 
-	_, err := c.rawAPI.ChannelsInviteToChannel(c.ctx, &tg.ChannelsInviteToChannelRequest{
+	_, err = c.rawAPI.ChannelsInviteToChannel(c.ctx, &tg.ChannelsInviteToChannelRequest{
 		Channel: inputChannel,
 		Users:   []tg.InputUserClass{botUser},
+	})
+	return err
+}
+
+func (c *CustomTelegramClient) PromoteBotToAdmin(channelPeer interface{}) error {
+	if c.rawAPI == nil {
+		return fmt.Errorf("client not connected")
+	}
+
+	var botUser tg.InputUserClass
+	if c.GorokuInline != nil {
+		val := reflect.ValueOf(c.GorokuInline)
+		if val.Kind() == reflect.Ptr {
+			field := val.Elem().FieldByName("BotUsername")
+			if field.IsValid() && field.Kind() == reflect.String {
+				botUsername := field.String()
+				peer, err := c.ResolvePeer(botUsername)
+				if err == nil {
+					if u, ok := peer.(*tg.InputPeerUser); ok {
+						botUser = &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash}
+					}
+				}
+			}
+		}
+	}
+	if botUser == nil {
+		return fmt.Errorf("bot user not found or unresolved")
+	}
+
+	resolvedPeer, err := c.ResolvePeer(channelPeer)
+	if err != nil {
+		return fmt.Errorf("failed to resolve channel peer: %w", err)
+	}
+
+	var inputChannel tg.InputChannelClass
+	if ch, ok := resolvedPeer.(*tg.InputPeerChannel); ok {
+		inputChannel = &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash}
+	} else {
+		return fmt.Errorf("peer is not a channel")
+	}
+
+	_, err = c.rawAPI.ChannelsEditAdmin(c.ctx, &tg.ChannelsEditAdminRequest{
+		Channel: inputChannel,
+		UserID:  botUser,
+		AdminRights: tg.ChatAdminRights{
+			ChangeInfo:     true,
+			PostMessages:   true,
+			EditMessages:   true,
+			DeleteMessages: true,
+			BanUsers:       true,
+			InviteUsers:    true,
+			PinMessages:    true,
+			AddAdmins:      false,
+			Anonymous:      false,
+			ManageCall:     true,
+			Other:          true,
+			ManageTopics:   true,
+		},
+		Rank: "Goroku Bot",
 	})
 	return err
 }

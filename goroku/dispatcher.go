@@ -400,13 +400,11 @@ func (cd *CommandDispatcher) handleTags(msg *Message, cmdName string) bool {
 }
 
 func (cd *CommandDispatcher) HandleCommand(msg *Message) {
-	log.Printf("[Dispatcher] Received message to handle: ID=%d, Text=%q, SenderID=%d, ChatID=%d, Out=%t\n", msg.ID, msg.Text, msg.SenderID, msg.ChatID, msg.Out)
 	if msg.Text == "" {
 		return
 	}
 
 	prefix := cd.getPrefix(msg.SenderID)
-	log.Printf("[Dispatcher] Checking prefix: expected=%q, actual_text=%q\n", prefix, msg.Text)
 
 	// Layout auto-correction check
 	translatedPrefix := translateLayout(prefix)
@@ -417,7 +415,6 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	}
 
 	if !strings.HasPrefix(msgText, prefix) {
-		log.Printf("[Dispatcher] Prefix mismatch, ignoring message\n")
 		return
 	}
 
@@ -624,13 +621,7 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 				}
 
 				// Check tsec rules
-				tsecWhitelisted := false
-				for _, rule := range cd.security.getUserRules() {
-					if rule.Target == msg.SenderID && rule.RuleType == "command" && rule.Rule == actualCmd {
-						tsecWhitelisted = true
-						break
-					}
-				}
+				tsecWhitelisted := cd.security.CheckTsec(msg.SenderID, actualCmd)
 
 				if !cmdWhitelisted && !userWhitelisted && !chatWhitelisted && !tsecWhitelisted {
 					// Nickname checks are enabled, and this command is not whitelisted in any way, so ignore it

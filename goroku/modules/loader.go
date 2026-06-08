@@ -841,7 +841,7 @@ func (m *LoaderModule) MlcmdCmd(msg *goroku.Message) error {
 		nr := &namedReader{r: bytes.NewReader(fileBytes), name: class_name + ".go"}
 		var opts []goroku.MsgOption
 		if msg.ReplyToMsgID != 0 {
-			opts = append(opts, WithReplyTo(int32(msg.ReplyToMsgID)))
+			opts = append(opts, goroku.WithReplyTo(int64(msg.ReplyToMsgID)))
 		}
 
 		_ = msg.Delete()

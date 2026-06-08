@@ -14,9 +14,16 @@ import (
 	"time"
 )
 
+const botIDPattern = `<a class="tm-row tm-row-link" href="/botfather/bot/(\d+)">` +
+	`<img class="tm-row-pic tm-row-pic-user" src="[^"]+">` +
+	`<div> <div class="tm-row-value">[^<]*</div>` +
+	`<div class="tm-row-description">@%s</div> </div></a>`
+
+
 var (
-	hashPattern       = regexp.MustCompile(`Main\.init\(\s*['"]([^'"]+)['"]\s*\);?`)
+	hashPattern        = regexp.MustCompile(`Main\.init\(\s*['"]([^'"]+)['"]\s*\);?`)
 	botCommandsPattern = regexp.MustCompile(`(?s)data-command=["']([^"']+)["'].*?class=["']tm-row-desc[^"']*["']>\s*([^<]+?)\s*</span>`)
+	botBasePattern     = regexp.MustCompile(fmt.Sprintf(botIDPattern, `\w*_[0-9a-zA-Z]{6}_bot`))
 )
 
 func (im *InlineManager) getWebAppSession(webAppURL string) (*http.Client, string, error) {
@@ -139,9 +146,9 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 
 	var botIDRegex *regexp.Regexp
 	if customBot != "" {
-		botIDRegex = regexp.MustCompile(fmt.Sprintf(`href="/botfather/bot/(\d+)".*?@%s`, regexp.QuoteMeta(customBot)))
+		botIDRegex = regexp.MustCompile(fmt.Sprintf(botIDPattern, regexp.QuoteMeta(customBot)))
 	} else {
-		botIDRegex = regexp.MustCompile(`href="/botfather/bot/(\d+)".*?@\w*_[0-9a-zA-Z]{6}_bot`)
+		botIDRegex = botBasePattern
 	}
 
 	matches := botIDRegex.FindStringSubmatch(bodyText)
@@ -259,7 +266,7 @@ func (im *InlineManager) createBot(client *http.Client, baseURL, hash string) (b
 	}
 
 	var username string
-	latinMock := []string{"Hrk", "Goroku", "Helper", "Userbot", "MyBot"}
+	latinMock := []string{"Goroku", "Helper", "Userbot", "MyBot"}
 	
 	if customBot != "" {
 		username = customBot
@@ -384,7 +391,7 @@ func (im *InlineManager) checkBot(client *http.Client, baseURL, hash, username s
 	bodyText := string(bodyBytes)
 
 	username = strings.TrimPrefix(username, "@")
-	botIDRegex := regexp.MustCompile(fmt.Sprintf(`href="/botfather/bot/(\d+)".*?@%s`, regexp.QuoteMeta(username)))
+	botIDRegex := regexp.MustCompile(fmt.Sprintf(botIDPattern, regexp.QuoteMeta(username)))
 	matches := botIDRegex.FindStringSubmatch(bodyText)
 	if len(matches) > 1 {
 		return true, nil

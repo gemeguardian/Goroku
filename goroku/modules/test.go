@@ -60,7 +60,13 @@ func (m *Test) Init(client *goroku.CustomTelegramClient, db *goroku.Database) er
 	return nil
 }
 
-func (m *Test) ClientReady() error { return nil }
+func (m *Test) ClientReady() error {
+	logChatID := m.client.GetLogChatID()
+	if logChatID != 0 && goroku.TGLogHandler != nil {
+		goroku.TGLogHandler.InstallTGLog(m.client, logChatID)
+	}
+	return nil
+}
 func (m *Test) OnUnload() error    { return nil }
 func (m *Test) OnDlmod() error     { return nil }
 

@@ -16,7 +16,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/gotd/td/tg"
+
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
@@ -91,36 +91,63 @@ func (m *GorokuBackup) ClientReady() error {
 	periodVal := m.db.Get("GorokuBackup", "period", nil)
 	if periodVal == nil {
 		im, ok := m.client.GorokuInline.(*inline.InlineManager)
-		if ok && im != nil && im.IsComplete() {
-			markup := [][]inline.Button{
-				{
-					m.makeBackupPeriodButton("🕰 1 h", 1),
-					m.makeBackupPeriodButton("🕰 2 h", 2),
-					m.makeBackupPeriodButton("🕰 4 h", 4),
-				},
-				{
-					m.makeBackupPeriodButton("🕰 6 h", 6),
-					m.makeBackupPeriodButton("🕰 8 h", 8),
-					m.makeBackupPeriodButton("🕰 12 h", 12),
-				},
-				{
-					m.makeBackupPeriodButton("🕰 24 h", 24),
-					m.makeBackupPeriodButton("🕰 48 h", 48),
-					m.makeBackupPeriodButton("🕰 168 h", 168),
-				},
-				{
+		if ok && im != nil {
+			go func() {
+				// Wait for inline manager to be ready
+				for i := 0; i < 30; i++ {
+					if im.IsComplete() {
+						break
+					}
+					time.Sleep(1 * time.Second)
+				}
+				if !im.IsComplete() {
+					return
+				}
+
+				botAPI := im.GetBotAPI()
+				if botAPI == nil {
+					return
+				}
+
+				markup := [][]inline.Button{
 					{
-						Text: "🚫 Never",
-						Data: fmt.Sprintf("bkp_period_0_%d", time.Now().UnixNano()),
-						Handler: func(call inline.CallbackQuery) error {
-							return m.handleSetBackupPeriodCallback(call, 0)
+						m.makeBackupPeriodButton("🕰 1 h", 1),
+						m.makeBackupPeriodButton("🕰 2 h", 2),
+						m.makeBackupPeriodButton("🕰 4 h", 4),
+					},
+					{
+						m.makeBackupPeriodButton("🕰 6 h", 6),
+						m.makeBackupPeriodButton("🕰 8 h", 8),
+						m.makeBackupPeriodButton("🕰 12 h", 12),
+					},
+					{
+						m.makeBackupPeriodButton("🕰 24 h", 24),
+						m.makeBackupPeriodButton("🕰 48 h", 48),
+						m.makeBackupPeriodButton("🕰 168 h", 168),
+					},
+					{
+						{
+							Text: "🚫 Never",
+							Data: fmt.Sprintf("bkp_period_0_%d", time.Now().UnixNano()),
+							Handler: func(call inline.CallbackQuery) error {
+								return m.handleSetBackupPeriodCallback(call, 0)
+							},
 						},
 					},
-				},
-			}
+				}
 
-			periodText := m.getTrans("period", "⌚️ <b>The unit «ALPHA»</b> creates regular backups...")
-			_, _ = im.Form(periodText, m.client.TGID, markup, inline.WithPhoto("https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/unit_alpha.png"))
+				periodText := m.getTrans("period", "⌚️ <b>The unit «ALPHA»</b> creates regular backups...")
+				
+				photo := tgbotapi.NewPhoto(m.client.TGID, tgbotapi.FileURL("https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/unit_alpha.png"))
+				photo.Caption = periodText
+				photo.ParseMode = tgbotapi.ModeHTML
+				photo.ReplyMarkup = im.GenerateMarkup(markup)
+				
+				_, err := botAPI.Send(photo)
+				if err != nil {
+					log.Printf("Failed to send backup period msg via bot: %v\n", err)
+				}
+			}()
 		}
 	}
 
@@ -216,40 +243,6 @@ func (m *GorokuBackup) getBackupTopicID() int32 {
 	return 0
 }
 
-func getSentMessageID(updates interface{}) int {
-	if upd, ok := updates.(*tg.Updates); ok {
-		for _, u := range upd.Updates {
-			if uc, ok := u.(*tg.UpdateNewChannelMessage); ok {
-				return uc.Message.GetID()
-			}
-			if uc, ok := u.(*tg.UpdateNewMessage); ok {
-				return uc.Message.GetID()
-			}
-		}
-	}
-	if upd, ok := updates.(*tg.UpdateShortSentMessage); ok {
-		return upd.ID
-	}
-	return 0
-}
-
-func WithReplyTo(replyToMsgID int32) goroku.MsgOption {
-	return func(req interface{}) {
-		if r, ok := req.(*tg.MessagesSendMessageRequest); ok {
-			replyObj := &tg.InputReplyToMessage{
-				ReplyToMsgID: int(replyToMsgID),
-			}
-			replyObj.SetTopMsgID(int(replyToMsgID))
-			r.ReplyTo = replyObj
-		} else if r, ok := req.(*tg.MessagesSendMediaRequest); ok {
-			replyObj := &tg.InputReplyToMessage{
-				ReplyToMsgID: int(replyToMsgID),
-			}
-			replyObj.SetTopMsgID(int(replyToMsgID))
-			r.ReplyTo = replyObj
-		}
-	}
-}
 
 func (m *GorokuBackup) handleConvertCallback(call inline.CallbackQuery, ans string, fileContent string) error {
 	prefix := "/"
@@ -332,13 +325,13 @@ func (m *GorokuBackup) BackupDBCmd(msg *goroku.Message) error {
 		int64(-1000000000000-contentChannelID),
 		nr,
 		caption,
-		WithReplyTo(topicID),
+		goroku.WithReplyTo(int64(topicID)),
 	)
 	if err != nil {
 		return msg.Answer(fmt.Sprintf("❌ Failed to send backup: %v", err))
 	}
 
-	msgID := getSentMessageID(res)
+	msgID := goroku.GetSentMessageID(res)
 	link := fmt.Sprintf("https://t.me/c/%d/%d/%d", contentChannelID, topicID, msgID)
 
 	sentTrans := m.getTrans("backup_sent", "")
@@ -483,13 +476,13 @@ func (m *GorokuBackup) BackupModsCmd(msg *goroku.Message) error {
 		int64(-1000000000000-contentChannelID),
 		nr,
 		caption,
-		WithReplyTo(topicID),
+		goroku.WithReplyTo(int64(topicID)),
 	)
 	if err != nil {
 		return msg.Answer(fmt.Sprintf("❌ Failed to send backup: %v", err))
 	}
 
-	msgID := getSentMessageID(res)
+	msgID := goroku.GetSentMessageID(res)
 	link := fmt.Sprintf("https://t.me/c/%d/%d/%d", contentChannelID, topicID, msgID)
 
 	sentTrans := m.getTrans("backup_sent", "")
@@ -723,14 +716,14 @@ func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
 			int64(-1000000000000-contentChannelID),
 			nr,
 			caption,
-			WithReplyTo(topicID),
+			goroku.WithReplyTo(int64(topicID)),
 		)
 	}
 	if err != nil {
 		return msg.Answer(fmt.Sprintf("❌ Failed to send backup file: %v", err))
 	}
 
-	msgID := getSentMessageID(res)
+	msgID := goroku.GetSentMessageID(res)
 	if msgID == 0 {
 		return msg.Answer("❌ Failed to get sent message ID")
 	}
@@ -949,14 +942,14 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 			int64(-1000000000000-contentChannelID),
 			nr,
 			caption,
-			WithReplyTo(topicID),
+			goroku.WithReplyTo(int64(topicID)),
 		)
 	}
 	if err != nil {
 		return err
 	}
 
-	msgID := getSentMessageID(res)
+	msgID := goroku.GetSentMessageID(res)
 	if msgID == 0 {
 		return nil
 	}

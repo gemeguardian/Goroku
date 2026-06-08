@@ -6,8 +6,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+var restarting int32
+
 
 func FwProtect() {
 	time.Sleep(time.Duration(1000) * time.Millisecond)
@@ -21,6 +25,10 @@ func Die() {
 }
 
 func Restart() {
+	if !atomic.CompareAndSwapInt32(&restarting, 0, 1) {
+		select {}
+	}
+
 	for _, arg := range os.Args {
 		if arg == "--sandbox" {
 			os.Exit(0)
@@ -178,3 +186,14 @@ func CheckBranch(meID int64, allowedIDs []int64) {
 	RestoreWorktree(repoPath)
 	Restart()
 }
+
+func HandleAuthKeyUnregistered(tgID int64, sessionPath string) {
+	fmt.Printf("🔴 AUTH_KEY_UNREGISTERED detected for client %d. Cleaning up session/config and restarting to initial state...\n", tgID)
+	if sessionPath != "" {
+		_ = os.Remove(sessionPath)
+	}
+	configPath := filepath.Join(BaseDir, fmt.Sprintf("config-%d.json", tgID))
+	_ = os.Remove(configPath)
+	Restart()
+}
+

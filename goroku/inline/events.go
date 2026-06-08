@@ -21,7 +21,83 @@ func (im *InlineManager) HandleUpdate(update tgbotapi.Update) {
 	}
 }
 
+func (im *InlineManager) isUserAuthorizedForInline(userID int64) bool {
+	if userID == im.ownerID() {
+		return true
+	}
+	allowInline := false
+	if dbTyped, ok := im.db.(interface {
+		Get(string, string, interface{}) interface{}
+	}); ok {
+		raw := dbTyped.Get("goroku.security", "allow_inline_query", false)
+		if val, ok := raw.(bool); ok {
+			allowInline = val
+		}
+	}
+	if allowInline {
+		return true
+	}
+	if im.client != nil {
+		vClient := reflect.ValueOf(im.client)
+		if vClient.Kind() == reflect.Ptr {
+			vClient = vClient.Elem()
+		}
+		if vClient.Kind() == reflect.Struct {
+			fLoader := vClient.FieldByName("Loader")
+			if fLoader.IsValid() && !fLoader.IsNil() {
+				mDispatcher := fLoader.MethodByName("GetDispatcher")
+				if mDispatcher.IsValid() {
+					resDisp := mDispatcher.Call(nil)
+					if len(resDisp) > 0 && !resDisp[0].IsNil() {
+						mSec := resDisp[0].MethodByName("GetSecurityManager")
+						if mSec.IsValid() {
+							resSec := mSec.Call(nil)
+							if len(resSec) > 0 && !resSec[0].IsNil() {
+								vSec := resSec[0]
+								if vSec.Kind() == reflect.Ptr {
+									vSec = vSec.Elem()
+								}
+								if vSec.Kind() == reflect.Struct {
+									fAllUsers := vSec.FieldByName("allUsers")
+									if fAllUsers.IsValid() && !fAllUsers.IsNil() {
+										mToSlice := fAllUsers.MethodByName("ToSlice")
+										if mToSlice.IsValid() {
+											resSlice := mToSlice.Call(nil)
+											if len(resSlice) > 0 && resSlice[0].Kind() == reflect.Slice {
+												slice := resSlice[0]
+												for i := 0; i < slice.Len(); i++ {
+													idVal := slice.Index(i).Interface()
+													var id int64
+													switch v := idVal.(type) {
+													case int64:
+														id = v
+													case float64:
+														id = int64(v)
+													case int:
+														id = int64(v)
+													}
+													if id == userID {
+														return true
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
+	if !im.isUserAuthorizedForInline(q.From.ID) {
+		return
+	}
 	if strings.TrimSpace(q.Query) == "" {
 		im.answerInlineHelp(q)
 		return

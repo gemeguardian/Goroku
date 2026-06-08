@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"goroku/goroku/utils"
-	"io"
 	"log"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"github.com/redis/go-redis/v9"
 )
@@ -508,162 +505,50 @@ func (db *Database) StoreAsset(message interface{}) (int, error) {
 		return 0, fmt.Errorf("Tried to save asset with non-existing content channel.")
 	}
 
-	peer, err := db.client.ResolvePeer(contentChannelVal)
-	if err != nil {
-		return 0, fmt.Errorf("failed to resolve content channel: %v", err)
+	var targetChatID int64
+	switch v := contentChannelVal.(type) {
+	case float64:
+		targetChatID = int64(-1000000000000 - int64(v))
+	case int64:
+		targetChatID = int64(-1000000000000 - v)
+	case int:
+		targetChatID = int64(-1000000000000 - int64(v))
 	}
 
-	replyTo := &tg.InputReplyToMessage{
-		ReplyToMsgID: assetsTopicID,
-	}
-	replyTo.SetTopMsgID(assetsTopicID)
+	opts := []MsgOption{WithReplyTo(int64(assetsTopicID))}
 
-	var msgID int
+	var msgID int64
 
 	switch msgVal := message.(type) {
 	case *Message:
-		// Send as text message
-		res, err := db.client.rawAPI.MessagesSendMessage(db.client.ctx, &tg.MessagesSendMessageRequest{
-			Peer:     peer,
-			Message:  msgVal.Text,
-			ReplyTo:  replyTo,
-			RandomID: rand.Int63(),
-		})
+		res, err := db.client.SendMessageWithOptions(targetChatID, msgVal.Text, opts...)
 		if err != nil {
 			return 0, err
 		}
-		if updates, ok := res.(*tg.Updates); ok {
-			for _, u := range updates.Updates {
-				if update, ok := u.(*tg.UpdateNewMessage); ok {
-					if m, ok := update.Message.(*tg.Message); ok {
-						msgID = m.ID
-					}
-				}
-			}
-		}
+		msgID = GetSentMessageID(res)
 	case string:
-		// Check if it's a file path or just text
 		if _, statErr := os.Stat(msgVal); statErr == nil {
-			// Send as file
-			res, err := db.uploadAndSendFile(peer, msgVal, replyTo)
+			res, err := db.client.SendFileWithOptions(targetChatID, msgVal, "", opts...)
 			if err != nil {
 				return 0, err
 			}
-			msgID = res
+			msgID = GetSentMessageID(res)
 		} else {
-			// Send as text
-			res, err := db.client.rawAPI.MessagesSendMessage(db.client.ctx, &tg.MessagesSendMessageRequest{
-				Peer:     peer,
-				Message:  msgVal,
-				ReplyTo:  replyTo,
-				RandomID: rand.Int63(),
-			})
+			res, err := db.client.SendMessageWithOptions(targetChatID, msgVal, opts...)
 			if err != nil {
 				return 0, err
 			}
-			if updates, ok := res.(*tg.Updates); ok {
-				for _, u := range updates.Updates {
-					if update, ok := u.(*tg.UpdateNewMessage); ok {
-						if m, ok := update.Message.(*tg.Message); ok {
-							msgID = m.ID
-						}
-					}
-				}
-			}
+			msgID = GetSentMessageID(res)
 		}
 	default:
-		// Try to send as uploaded file/bytes/reader
-		res, err := db.uploadAndSendFile(peer, msgVal, replyTo)
+		res, err := db.client.SendFileWithOptions(targetChatID, msgVal, "", opts...)
 		if err != nil {
 			return 0, err
 		}
-		msgID = res
+		msgID = GetSentMessageID(res)
 	}
 
-	return msgID, nil
-}
-
-func (db *Database) uploadAndSendFile(peer tg.InputPeerClass, file interface{}, replyTo tg.InputReplyToClass) (int, error) {
-	up := uploader.NewUploader(db.client.rawAPI)
-	var inputFile tg.InputFileClass
-	var filename string
-	var mimeType string = "application/octet-stream"
-	var err error
-
-	switch v := file.(type) {
-	case string:
-		filename = filepath.Base(v)
-		inputFile, err = up.FromPath(db.client.ctx, v)
-		if err != nil {
-			return 0, err
-		}
-	case []byte:
-		filename = "file.bin"
-		inputFile, err = up.FromBytes(db.client.ctx, filename, v)
-		if err != nil {
-			return 0, err
-		}
-	case io.Reader:
-		filename = "file.bin"
-		inputFile, err = up.FromReader(db.client.ctx, filename, v)
-		if err != nil {
-			return 0, err
-		}
-	default:
-		return 0, fmt.Errorf("unsupported file type: %T", file)
-	}
-
-	ext := strings.ToLower(filepath.Ext(filename))
-	switch ext {
-	case ".jpg", ".jpeg":
-		mimeType = "image/jpeg"
-	case ".png":
-		mimeType = "image/png"
-	case ".gif":
-		mimeType = "image/gif"
-	case ".webp":
-		mimeType = "image/webp"
-	case ".mp4":
-		mimeType = "video/mp4"
-	}
-
-	var media tg.InputMediaClass
-	if mimeType == "image/jpeg" || mimeType == "image/png" {
-		photoMedia := &tg.InputMediaUploadedPhoto{
-			File: inputFile,
-		}
-		photoMedia.SetFlags()
-		media = photoMedia
-	} else {
-		media = &tg.InputMediaUploadedDocument{
-			File:     inputFile,
-			MimeType: mimeType,
-			Attributes: []tg.DocumentAttributeClass{
-				&tg.DocumentAttributeFilename{FileName: filename},
-			},
-		}
-	}
-
-	res, err := db.client.rawAPI.MessagesSendMedia(db.client.ctx, &tg.MessagesSendMediaRequest{
-		Peer:     peer,
-		Media:    media,
-		ReplyTo:  replyTo,
-		RandomID: rand.Int63(),
-	})
-	if err != nil {
-		return 0, err
-	}
-
-	if updates, ok := res.(*tg.Updates); ok {
-		for _, u := range updates.Updates {
-			if update, ok := u.(*tg.UpdateNewMessage); ok {
-				if m, ok := update.Message.(*tg.Message); ok {
-					return m.ID, nil
-				}
-			}
-		}
-	}
-	return 0, fmt.Errorf("could not extract message ID from updates")
+	return int(msgID), nil
 }
 
 // FetchAsset Fetch previously saved asset by its asset_id

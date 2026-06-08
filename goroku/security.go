@@ -63,6 +63,7 @@ type SecurityManager struct {
 	allUsers             *PointerList
 	sgroups              map[string]SecurityGroup
 	rightsReloadInterval time.Duration
+	stopCh               chan struct{}
 	// adminCache caches per-chat/per-user admin rights lookups (5-min TTL, mirrors Python security.py)
 	adminCache map[string]adminCacheEntry
 }
@@ -95,6 +96,7 @@ func NewSecurityManager(client *CustomTelegramClient, db *Database) *SecurityMan
 		sgroups:              make(map[string]SecurityGroup),
 		adminCache:           make(map[string]adminCacheEntry),
 		rightsReloadInterval: time.Minute,
+		stopCh:               make(chan struct{}),
 	}
 
 	sm.reloadRights()
@@ -109,10 +111,24 @@ func (sm *SecurityManager) startRightsReloader() {
 
 	ticker := time.NewTicker(sm.rightsReloadInterval)
 	go func() {
-		for range ticker.C {
-			sm.reloadRights()
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				sm.reloadRights()
+			case <-sm.stopCh:
+				return
+			}
 		}
 	}()
+}
+
+func (sm *SecurityManager) Stop() {
+	select {
+	case <-sm.stopCh:
+	default:
+		close(sm.stopCh)
+	}
 }
 
 func (sm *SecurityManager) reloadRights() {
@@ -141,14 +157,14 @@ func (sm *SecurityManager) reloadRights() {
 
 	// Clean up expired rules
 	now := time.Now().Unix()
-	userRules := sm.getUserRules()
+	userRules := sm.GetUserRules()
 	for i := len(userRules) - 1; i >= 0; i-- {
 		if userRules[i].Expires > 0 && userRules[i].Expires < now {
 			sm.tsecUser.Remove(i)
 		}
 	}
 
-	chatRules := sm.getChatRules()
+	chatRules := sm.GetChatRules()
 	for i := len(chatRules) - 1; i >= 0; i-- {
 		if chatRules[i].Expires > 0 && chatRules[i].Expires < now {
 			sm.tsecChat.Remove(i)
@@ -160,7 +176,7 @@ func (sm *SecurityManager) reloadRights() {
 		sgroupUsers = append(sgroupUsers, g.Users...)
 	}
 	var tsecUsers []int64
-	for _, rule := range sm.getUserRules() {
+	for _, rule := range sm.GetUserRules() {
 		tsecUsers = append(tsecUsers, rule.Target)
 	}
 	ownerSliceRaw := sm.owner.ToSlice()
@@ -262,7 +278,7 @@ func (sm *SecurityManager) Check(msg *Message, command string) bool {
 	}
 
 	// Check temporary tsec user rules
-	for _, rule := range sm.getUserRules() {
+	for _, rule := range sm.GetUserRules() {
 		if rule.Target == msg.SenderID {
 			if rule.RuleType == "command" && rule.Rule == command {
 				return true
@@ -277,7 +293,7 @@ func (sm *SecurityManager) Check(msg *Message, command string) bool {
 	}
 
 	// Check temporary tsec chat rules, mirroring Python security._tsec_chat.
-	for _, rule := range sm.getChatRules() {
+	for _, rule := range sm.GetChatRules() {
 		if rule.Target == msg.ChatID {
 			if rule.RuleType == "command" && rule.Rule == command {
 				return true
@@ -581,6 +597,16 @@ func (sm *SecurityManager) AddRule(targetType string, targetID int64, ruleType, 
 	}
 }
 
+func (sm *SecurityManager) AddSecurityRule(targetType string, rule SecurityRule) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if targetType == "user" {
+		sm.tsecUser.Append(rule)
+	} else if targetType == "chat" {
+		sm.tsecChat.Append(rule)
+	}
+}
+
 // RemoveRules removes all security rules for a given target ID.
 func (sm *SecurityManager) RemoveRules(targetType string, targetID int64) bool {
 	sm.mu.Lock()
@@ -641,7 +667,7 @@ func toSecurityRule(item interface{}) (SecurityRule, bool) {
 	return SecurityRule{}, false
 }
 
-func (sm *SecurityManager) getUserRules() []SecurityRule {
+func (sm *SecurityManager) GetUserRules() []SecurityRule {
 	slice := sm.tsecUser.ToSlice()
 	var res []SecurityRule
 	for _, item := range slice {
@@ -655,7 +681,7 @@ func (sm *SecurityManager) getUserRules() []SecurityRule {
 	return res
 }
 
-func (sm *SecurityManager) getChatRules() []SecurityRule {
+func (sm *SecurityManager) GetChatRules() []SecurityRule {
 	slice := sm.tsecChat.ToSlice()
 	var res []SecurityRule
 	for _, item := range slice {
@@ -668,3 +694,54 @@ func (sm *SecurityManager) getChatRules() []SecurityRule {
 	}
 	return res
 }
+
+func (sm *SecurityManager) CheckTsec(userID int64, command string) bool {
+	sm.mu.RLock()
+	for _, sgroup := range sm.sgroups {
+		hasUser := false
+		for _, u := range sgroup.Users {
+			if u == userID {
+				hasUser = true
+				break
+			}
+		}
+		if hasUser {
+			for _, perm := range sgroup.Permissions {
+				ruleType, _ := perm["rule_type"].(string)
+				ruleName, _ := perm["rule"].(string)
+				if ruleType == "command" && ruleName == command {
+					sm.mu.RUnlock()
+					return true
+				}
+				if ruleType == "module" && sm.isCommandInModule(command, ruleName) {
+					sm.mu.RUnlock()
+					return true
+				}
+			}
+		}
+	}
+	sm.mu.RUnlock()
+
+	for _, rule := range sm.GetUserRules() {
+		if rule.Target == userID {
+			if rule.RuleType == "command" && rule.Rule == command {
+				return true
+			}
+			if rule.RuleType == "module" && sm.isCommandInModule(command, rule.Rule) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (sm *SecurityManager) CheckTsecInline(userID int64, command string) bool {
+	for _, rule := range sm.GetUserRules() {
+		if rule.Target == userID && rule.RuleType == "inline" && rule.Rule == command {
+			return true
+		}
+	}
+	return false
+}
+

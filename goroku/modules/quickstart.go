@@ -144,9 +144,7 @@ func (m *Quickstart) ClientReady() error {
 			}
 		}
 
-		if finalCid != 0 {
-			goroku.TGLogHandler.InstallTGLog(m.client, finalCid)
-		}
+		_ = finalCid
 
 		// Welcome message with language selector
 		sentMsg, ok := m.db.Get("Quickstart", "no_msg", false).(bool)

@@ -345,6 +345,9 @@ func Main(customModules []Module) {
 			client, err := h.initClient(tgID, sessionFile, customModules)
 			if err != nil {
 				log.Printf("Failed to init client %d: %v\n", tgID, err)
+				if strings.Contains(err.Error(), "AUTH_KEY_UNREGISTERED") {
+					HandleAuthKeyUnregistered(tgID, sessionFile)
+				}
 				continue
 			}
 			if h.Web != nil {

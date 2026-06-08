@@ -119,6 +119,8 @@ func (im *InlineManager) RegisterManager(afterBreak bool, ignoreTokenChecks bool
 type userBotInlineBootstrap interface {
 	SendMessage(chat interface{}, message string) (interface{}, error)
 	CreateGorokuFolder(botID int64) error
+	InviteBotToChannel(channelPeer interface{}) error
+	PromoteBotToAdmin(channelPeer interface{}) error
 }
 
 func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
@@ -127,23 +129,81 @@ func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 		return nil
 	}
 
-	msg, err := client.SendMessage(im.BotUsername, "/start goroku init")
-	if err != nil {
-		if dbTyped, ok := im.db.(interface {
-			Set(string, string, interface{}) bool
-		}); ok && !afterBreak {
-			dbTyped.Set("goroku.inline", "bot_token", nil)
-			im.token = ""
-			log.Printf("[Inline] Failed to start inline bot, token reset: %v\n", err)
-			return im.RegisterManager(true, false)
+	var bootstrappedGroup int64
+	var folderCreated bool
+
+	dbTyped, okDb := im.db.(interface {
+		Get(string, string, interface{}) interface{}
+		Set(string, string, interface{}) bool
+	})
+
+	if okDb {
+		if val := dbTyped.Get("goroku.inline", "bootstrapped_group", nil); val != nil {
+			switch v := val.(type) {
+			case float64:
+				bootstrappedGroup = int64(v)
+			case int64:
+				bootstrappedGroup = v
+			case int:
+				bootstrappedGroup = int64(v)
+			}
 		}
-		return fmt.Errorf("failed to start inline bot @%s: %w", im.BotUsername, err)
+		if val := dbTyped.Get("goroku.inline", "folder_created", false); val != nil {
+			if b, ok := val.(bool); ok {
+				folderCreated = b
+			}
+		}
 	}
 
-	if err := client.CreateGorokuFolder(im.BotID); err != nil {
-		log.Printf("[Inline] Failed to add inline bot to Goroku folder: %v\n", err)
+	if !folderCreated {
+		msg, err := client.SendMessage(im.BotUsername, "/start goroku init")
+		if err != nil {
+			if okDb && !afterBreak {
+				dbTyped.Set("goroku.inline", "bot_token", nil)
+				im.token = ""
+				log.Printf("[Inline] Failed to start inline bot, token reset: %v\n", err)
+				return im.RegisterManager(true, false)
+			}
+			return fmt.Errorf("failed to start inline bot @%s: %w", im.BotUsername, err)
+		}
+		log.Printf("[Inline] Inline bot @%s initialized via userbot side: %T\n", im.BotUsername, msg)
+
+		if err := client.CreateGorokuFolder(im.BotID); err != nil {
+			log.Printf("[Inline] Failed to add inline bot to Goroku folder: %v\n", err)
+		} else {
+			if okDb {
+				dbTyped.Set("goroku.inline", "folder_created", true)
+			}
+		}
 	}
-	log.Printf("[Inline] Inline bot @%s initialized via userbot side: %T\n", im.BotUsername, msg)
+
+	if okDb {
+		if val := dbTyped.Get("goroku.forums", "channel_id", nil); val != nil {
+			var cid int64
+			switch v := val.(type) {
+			case float64:
+				cid = int64(v)
+			case int64:
+				cid = v
+			case int:
+				cid = int64(v)
+			}
+
+			if cid != 0 && cid != bootstrappedGroup {
+				if err := client.InviteBotToChannel(cid); err != nil {
+					log.Printf("[Inline] Failed to invite inline bot to log group: %v\n", err)
+				} else {
+					log.Printf("[Inline] Successfully invited inline bot to log group")
+				}
+				if err := client.PromoteBotToAdmin(cid); err != nil {
+					log.Printf("[Inline] Failed to promote inline bot to admin: %v\n", err)
+				} else {
+					log.Printf("[Inline] Successfully promoted inline bot to admin")
+					dbTyped.Set("goroku.inline", "bootstrapped_group", cid)
+				}
+			}
+		}
+	}
 	return nil
 }
 

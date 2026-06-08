@@ -196,7 +196,7 @@ func getDefaultValue(modName, key string) interface{} {
 		case "custom_message":
 			return ""
 		case "banner_url":
-			return "goroku/assets/goroku_info.png"
+			return "https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/goroku_info.png"
 		case "ping_emoji":
 			return "🪐"
 		case "quote_media":
@@ -339,16 +339,31 @@ func (m *GorokuConfig) ChooseCategory(msg interface{}) error {
 		return folderBtns[i].Text < folderBtns[j].Text
 	})
 
-	markup := [][]inline.Button{
-		{
-			m.makeButton(m.getTrans("builtin", "🛰 Built-in"), func(call inline.CallbackQuery) error {
-				return m.ChooseModuleList(call, true, 0)
-			}),
-			m.makeButton(m.getTrans("external", "🛸 External"), func(call inline.CallbackQuery) error {
-				return m.ChooseModuleList(call, false, 0)
-			}),
-		},
+	var hasExternal bool
+	loader, ok := m.client.Loader.(*goroku.Modules)
+	if ok && loader != nil {
+		for _, mod := range loader.GetModules() {
+			nameLower := strings.ToLower(mod.Name())
+			if !builtInModules[nameLower] {
+				if _, hasConfig := mod.(goroku.ModuleWithConfig); hasConfig {
+					hasExternal = true
+					break
+				}
+			}
+		}
 	}
+
+	var catRow []inline.Button
+	catRow = append(catRow, m.makeButton(m.getTrans("builtin", "🛰 Built-in"), func(call inline.CallbackQuery) error {
+		return m.ChooseModuleList(call, true, 0)
+	}))
+	if hasExternal {
+		catRow = append(catRow, m.makeButton(m.getTrans("external", "🛸 External"), func(call inline.CallbackQuery) error {
+			return m.ChooseModuleList(call, false, 0)
+		}))
+	}
+
+	markup := [][]inline.Button{catRow}
 
 	for i := 0; i < len(folderBtns); i += 2 {
 		end := i + 2
@@ -379,7 +394,7 @@ func (m *GorokuConfig) ChooseCategory(msg interface{}) error {
 }
 
 var builtInModules = map[string]bool{
-	"apiprotection":        true,
+	"apilimiter":           true,
 	"eval":                 true,
 	"help":                 true,
 	"gorokubackup":         true,
@@ -390,11 +405,13 @@ var builtInModules = map[string]bool{
 	"gorokusettings":       true,
 	"gorokuweb":            true,
 	"inlinestuff":          true,
-	"loadermodule":         true,
+	"loader":               true,
 	"presets":              true,
 	"quickstart":           true,
-	"settingsmodule":       true,
+	"settings":             true,
 	"tester":               true,
+	"terminal":             true,
+	"translate":            true,
 	"translator":           true,
 	"translations":         true,
 	"updater":              true,

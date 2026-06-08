@@ -118,10 +118,15 @@ func (m *TerminalMod) ConfigReady(config map[string]interface{}) error {
 func (m *TerminalMod) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
 		"terminal":  m.TerminalCmd,
-		"term":      m.TerminalCmd,
-		"sh":        m.TerminalCmd,
-		"cmd":       m.TerminalCmd,
 		"terminate": m.TerminateCmd,
+	}
+}
+
+func (m *TerminalMod) CommandMetas() map[string]goroku.CommandMeta {
+	return map[string]goroku.CommandMeta{
+		"terminal": {
+			Aliases: []string{"term", "sh", "cmd"},
+		},
 	}
 }
 

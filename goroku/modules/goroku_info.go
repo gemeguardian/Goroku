@@ -38,7 +38,7 @@ func (m *GorokuInfo) Strings() map[string]string {
 		"info_message":        "{0}\n<blockquote>┌\n├  【<tg-emoji emoji-id=5883964170268840032>👤</tg-emoji>】 <b>𝙾𝚠ней</b>: {me}\n├  【<tg-emoji emoji-id=5931415565955503486>🤖</tg-emoji>】 <b>𝚅𝚎𝚛𝚜𝚒𝚘𝚗</b>: {version}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5778335621491723621>📷</tg-emoji>】 <b>𝙿𝚛𝚎𝚏𝚒𝚡</b>: {prefix}⠀ ⠀ \n├  【<tg-emoji emoji-id=5843799474362652262>🔄</tg-emoji>】 <b>𝚄𝚙𝚝𝚒𝚖𝚎</b>: {uptime}\n├  【<tg-emoji emoji-id=5879770735999717115>👤</tg-emoji>】 <b>𝙱𝚛𝚊𝚗𝚌𝚑</b>: {branch}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5775887550262546277>❗️</tg-emoji>】 <b>𝙲𝙿𝚄</b>: {cpu_usage}\n├  【<tg-emoji emoji-id=5931409969613116639>🛡</tg-emoji>】 <b>𝚁𝙰𝙼</b>: {ram_usage}\n├  【<tg-emoji emoji-id=5931472654660800739>📊</tg-emoji>】 <b>𝙿𝚒𝚗𝚐</b>: {ping}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5926783847453692661>🛡</tg-emoji>】 <b>𝚄𝚙𝚍𝚊𝚝𝚎</b>: {upd}\n├  【<tg-emoji emoji-id=5931415565955503486>🤖</tg-emoji>】 <b>𝙷𝚘𝚜𝚝</b>: {platform}\n├  【<tg-emoji emoji-id=5819078828017849357>🤖</tg-emoji>】 <b>𝙾𝚂</b>: {os}\n├  【<tg-emoji emoji-id=5819078828017849357>🤖</tg-emoji>】 <b>𝙶𝚘 𝚅𝚎𝚛𝚜𝚒𝚘𝚗</b>: {go_ver}\n└</blockquote>",
 		"desc":                "Show userbot info",
 		"no_banner":           "🚫 <b>Could not load banner from:</b> {0}",
-		"_cfg_custom_message": "Custom template message for info",
+		"_cfg_custom_message": "Custom template message for info. May contain {me}, {version}, {build}, {prefix}, {platform}, {upd}, {uptime}, {cpu_usage}, {ram_usage}, {branch}, {hostname}, {user}, {os}, {kernel}, {cpu}, {ping}, {go_ver}, {htl_ver}, {git_status} keywords",
 		"_cfg_banner_url":     "Banner URL shown in info",
 		"_cfg_ping_emoji":     "Ping emoji shown in info",
 		"_cfg_quote_media":    "Switch preview media to quote",
@@ -67,15 +67,7 @@ func (m *GorokuInfo) ConfigDefaults() map[string]interface{} {
 }
 
 func defaultGorokuInfoBanner() string {
-	for _, path := range []string{
-		"goroku/assets/goroku_info.png",
-		"assets/goroku.png",
-	} {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-	return ""
+	return "https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/goroku_info.png"
 }
 
 func (m *GorokuInfo) ConfigReady(config map[string]interface{}) error {
@@ -128,6 +120,12 @@ func (m *GorokuInfo) UbinfoCmd(msg *goroku.Message) error {
 }
 
 func getOSName() string {
+	if runtime.GOOS == "windows" {
+		return "Windows"
+	}
+	if runtime.GOOS == "darwin" {
+		return "macOS"
+	}
 	content, err := os.ReadFile("/etc/os-release")
 	if err == nil {
 		lines := strings.Split(string(content), "\n")
@@ -139,20 +137,69 @@ func getOSName() string {
 			}
 		}
 	}
-	return "Linux"
+	return runtime.GOOS
+}
+
+func getKernelVersion() string {
+	if runtime.GOOS == "windows" {
+		return "Windows Kernel"
+	}
+	content, err := os.ReadFile("/proc/sys/kernel/osrelease")
+	if err == nil {
+		return strings.TrimSpace(string(content))
+	}
+	return "unknown kernel"
 }
 
 func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 	startTime := time.Now()
-	var pingMs float64
 	pingEmoji := m.pingEmoji
 	if pingEmoji == "" {
 		pingEmoji = "🪐"
 	}
 
+	var targetMsg = msg
 	if m.customMessage != "" && strings.Contains(m.customMessage, "{ping}") {
-		_ = msg.Answer(pingEmoji)
+		if msg.Out {
+			_ = msg.Answer(pingEmoji)
+		} else {
+			res, err := m.client.SendMessageWithOptions(msg.ChatID, pingEmoji)
+			if err == nil {
+				var sentID int64
+				if upd, ok := res.(*tg.Updates); ok {
+					for _, u := range upd.Updates {
+						if uc, ok := u.(*tg.UpdateNewMessage); ok {
+							if tgMsg, ok := uc.Message.(*tg.Message); ok {
+								sentID = int64(tgMsg.ID)
+							}
+						}
+					}
+				} else if upd, ok := res.(*tg.UpdateShortSentMessage); ok {
+					sentID = int64(upd.ID)
+				}
+				if sentID != 0 {
+					targetMsg = &goroku.Message{
+						ID:        sentID,
+						ChatID:    msg.ChatID,
+						Out:       true,
+						Client:    m.client,
+						GrepQuery: msg.GrepQuery,
+						CutLines:  msg.CutLines,
+					}
+				}
+			}
+		}
+	} else if m.customMessage == "" || strings.Contains(m.customMessage, "{ping}") {
+		if m.customMessage == "" {
+			if msg.Out {
+				_ = msg.Answer(pingEmoji)
+			} else {
+				_, _ = m.client.GetMe()
+			}
+		}
 	}
+
+	pingMs := float64(time.Since(startTime).Nanoseconds()) / 1e6
 
 	// Fetch platform details
 	ramUsage := utils.GetRAMUsage()
@@ -193,6 +240,11 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 
 	// Get OS details
 	osName := getOSName()
+	kernelVer := getKernelVersion()
+	cpuDetails := fmt.Sprintf("%d core(-s); %s%% total", runtime.NumCPU(), cpuUsage)
+	gitURL := utils.GetCommitURL()
+	htlVer := "gotd v0.120.0"
+
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "unknown"
@@ -256,7 +308,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 		platformPremiumEmoji = utils.GetPlatformEmoji()
 	}
 
-	pingMs = float64(time.Since(startTime).Nanoseconds()) / 1e6
+	// Use previously calculated pingMs
 	args := map[string]string{
 		"{me}":             meStr,
 		"{version}":        goroku.GetVersionString(),
@@ -276,31 +328,21 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 		"{ping_emoji}":     pingEmoji,
 		"{python_ver}":     goVersion,
 		"{git_status}":     gitStatus,
+		"{build}":          gitURL,
+		"{kernel}":         kernelVer,
+		"{cpu}":            cpuDetails,
+		"{htl_ver}":        htlVer,
 	}
 
 	var text string
 	if m.customMessage != "" {
-		replacer := strings.NewReplacer(
-			"{me}", meStr,
-			"{version}", goroku.GetVersionString(),
-			"{prefix}", prefixFormat,
-			"{uptime}", uptime,
-			"{branch}", branch,
-			"{cpu_usage}", cpuUsage,
-			"{ram_usage}", fmt.Sprintf("%.2f MB", ramUsage),
-			"{ping}", fmt.Sprintf("%.3f", pingMs),
-			"{upd}", upd,
-			"{platform}", utils.EscapeHTML(platformName),
-			"{platform_emoji}", platformEmoji,
-			"{os}", utils.EscapeHTML(osName),
-			"{hostname}", utils.EscapeHTML(hostname),
-			"{user}", utils.EscapeHTML(username),
-			"{go_ver}", goVersion,
-			"{ping_emoji}", pingEmoji,
-			"{python_ver}", goVersion,
-			"{git_status}", gitStatus,
-		)
+		var pairs []string
+		for k, v := range args {
+			pairs = append(pairs, k, v)
+		}
+		replacer := strings.NewReplacer(pairs...)
 		text = replacer.Replace(m.customMessage)
+		text = utils.FormatPlaceholders(text)
 	} else {
 		// Default from translator
 		infoTemplate := m.getTrans("info_message", m.Strings()["info_message"])
@@ -309,18 +351,20 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 
 	var opts []goroku.MsgOption
 	if m.bannerURL != "" {
-		if m.quoteMedia {
-			opts = append(opts, goroku.WithWebPageMedia(m.bannerURL, true, true))
+		isURL := strings.HasPrefix(m.bannerURL, "http://") || strings.HasPrefix(m.bannerURL, "https://")
+		if m.quoteMedia && isURL {
+			text = fmt.Sprintf("<a href=\"%s\">&#8203;</a>\n%s", m.bannerURL, text)
+			opts = append(opts, goroku.WithWebPageMedia(m.bannerURL, false, true))
 			if m.invertMedia {
 				opts = append(opts, goroku.WithInvertMedia(true))
 			}
-			return msg.Answer(text, opts...)
+			return targetMsg.Answer(text, opts...)
 		} else {
-			if msg.Out {
-				_ = msg.Delete()
+			if targetMsg.Out {
+				_ = targetMsg.Delete()
 			}
 			if msg.ReplyToMsgID != 0 {
-				opts = append(opts, WithReplyTo(int32(msg.ReplyToMsgID)))
+				opts = append(opts, goroku.WithReplyTo(int64(msg.ReplyToMsgID)))
 			}
 			_, err := m.client.SendFileWithOptions(msg.ChatID, m.bannerURL, text, opts...)
 			if err == nil {
@@ -329,11 +373,11 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 			// The default banner is hosted outside Telegram and can disappear/404.
 			// .info should still work as a text message instead of failing the command.
 			opts = []goroku.MsgOption{goroku.WithNoWebpage(true)}
-			return msg.Answer(text, opts...)
+			return targetMsg.Answer(text, opts...)
 		}
 	} else {
 		opts = append(opts, goroku.WithNoWebpage(true))
-		return msg.Answer(text, opts...)
+		return targetMsg.Answer(text, opts...)
 	}
 }
 

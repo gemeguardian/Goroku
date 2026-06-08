@@ -504,7 +504,7 @@ help:
   core_notice: "<tg-emoji emoji-id=5355133243773435190>☝️</tg-emoji> <b>これはコアモジュールです。アンロードや置換はできません</b>"
 
 goroku_info:
-  info_message: "{}\n<blockquote>┌\n├  【<tg-emoji emoji-id=5883964170268840032>👤</tg-emoji>】 <b>所有者</b>: {me}\n├  【<tg-emoji emoji-id=5931415565955503486>🤖</tg-emoji>】 <b>バージョン</b>: {version}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5778335621491723621>📷</tg-emoji>】 <b>プレフィックス</b>: {prefix}⠀ ⠀ \n├  【<tg-emoji emoji-id=5843799474362652262>🔄</tg-emoji>】 <b>稼働時間</b>: {uptime}\n├  【<tg-emoji emoji-id=5879770735999717115>👤</tg-emoji>】 <b>ブランチ</b>: {branch}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5775887550262546277>❗️</tg-emoji>】 <b>ＣＰＵ</b>: {cpu_usage}\n├  【<tg-emoji emoji-id=5931409969613116639>🛡</tg-emoji>】 <b>ＲＡＭ</b>: {ram_usage}\n├  【<tg-emoji emoji-id=5931472654660800739>📊</tg-emoji>】 <b>Ｐｉｎｇ</b>: {ping}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5926783847453692661>🛡</tg-emoji>】 <b>更新</b>: {upd}\n├  【<tg-emoji emoji-id=5931415565955503486>🤖</tg-emoji>】 <b>ホスト</b>: {platform}\n├  【<tg-emoji emoji-id=5819078828017849357>🤖</tg-emoji>】 <b>ＯＳ</b>: {os}\n├  【<tg-emoji emoji-id=5819078828017849357>🤖</tg-emoji>】 <b>Python Ver</b>: {python_ver}\n└</blockquote>"
+  info_message: "{}\n<blockquote>┌\n├  【<tg-emoji emoji-id=5883964170268840032>👤</tg-emoji>】 <b>所有者</b>: {me}\n├  【<tg-emoji emoji-id=5931415565955503486>🤖</tg-emoji>】 <b>バージョン</b>: {version}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5778335621491723621>📷</tg-emoji>】 <b>プレフィックス</b>: {prefix}⠀ ⠀ \n├  【<tg-emoji emoji-id=5843799474362652262>🔄</tg-emoji>】 <b>稼働時間</b>: {uptime}\n├  【<tg-emoji emoji-id=5879770735999717115>👤</tg-emoji>】 <b>ブランチ</b>: {branch}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5775887550262546277>❗️</tg-emoji>】 <b>ＣＰＵ</b>: {cpu_usage}\n├  【<tg-emoji emoji-id=5931409969613116639>🛡</tg-emoji>】 <b>ＲＡＭ</b>: {ram_usage}\n├  【<tg-emoji emoji-id=5931472654660800739>📊</tg-emoji>】 <b>Ｐｉｎｇ</b>: {ping}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5926783847453692661>🛡</tg-emoji>】 <b>更新</b>: {upd}\n├  【<tg-emoji emoji-id=5931415565955503486>🤖</tg-emoji>】 <b>ホスト</b>: {platform}\n├  【<tg-emoji emoji-id=5819078828017849357>🤖</tg-emoji>】 <b>ＯＳ</b>: {os}\n├  【<tg-emoji emoji-id=5819078828017849357>🤖</tg-emoji>】 <b>Go Ver</b>: {go_ver}\n└</blockquote>"
   non_detectable: "<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>このコンポーネントはお使いのサーバーでは検出できません！</b>"
   ping_emoji: "情報内の Ping 用絵文字"
   send_info: "ユーザーボット情報を送信"
@@ -513,7 +513,7 @@ goroku_info:
   update_required: "<b>更新が必要です</b> <code>{prefix}update</code>"
   switchinfo_on: "<tg-emoji emoji-id=5118861066981344121>✅</tg-emoji> 画像情報をオンにしました"
   switchinfo_off: "<tg-emoji emoji-id=5118861066981344121>✅</tg-emoji> 画像情報をオフにしました"
-  _cfg_cst_msg: "情報のカスタムメッセージ。{me}, {version}, {build}, {prefix}, {platform}, {upd}, {uptime}, {cpu_usage}, {ram_usage}, {branch}, {hostname}, {user}, {os}, {kernel}, {cpu}, {ping}, {python_ver}, {htl_ver}, {git_status} キーワードを含めることができます"
+  _cfg_cst_msg: "情報のカスタムメッセージ。{me}, {version}, {build}, {prefix}, {platform}, {upd}, {uptime}, {cpu_usage}, {ram_usage}, {branch}, {hostname}, {user}, {os}, {kernel}, {cpu}, {ping}, {go_ver}, {htl_ver}, {git_status} キーワードを含めることができます"
   _cfg_cst_ph: "🤖カスタムプレースホルダー: {}"
   _cfg_cst_btn: "情報のカスタムボタン。ボタンを削除するには空のままにしてください"
   _cfg_banner: "画像バナーのURL"
