@@ -16,6 +16,7 @@ type Message struct {
 	SenderID     int64
 	Text         string
 	RawText      string
+	Entities     []tg.MessageEntityClass
 	Out          bool
 	Media        interface{}
 	IsPrivate    bool
@@ -262,22 +263,22 @@ func (m *Message) Delete() error {
 	if err != nil {
 		return err
 	}
+	if ch, ok := peer.(*tg.InputPeerChannel); ok {
+		_, err = m.Client.rawAPI.ChannelsDeleteMessages(m.Client.ctx,
+			&tg.ChannelsDeleteMessagesRequest{
+				Channel: &tg.InputChannel{
+					ChannelID:  ch.ChannelID,
+					AccessHash: ch.AccessHash,
+				},
+				ID: []int{int(m.ID)},
+			})
+		return err
+	}
 	_, err = m.Client.rawAPI.MessagesDeleteMessages(m.Client.ctx,
 		&tg.MessagesDeleteMessagesRequest{
-			ID: []int{int(m.ID)},
+			Revoke: true,
+			ID:     []int{int(m.ID)},
 		})
-	if err != nil {
-		if ch, ok := peer.(*tg.InputPeerChannel); ok {
-			_, err = m.Client.rawAPI.ChannelsDeleteMessages(m.Client.ctx,
-				&tg.ChannelsDeleteMessagesRequest{
-					Channel: &tg.InputChannel{
-						ChannelID:  ch.ChannelID,
-						AccessHash: ch.AccessHash,
-					},
-					ID: []int{int(m.ID)},
-				})
-		}
-	}
 	return err
 }
 

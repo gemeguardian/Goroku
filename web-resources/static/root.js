@@ -1,22 +1,11 @@
-function getCookie(name) {
-    const value = `; ${document.cookie}`;
-    const parts = value.split(`; ${name}=`);
-    if (parts.length === 2) return parts.pop().split(';').shift();
-    return "";
-}
-
-function csrfHeaders(headers = {}) {
-    const token = getCookie("csrf_token");
-    return token ? Object.assign({}, headers, {"X-CSRF-Token": token}) : headers;
-}
-
 function csrfFetch(url, options = {}) {
     options.credentials = "include";
-    options.headers = csrfHeaders(options.headers || {});
     return fetch(url, options);
 }
 
 function auth(c) {
+    const previousMain = $(".main:visible");
+    const restoreMain = () => (previousMain.length ? previousMain : $(".installation")).fadeIn(250);
     $(".main").fadeOut(250),
         setTimeout(() => {
             $(".auth")
@@ -40,21 +29,31 @@ function auth(c) {
                     timeout: 25e4,
                 })
                     .then((b) => b.text())
-                    .then((a) =>
-                        "TIMEOUT" == a ?
-                            (error_message(
+                    .then((a) => {
+                        a = a.trim();
+                        if ("SETUP_TOKEN_REQUIRED" == a) {
+                            error_message("Ты без setup token. Открой веб через ссылку с ?token=...");
+                            return void $(".auth").fadeOut(250, () => {
+                                restoreMain();
+                            });
+                        }
+                        if ("TIMEOUT" == a) {
+                            error_message(
                                 "Code waiting timeout exceeded. Reload page and try again.",
-                            ),
-                                void $(".auth").fadeOut(250)) :
-                            a.startsWith("goroku_") ?
-                                ((auth_required = !1),
-                                    $(".authorized").hide().fadeIn(100),
-                                    $(".auth").fadeOut(250, () => {
-                                        $(".installation").fadeIn(250);
-                                    }),
-                                    void c()) :
-                                void 0,
-                    );
+                            );
+                            return void $(".auth").fadeOut(250, () => {
+                                restoreMain();
+                            });
+                        }
+                        if (a.startsWith("goroku_")) {
+                            (auth_required = !1),
+                                $(".authorized").hide().fadeIn(100),
+                                $(".auth").fadeOut(250, () => {
+                                    $(".installation").fadeIn(250);
+                                }),
+                                c();
+                        }
+                    });
         }, 250);
 }
 var qr_interval = null,
@@ -74,19 +73,25 @@ function login_qr() {
             method: "POST",
             credentials: "include"
         })
-            .then((b) => b.text())
-            .then((c) => {
+            .then((b) => b.text().then((text) => ({ok: b.ok, text: text.trim()})))
+            .then(({ok, text}) => {
+                if (!ok) {
+                    error_message("QR login failed: " + text);
+                    return void $("#denyqr").fadeOut(250, () => {
+                        $("#continue_btn, .title, .description").hide().fadeIn(250);
+                    });
+                }
                 if (typeof QRCodeStyling === "undefined") {
                     console.error("QRCodeStyling library is not loaded");
                     document.querySelector(".qr_inner").innerHTML =
-                        '<a href="' + c + '" target="_blank" rel="noopener noreferrer">Open Telegram QR login link</a>';
+                        '<a href="' + text + '" target="_blank" rel="noopener noreferrer">Open Telegram QR login link</a>';
                     return;
                 }
                 const d = new QRCodeStyling({
                     width: window.innerHeight / 3,
                     height: window.innerHeight / 3,
                     type: "svg",
-                    data: c,
+                    data: text,
                     dotsOptions: {
                         type: "rounded"
                     },
@@ -332,7 +337,6 @@ function is_phone() {
         navigator.userAgent,
     );
 }
-is_phone() && "qr_login" == _current_block && (_current_block = "phone");
 const cnt_btn = document.querySelector("#continue_btn");
 
 function process_next() {
@@ -356,7 +360,7 @@ function process_next() {
                     .then((b) => {
                         "ok" == b
                             ?
-                            switch_block(is_phone() ? "phone" : "qr_login") :
+                            switch_block("qr_login") :
                             (error_state(), error_message(b));
                     })
                     .catch((b) => {

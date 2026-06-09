@@ -6,7 +6,9 @@ import (
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
+	stdhtml "html"
 	"math/rand"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,7 +20,12 @@ type GorokuConfig struct {
 	db         *goroku.Database
 	translator *goroku.Translator
 	cfgEmoji   string
+	startEmoji string
+	listEmoji  string
 }
+
+var configEmojiRe = regexp.MustCompile(`(?i)<tg-emoji\s+emoji-id=["']?5341715473882955310["']?>(?:⚙️|🪐)</tg-emoji>`)
+var tgEmojiTagRe = regexp.MustCompile(`(?is)</?tg-emoji\b[^>]*>`)
 
 func (m *GorokuConfig) Name() string {
 	return "GorokuConfig"
@@ -26,15 +33,17 @@ func (m *GorokuConfig) Name() string {
 
 func (m *GorokuConfig) Strings() map[string]string {
 	return map[string]string{
-		"name":           "Goroku Config Module",
-		"args":           "🚫 <b>You specified incorrect args</b>",
-		"no_mod":         "🚫 <b>Module doesn't exist</b>",
-		"no_option":      "🚫 <b>Configuration option doesn't exist</b>",
-		"option_saved":   "⚙️ <b>Option</b> <code>%s</code> <b>of module</b> <code>%s</code><b> saved!</b>\n<b>Current:</b> <code>%s</code>",
-		"option_reset":   "♻️ <b>Option</b> <code>%s</code> <b>of module</b> <code>%s</code> <b>has been reset</b>",
-		"header_modules": "⚙️ <b>Goroku Userbot Configuration</b>\n\nChoose a module to configure using <code>.config [module_name]</code> or set directly via <code>.setvalue [module] [key] [value]</code>:\n\n",
-		"module_info":    "⚙️ <b>Configuration of module</b> <code>%s</code>:\n\n",
-		"_cfg_cfg_emoji": "Change emoji when opening config",
+		"name":             "Goroku Config Module",
+		"args":             "🚫 <b>You specified incorrect args</b>",
+		"no_mod":           "🚫 <b>Module doesn't exist</b>",
+		"no_option":        "🚫 <b>Configuration option doesn't exist</b>",
+		"option_saved":     "⚙️ <b>Option</b> <code>%s</code> <b>of module</b> <code>%s</code><b> saved!</b>\n<b>Current:</b> <code>%s</code>",
+		"option_reset":     "♻️ <b>Option</b> <code>%s</code> <b>of module</b> <code>%s</code> <b>has been reset</b>",
+		"header_modules":   "⚙️ <b>Goroku Userbot Configuration</b>\n\nChoose a module to configure using <code>.config [module_name]</code> or set directly via <code>.setvalue [module] [key] [value]</code>:\n\n",
+		"module_info":      "⚙️ <b>Configuration of module</b> <code>%s</code>:\n\n",
+		"_cfg_cfg_emoji":   "Изменить эмодзи после открытия конфига",
+		"_cfg_list_emoji":  "Эмодзи элемента списка в конфиге",
+		"_cfg_start_emoji": "Эмодзи, отображаемый при открытии конфига. Премиум-теги эмодзи вроде &lt;tg-emoji emoji-id=\"...\"&gt; здесь использовать нельзя — они будут показаны как текст; остальные HTML-теги работают.",
 	}
 }
 
@@ -43,19 +52,29 @@ func (m *GorokuConfig) Init(client *goroku.CustomTelegramClient, db *goroku.Data
 	m.db = db
 	m.translator = goroku.NewTranslator(client, db)
 	m.translator.Init()
-	m.cfgEmoji = "🪐"
+	m.cfgEmoji = "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>"
+	m.startEmoji = "🍃"
+	m.listEmoji = "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>"
 	return nil
 }
 
 func (m *GorokuConfig) ConfigDefaults() map[string]interface{} {
 	return map[string]interface{}{
-		"cfg_emoji": "🪐",
+		"cfg_emoji":   "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>",
+		"start_emoji": "🍃",
+		"list_emoji":  "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>",
 	}
 }
 
 func (m *GorokuConfig) ConfigReady(config map[string]interface{}) error {
 	if val, ok := config["cfg_emoji"].(string); ok {
 		m.cfgEmoji = val
+	}
+	if val, ok := config["start_emoji"].(string); ok {
+		m.startEmoji = val
+	}
+	if val, ok := config["list_emoji"].(string); ok {
+		m.listEmoji = val
 	}
 	return nil
 }
@@ -92,12 +111,48 @@ func (m *GorokuConfig) getTrans(key, def string) string {
 	val := getTrans(m.translator, m.Name(), key, def)
 	// Apply custom emoji replacement
 	emoji := m.cfgEmoji
-	if emoji == "" {
-		emoji = "🪐"
+	if m.db != nil {
+		if dbEmoji, ok := m.db.Get(m.Name(), "cfg_emoji", "").(string); ok && dbEmoji != "" {
+			emoji = dbEmoji
+			m.cfgEmoji = dbEmoji
+		}
 	}
-	val = strings.ReplaceAll(val, "<tg-emoji emoji-id=5341715473882955310>🪐</tg-emoji>", emoji)
+	if emoji == "" {
+		emoji = "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>"
+	}
+	val = configEmojiRe.ReplaceAllString(val, emoji)
+	val = strings.ReplaceAll(val, "⚙️", emoji)
 	val = strings.ReplaceAll(val, "🪐", emoji)
 	return val
+}
+
+func (m *GorokuConfig) getListEmoji() string {
+	emoji := m.listEmoji
+	if m.db != nil {
+		if dbEmoji, ok := m.db.Get(m.Name(), "list_emoji", "").(string); ok && dbEmoji != "" {
+			emoji = dbEmoji
+			m.listEmoji = dbEmoji
+		}
+	}
+	if emoji == "" {
+		emoji = "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>"
+	}
+	return emoji
+}
+
+func (m *GorokuConfig) getStartText() string {
+	emoji := m.startEmoji
+	if m.db != nil {
+		if dbEmoji, ok := m.db.Get(m.Name(), "start_emoji", "").(string); ok && dbEmoji != "" {
+			emoji = dbEmoji
+			m.startEmoji = dbEmoji
+		}
+	}
+	if emoji == "" {
+		emoji = "🍃"
+	}
+	emoji = tgEmojiTagRe.ReplaceAllStringFunc(emoji, stdhtml.EscapeString)
+	return emoji
 }
 
 func (m *GorokuConfig) reloadModule(modName string) {
@@ -125,14 +180,34 @@ func (m *GorokuConfig) optionExists(mod goroku.Module, option string) bool {
 	return false
 }
 
-
-
 func (m *GorokuConfig) makeButton(text string, handler func(inline.CallbackQuery) error) inline.Button {
 	rand.Seed(time.Now().UnixNano())
 	return inline.Button{
 		Text:    text,
 		Data:    fmt.Sprintf("cfg_%d_%d", time.Now().UnixNano(), rand.Int63()),
 		Handler: handler,
+	}
+}
+
+func (m *GorokuConfig) makeDangerButton(text string, handler func(inline.CallbackQuery) error) inline.Button {
+	btn := m.makeButton(text, handler)
+	btn.Style = "danger"
+	return btn
+}
+
+func (m *GorokuConfig) makeBackButton(handler func(inline.CallbackQuery) error) inline.Button {
+	btn := m.makeButton(m.getTrans("back_btn", "👈 Back"), handler)
+	btn.Style = "primary"
+	return btn
+}
+
+func (m *GorokuConfig) makeCloseButton() inline.Button {
+	return inline.Button{
+		Text:  m.getTrans("close_btn", "❌ Close"),
+		Style: "danger",
+		Handler: func(call inline.CallbackQuery) error {
+			return closeForm(call)
+		},
 	}
 }
 
@@ -269,13 +344,29 @@ func getDefaultValue(modName, key string) interface{} {
 	return ""
 }
 
+func (m *GorokuConfig) getDefaultValue(modName, key string) interface{} {
+	loader, ok := m.client.Loader.(*goroku.Modules)
+	if ok && loader != nil {
+		if mod := loader.LookupByName(modName); mod != nil {
+			if withConfig, ok := mod.(goroku.ModuleWithConfig); ok {
+				for cfgKey, value := range withConfig.ConfigDefaults() {
+					if strings.EqualFold(cfgKey, key) {
+						return value
+					}
+				}
+			}
+		}
+	}
+	return getDefaultValue(modName, key)
+}
+
 func (m *GorokuConfig) getOptionValue(modName, key string) interface{} {
 	val := m.db.Get(modName, key, nil)
 	if val == nil {
 		val = m.db.Get(strings.ToLower(modName), strings.ToLower(key), nil)
 	}
 	if val == nil {
-		val = getDefaultValue(modName, key)
+		val = m.getDefaultValue(modName, key)
 	}
 	return val
 }
@@ -394,13 +485,15 @@ func (m *GorokuConfig) ChooseCategory(msg interface{}) error {
 	}
 
 	var catRow []inline.Button
-	catRow = append(catRow, m.makeButton(m.getTrans("builtin", "🛰 Built-in"), func(call inline.CallbackQuery) error {
+	builtinBtn := m.makeButton(m.getTrans("builtin", "Built-in"), func(call inline.CallbackQuery) error {
 		return m.ChooseModuleList(call, true, 0)
-	}))
+	})
+	catRow = append(catRow, builtinBtn)
 	if hasExternal {
-		catRow = append(catRow, m.makeButton(m.getTrans("external", "🛸 External"), func(call inline.CallbackQuery) error {
+		externalBtn := m.makeButton(m.getTrans("external", "External"), func(call inline.CallbackQuery) error {
 			return m.ChooseModuleList(call, false, 0)
-		}))
+		})
+		catRow = append(catRow, externalBtn)
 	}
 
 	markup := [][]inline.Button{catRow}
@@ -414,19 +507,14 @@ func (m *GorokuConfig) ChooseCategory(msg interface{}) error {
 	}
 
 	markup = append(markup, []inline.Button{
-		{
-			Text: m.getTrans("close_btn", "🔻 Close"),
-			Handler: func(call inline.CallbackQuery) error {
-				return closeForm(call)
-			},
-		},
+		m.makeCloseButton(),
 	})
 
 	text := m.getTrans("choose_core", "⚙️ <b>Choose a category</b>")
 
 	var err error
 	if msgObj, ok := msg.(*goroku.Message); ok {
-		_, err = im.Form(text, msgObj, markup)
+		_, err = im.Form(text, msgObj, markup, inline.WithStartText(m.getStartText()))
 	} else if callObj, ok := msg.(inline.CallbackQuery); ok {
 		err = callObj.Edit(text, im.GenerateMarkup(markup))
 	}
@@ -533,15 +621,10 @@ func (m *GorokuConfig) ChooseModuleList(msg interface{}, isBuiltin bool, page in
 	}
 
 	markup = append(markup, []inline.Button{
-		m.makeButton(m.getTrans("back_btn", "👈 Back"), func(call inline.CallbackQuery) error {
+		m.makeBackButton(func(call inline.CallbackQuery) error {
 			return m.ChooseCategory(call)
 		}),
-		{
-			Text: m.getTrans("close_btn", "🔻 Close"),
-			Handler: func(call inline.CallbackQuery) error {
-				return closeForm(call)
-			},
-		},
+		m.makeCloseButton(),
 	})
 
 	textKey := "configure"
@@ -552,7 +635,7 @@ func (m *GorokuConfig) ChooseModuleList(msg interface{}, isBuiltin bool, page in
 
 	var err error
 	if msgObj, ok := msg.(*goroku.Message); ok {
-		_, err = im.Form(text, msgObj, markup)
+		_, err = im.Form(text, msgObj, markup, inline.WithStartText(m.getStartText()))
 	} else if callObj, ok := msg.(inline.CallbackQuery); ok {
 		err = callObj.Edit(text, im.GenerateMarkup(markup))
 	}
@@ -588,7 +671,7 @@ func (m *GorokuConfig) ChooseFolderModuleList(msg interface{}, folderName string
 	var textParts []string
 	for _, rawMod := range modNames {
 		modStr := fmt.Sprintf("%v", rawMod)
-		textParts = append(textParts, fmt.Sprintf("▫️ <b>%s</b>", utils.EscapeHTML(modStr)))
+		textParts = append(textParts, fmt.Sprintf("%s <b>%s</b>", m.getListEmoji(), utils.EscapeHTML(modStr)))
 		btns = append(btns, m.makeButton(modStr, func(call inline.CallbackQuery) error {
 			return m.ConfigureModule(call, modStr, folderName)
 		}))
@@ -607,20 +690,15 @@ func (m *GorokuConfig) ChooseFolderModuleList(msg interface{}, folderName string
 	}
 
 	markup = append(markup, []inline.Button{
-		m.makeButton(m.getTrans("back_btn", "👈 Back"), func(call inline.CallbackQuery) error {
+		m.makeBackButton(func(call inline.CallbackQuery) error {
 			return m.ChooseCategory(call)
 		}),
-		{
-			Text: m.getTrans("close_btn", "🔻 Close"),
-			Handler: func(call inline.CallbackQuery) error {
-				return closeForm(call)
-			},
-		},
+		m.makeCloseButton(),
 	})
 
 	var err error
 	if msgObj, ok := msg.(*goroku.Message); ok {
-		_, err = im.Form(text, msgObj, markup)
+		_, err = im.Form(text, msgObj, markup, inline.WithStartText(m.getStartText()))
 	} else if callObj, ok := msg.(inline.CallbackQuery); ok {
 		err = callObj.Edit(text, im.GenerateMarkup(markup))
 	}
@@ -649,6 +727,11 @@ func (m *GorokuConfig) ConfigureModule(msg interface{}, modName string, fromFold
 			optionsSet[k] = true
 		}
 	}
+	if withConfig, ok := targetModule.(goroku.ModuleWithConfig); ok {
+		for k := range withConfig.ConfigDefaults() {
+			optionsSet[strings.ToLower(k)] = true
+		}
+	}
 	dbData := m.db.GetAll()
 	for _, owner := range []string{targetModule.Name(), strings.ToLower(targetModule.Name())} {
 		if innerMap, exists := dbData[owner]; exists {
@@ -675,7 +758,7 @@ func (m *GorokuConfig) ConfigureModule(msg interface{}, modName string, fromFold
 		if len(curValStr) > 40 {
 			curValStr = curValStr[:37] + "..."
 		}
-		sb.WriteString(fmt.Sprintf("▫️ <code>%s</code>: <b>%s</b>\n", opt, utils.EscapeHTML(curValStr)))
+		sb.WriteString(fmt.Sprintf("%s <code>%s</code>: <b>%s</b>\n", m.getListEmoji(), opt, utils.EscapeHTML(curValStr)))
 
 		btns = append(btns, m.makeButton(opt, func(call inline.CallbackQuery) error {
 			return m.ConfigureOption(call, targetModule.Name(), opt, false, fromFolder)
@@ -706,18 +789,13 @@ func (m *GorokuConfig) ConfigureModule(msg interface{}, modName string, fromFold
 	}
 
 	markup = append(markup, []inline.Button{
-		m.makeButton(m.getTrans("back_btn", "👈 Back"), backHandler),
-		{
-			Text: m.getTrans("close_btn", "🔻 Close"),
-			Handler: func(call inline.CallbackQuery) error {
-				return closeForm(call)
-			},
-		},
+		m.makeBackButton(backHandler),
+		m.makeCloseButton(),
 	})
 
 	var err error
 	if msgObj, ok := msg.(*goroku.Message); ok {
-		_, err = im.Form(text, msgObj, markup)
+		_, err = im.Form(text, msgObj, markup, inline.WithStartText(m.getStartText()))
 	} else if callObj, ok := msg.(inline.CallbackQuery); ok {
 		err = callObj.Edit(text, im.GenerateMarkup(markup))
 	}
@@ -752,7 +830,7 @@ func (m *GorokuConfig) ConfigureOption(msg interface{}, modName, optionName stri
 	}
 
 	doc := m.getOptionDoc(modName, optionName)
-	defVal := getDefaultValue(modName, optionName)
+	defVal := m.getDefaultValue(modName, optionName)
 	curVal := m.getOptionValue(modName, optionName)
 
 	var validator goroku.Validator
@@ -930,20 +1008,15 @@ func (m *GorokuConfig) ConfigureOption(msg interface{}, modName, optionName stri
 	}
 
 	markup = append(markup, []inline.Button{
-		m.makeButton(m.getTrans("back_btn", "👈 Back"), func(call inline.CallbackQuery) error {
+		m.makeBackButton(func(call inline.CallbackQuery) error {
 			return m.ConfigureModule(call, modName, fromFolder)
 		}),
-		{
-			Text: m.getTrans("close_btn", "🔻 Close"),
-			Handler: func(call inline.CallbackQuery) error {
-				return closeForm(call)
-			},
-		},
+		m.makeCloseButton(),
 	})
 
 	var err error
 	if msgObj, ok := msg.(*goroku.Message); ok {
-		_, err = im.Form(text, msgObj, markup)
+		_, err = im.Form(text, msgObj, markup, inline.WithStartText(m.getStartText()))
 	} else if callObj, ok := msg.(inline.CallbackQuery); ok {
 		err = callObj.Edit(text, im.GenerateMarkup(markup))
 	}
@@ -960,15 +1033,10 @@ func (m *GorokuConfig) ShowOptionSavedScreen(call inline.CallbackQuery, modName,
 
 	markup := [][]inline.Button{
 		{
-			m.makeButton(m.getTrans("back_btn", "👈 Back"), func(call inline.CallbackQuery) error {
+			m.makeBackButton(func(call inline.CallbackQuery) error {
 				return m.ConfigureModule(call, modName, fromFolder)
 			}),
-			{
-				Text: m.getTrans("close_btn", "🔻 Close"),
-				Handler: func(call inline.CallbackQuery) error {
-					return closeForm(call)
-				},
-			},
+			m.makeCloseButton(),
 		},
 	}
 
@@ -989,15 +1057,10 @@ func (m *GorokuConfig) ShowOptionResetScreen(call inline.CallbackQuery, modName,
 
 	markup := [][]inline.Button{
 		{
-			m.makeButton(m.getTrans("back_btn", "👈 Back"), func(call inline.CallbackQuery) error {
+			m.makeBackButton(func(call inline.CallbackQuery) error {
 				return m.ConfigureModule(call, modName, fromFolder)
 			}),
-			{
-				Text: m.getTrans("close_btn", "🔻 Close"),
-				Handler: func(call inline.CallbackQuery) error {
-					return closeForm(call)
-				},
-			},
+			m.makeCloseButton(),
 		},
 	}
 
@@ -1389,7 +1452,7 @@ func (m *GorokuConfig) ResetValueCmd(msg *goroku.Message) error {
 	m.db.Delete(modName, key)
 	m.reloadModule(modName)
 
-	defVal := getDefaultValue(modName, key)
+	defVal := m.getDefaultValue(modName, key)
 	displayVal := prepValue(defVal)
 
 	resetTrans := m.getTrans("option_reset", "♻️ <b>Option</b> <code>{0}</code> <b>of module</b> <code>{1}</code> <b>has been reset to default</b>\n<b>Current: {2}</b>")
@@ -1555,7 +1618,9 @@ func (m *GorokuConfig) FConfigCmd(msg *goroku.Message) error {
 
 var schemas = map[string]map[string]goroku.Validator{
 	"gorokuconfig": {
-		"cfg_emoji": &goroku.StringValidator{},
+		"cfg_emoji":   &goroku.StringValidator{},
+		"start_emoji": &goroku.StringValidator{},
+		"list_emoji":  &goroku.StringValidator{},
 	},
 	"gorokuinfo": {
 		"custom_message": &goroku.StringValidator{},

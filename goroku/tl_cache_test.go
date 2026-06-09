@@ -7,6 +7,25 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+func TestParseHTMLKeepsFormattingAndQuotedCustomEmoji(t *testing.T) {
+	plain, entities := parseHTML("<tg-emoji emoji-id=\"5972247240217988372\">🅰</tg-emoji> <b>bold</b>")
+	if plain != "🅰 bold" {
+		t.Fatalf("unexpected plain text: %q", plain)
+	}
+	var hasEmoji, hasBold bool
+	for _, entity := range entities {
+		switch entity.(type) {
+		case *tg.MessageEntityCustomEmoji:
+			hasEmoji = true
+		case *tg.MessageEntityBold:
+			hasBold = true
+		}
+	}
+	if !hasEmoji || !hasBold {
+		t.Fatalf("expected custom emoji and bold entities, got %#v", entities)
+	}
+}
+
 func TestAnswerPlanUsesParsedPlainTextLength(t *testing.T) {
 	raw := strings.Repeat("<tg-emoji emoji-id=5197195523794157505>▫️</tg-emoji>", 90)
 	plain, _ := parseHTML(raw)

@@ -3,6 +3,7 @@ package inline
 import (
 	"crypto/rand"
 	"fmt"
+	"log"
 	"math/big"
 	"time"
 )
@@ -54,6 +55,10 @@ func WithTTL(duration time.Duration) FormOpt {
 
 func WithOnUnload(fn func()) FormOpt {
 	return func(u *Unit) { u.OnUnload = fn }
+}
+
+func WithStartText(text string) FormOpt {
+	return func(u *Unit) { u.StartText = text }
 }
 
 func localRandStr(size int) string {
@@ -135,7 +140,17 @@ func (im *InlineManager) Form(
 		IsOut() bool
 	}
 	if del, ok := message.(deletable); ok && del.IsOut() {
-		_ = del.Delete()
+		for attempt := 1; attempt <= 3; attempt++ {
+			if attempt > 1 {
+				time.Sleep(time.Duration(attempt*250) * time.Millisecond)
+			}
+			if err := del.Delete(); err != nil {
+				log.Printf("[Inline] failed to delete source form message attempt=%d: %v", attempt, err)
+				continue
+			}
+			log.Printf("[Inline] deleted source form message attempt=%d", attempt)
+			break
+		}
 	}
 
 	im.mu.Lock()

@@ -61,8 +61,13 @@ func (im *InlineManager) GenerateMarkup(buttons [][]Button) tgbotapi.InlineKeybo
 		var line []tgbotapi.InlineKeyboardButton
 		for _, btn := range row {
 			btnText := stripHTML(btn.Text)
+			applyVisual := func(apiBtn tgbotapi.InlineKeyboardButton) tgbotapi.InlineKeyboardButton {
+				apiBtn.Style = btn.Style
+				apiBtn.IconCustomEmojiID = btn.IconEmojiID
+				return apiBtn
+			}
 			if btn.URL != "" {
-				line = append(line, tgbotapi.NewInlineKeyboardButtonURL(btnText, btn.URL))
+				line = append(line, applyVisual(tgbotapi.NewInlineKeyboardButtonURL(btnText, btn.URL)))
 			} else if btn.Input != "" {
 				switchQuery := btn.SwitchQuery
 				if switchQuery == "" {
@@ -73,10 +78,10 @@ func (im *InlineManager) GenerateMarkup(buttons [][]Button) tgbotapi.InlineKeybo
 					im.mu.Unlock()
 				}
 				swVal := switchQuery + " "
-				line = append(line, tgbotapi.InlineKeyboardButton{
+				line = append(line, applyVisual(tgbotapi.InlineKeyboardButton{
 					Text:                         btnText,
 					SwitchInlineQueryCurrentChat: &swVal,
-				})
+				}))
 			} else {
 				if (btn.Handler != nil || btn.InputHandler != nil) && btn.Data == "" {
 					btn.Data = localRandStr(16)
@@ -86,7 +91,7 @@ func (im *InlineManager) GenerateMarkup(buttons [][]Button) tgbotapi.InlineKeybo
 					im.customMap[btn.Data] = btn
 					im.mu.Unlock()
 				}
-				line = append(line, tgbotapi.NewInlineKeyboardButtonData(btnText, btn.Data))
+				line = append(line, applyVisual(tgbotapi.NewInlineKeyboardButtonData(btnText, btn.Data)))
 			}
 		}
 		rows = append(rows, line)

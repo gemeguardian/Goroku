@@ -574,6 +574,7 @@ goroku_config:
   typehint: <tg-emoji emoji-id="5413820660453509128">🤨</tg-emoji>️ <b>Довжно б-быть {}</b>
   set: <tg-emoji emoji-id="5413584527446541529">💐</tg-emoji> п-поставить
   set_default_btn: <tg-emoji emoji-id="5413547607907664571">💥</tg-emoji> Значение по умовчанию
+  _cfg_list_emoji: <tg-emoji emoji-id="5413816404140920179">🤓</tg-emoji> Эмодзи элемента списка в к-конфиге
   enter_value_btn: <tg-emoji emoji-id="5411428462453883195">🥹</tg-emoji> ✍️ Ввести значение
   enter_value_desc: <tg-emoji emoji-id="5413873857918436615">😃</tg-emoji> ✍️ Введи новое значение этого п-паваметва
   add_item_desc: <tg-emoji emoji-id="5413708115130483633">🫶</tg-emoji> ✍️ Введи эвемент, котовый нужно добавить
@@ -1044,7 +1045,7 @@ translate:
   no_args: <tg-emoji emoji-id="5413584527446541529">💐</tg-emoji> ❌ <b>Не указаны авгументы</b>
   error: <tg-emoji emoji-id="5411228694935012881">👍</tg-emoji> ❌ <b>Не удавось певевести текст</b>
   language: ru
-  translated_text: '<tg-emoji emoji-id="5413547607907664571">💥</tg-emoji> Певеведённый текст:
+  translated_text: '<tg-emoji emoji-id="5972247240217988372">🅰</tg-emoji> Певеведённый текст:
 
     <blockquote>{tr_text} </blockquote>'
   _cls_doc: <tg-emoji emoji-id="5411385529960791742">😎</tg-emoji> Певеводит текст (очевидно)

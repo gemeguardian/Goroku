@@ -193,6 +193,7 @@ scratch/
 
 # Goroku downloaded plugins
 .goroku_plugins/
+.goroku_go/
 goroku/modules/*
 !goroku/modules/api_protection.go
 !goroku/modules/eval.go

@@ -13,9 +13,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
-	"sort"
 	"time"
 	"unicode/utf16"
 
@@ -619,6 +619,7 @@ func (c *CustomTelegramClient) buildMessageFromTG(msg *tg.Message) *Message {
 		SenderID: 0,
 		Text:     entitiesToHTML(msg.Message, msg.Entities),
 		RawText:  msg.Message,
+		Entities: msg.Entities,
 		Out:      msg.Out,
 		Client:   c,
 		ViaBotID: msg.ViaBotID,
@@ -786,6 +787,9 @@ func entitiesToHTML(text string, entities []tg.MessageEntityClass) string {
 	return result.String()
 }
 
+func EntitiesToHTML(text string, entities []tg.MessageEntityClass) string {
+	return entitiesToHTML(text, entities)
+}
 
 type forbiddenInvoker struct {
 	parent tg.Invoker
@@ -1586,22 +1590,23 @@ func (c *CustomTelegramClient) DeleteMessage(chat interface{}, msgID int64) erro
 		}
 	}
 
+	if ch, ok := peer.(*tg.InputPeerChannel); ok {
+		_, err = c.rawAPI.ChannelsDeleteMessages(c.ctx,
+			&tg.ChannelsDeleteMessagesRequest{
+				Channel: &tg.InputChannel{
+					ChannelID:  ch.ChannelID,
+					AccessHash: ch.AccessHash,
+				},
+				ID: []int{int(msgID)},
+			})
+		return err
+	}
+
 	_, err = c.rawAPI.MessagesDeleteMessages(c.ctx,
 		&tg.MessagesDeleteMessagesRequest{
-			ID: []int{int(msgID)},
+			Revoke: true,
+			ID:     []int{int(msgID)},
 		})
-	if err != nil {
-		if ch, ok := peer.(*tg.InputPeerChannel); ok {
-			_, err = c.rawAPI.ChannelsDeleteMessages(c.ctx,
-				&tg.ChannelsDeleteMessagesRequest{
-					Channel: &tg.InputChannel{
-						ChannelID:  ch.ChannelID,
-						AccessHash: ch.AccessHash,
-					},
-					ID: []int{int(msgID)},
-				})
-		}
-	}
 	return err
 }
 
@@ -2638,8 +2643,72 @@ func (c *CustomTelegramClient) Translate(chat interface{}, msgID int, toLang str
 	}
 	var sb strings.Builder
 	for _, tw := range res.Result {
-		sb.WriteString(tw.Text)
+		sb.WriteString(entitiesToHTML(tw.Text, tw.Entities))
 	}
 	return sb.String(), nil
 }
 
+func (c *CustomTelegramClient) TranslateText(chat interface{}, text string, entities []tg.MessageEntityClass, toLang string) (string, error) {
+	if c.rawAPI == nil {
+		return "", fmt.Errorf("client not connected")
+	}
+	req := &tg.MessagesTranslateTextRequest{ToLang: toLang}
+	req.SetText([]tg.TextWithEntities{{Text: text, Entities: entities}})
+	log.Printf("[TranslateText] request text=%q entities=%d [%s] lang=%q", text, len(entities), describeTGEntities(entities), toLang)
+	res, err := c.rawAPI.MessagesTranslateText(c.ctx, req)
+	if err != nil {
+		log.Printf("[TranslateText] request failed: %v", err)
+		return "", err
+	}
+	var sb strings.Builder
+	for _, tw := range res.Result {
+		log.Printf("[TranslateText] response text=%q entities=%d [%s]", tw.Text, len(tw.Entities), describeTGEntities(tw.Entities))
+		htmlText := tw.Text
+		if len(tw.Entities) > 0 {
+			htmlText = entitiesToHTML(tw.Text, tw.Entities)
+		}
+		log.Printf("[TranslateText] response html=%q", htmlText)
+		sb.WriteString(htmlText)
+	}
+	return sb.String(), nil
+}
+
+func describeTGEntities(entities []tg.MessageEntityClass) string {
+	if len(entities) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(entities))
+	for _, entity := range entities {
+		offset, length, _ := messageEntitySpan(entity)
+		parts = append(parts, fmt.Sprintf("%T(offset=%d,length=%d)", entity, offset, length))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func messageEntitySpan(entity tg.MessageEntityClass) (int, int, bool) {
+	switch e := entity.(type) {
+	case *tg.MessageEntityBold:
+		return e.Offset, e.Length, true
+	case *tg.MessageEntityItalic:
+		return e.Offset, e.Length, true
+	case *tg.MessageEntityUnderline:
+		return e.Offset, e.Length, true
+	case *tg.MessageEntityStrike:
+		return e.Offset, e.Length, true
+	case *tg.MessageEntityCode:
+		return e.Offset, e.Length, true
+	case *tg.MessageEntityPre:
+		return e.Offset, e.Length, true
+	case *tg.MessageEntitySpoiler:
+		return e.Offset, e.Length, true
+	case *tg.MessageEntityBlockquote:
+		return e.Offset, e.Length, true
+	case *tg.MessageEntityTextURL:
+		return e.Offset, e.Length, true
+	case *tg.MessageEntityMentionName:
+		return e.Offset, e.Length, true
+	case *tg.MessageEntityCustomEmoji:
+		return e.Offset, e.Length, true
+	}
+	return 0, 0, false
+}

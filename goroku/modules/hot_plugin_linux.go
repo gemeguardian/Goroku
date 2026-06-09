@@ -101,6 +101,20 @@ func buildAndOpenPlugin(structName string) (goroku.Module, error) {
 
 	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", pluginFile, ".")
 	cmd.Dir = workDir
+	goPath := "/root/go"
+	goModCache := filepath.Join(goPath, "pkg", "mod")
+	goCache := filepath.Join(goroku.BasePath, ".goroku_go", "cache")
+	if err := os.MkdirAll(goPath, 0755); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(goCache, 0755); err != nil {
+		return nil, err
+	}
+	cmd.Env = append(os.Environ(),
+		"GOPATH="+goPath,
+		"GOMODCACHE="+goModCache,
+		"GOCACHE="+goCache,
+	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("plugin build failed for %s:\n%s", structName, string(output))

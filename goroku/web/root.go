@@ -50,14 +50,12 @@ type PendingAuth struct {
 }
 
 type WebSession struct {
-	Token     string
-	CSRFToken string
-	Expiry    time.Time
+	Token  string
+	Expiry time.Time
 }
 
 const (
 	sessionCookieName = "session"
-	csrfCookieName    = "csrf_token"
 	sessionTTL        = 6 * time.Hour
 )
 
@@ -143,15 +141,14 @@ func (w *Web) sessionForToken(token string) *WebSession {
 
 func (w *Web) createSession(wr http.ResponseWriter, r *http.Request) string {
 	session := "goroku_session_" + randomToken(32)
-	csrf := randomToken(32)
 	w.mu.Lock()
-	w.sessions[session] = WebSession{Token: session, CSRFToken: csrf, Expiry: time.Now().Add(sessionTTL)}
+	w.sessions[session] = WebSession{Token: session, Expiry: time.Now().Add(sessionTTL)}
 	w.mu.Unlock()
-	w.setSessionCookies(wr, r, session, csrf)
+	w.setSessionCookies(wr, r, session)
 	return session
 }
 
-func (w *Web) setSessionCookies(wr http.ResponseWriter, r *http.Request, session, csrf string) {
+func (w *Web) setSessionCookies(wr http.ResponseWriter, r *http.Request, session string) {
 	secure := isHTTPS(r)
 	http.SetCookie(wr, &http.Cookie{
 		Name:     sessionCookieName,
@@ -163,26 +160,16 @@ func (w *Web) setSessionCookies(wr http.ResponseWriter, r *http.Request, session
 		Expires:  time.Now().Add(sessionTTL),
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
-	http.SetCookie(wr, &http.Cookie{
-		Name:     csrfCookieName,
-		Value:    csrf,
-		Path:     "/",
-		HttpOnly: false,
-		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
-		Expires:  time.Now().Add(sessionTTL),
-		MaxAge:   int(sessionTTL.Seconds()),
-	})
 }
 
 func (w *Web) clearSessionCookies(wr http.ResponseWriter, r *http.Request) {
 	secure := isHTTPS(r)
-	for _, name := range []string{sessionCookieName, csrfCookieName, "setup_token"} {
+	for _, name := range []string{sessionCookieName, "setup_token"} {
 		http.SetCookie(wr, &http.Cookie{
 			Name:     name,
 			Value:    "",
 			Path:     "/",
-			HttpOnly: name != csrfCookieName,
+			HttpOnly: true,
 			Secure:   secure,
 			SameSite: http.SameSiteStrictMode,
 			Expires:  time.Unix(0, 0),
@@ -193,25 +180,6 @@ func (w *Web) clearSessionCookies(wr http.ResponseWriter, r *http.Request) {
 
 func isHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-}
-
-func (w *Web) checkCSRF(r *http.Request) bool {
-	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
-		return true
-	}
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
-		return false
-	}
-	sess := w.sessionForToken(cookie.Value)
-	if sess == nil {
-		return false
-	}
-	token := r.Header.Get("X-CSRF-Token")
-	if token == "" {
-		token = r.FormValue("csrf_token")
-	}
-	return token != "" && token == sess.CSRFToken
 }
 
 func (w *Web) checkSetupToken(r *http.Request) bool {
@@ -254,10 +222,6 @@ func (w *Web) checkSessionMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(wr http.ResponseWriter, r *http.Request) {
 		if !w.checkSession(r) {
 			http.Error(wr, "Unauthorized: Please log in using the Telegram Web Auth button first.", http.StatusUnauthorized)
-			return
-		}
-		if !w.checkCSRF(r) {
-			http.Error(wr, "CSRF_TOKEN_INVALID", http.StatusForbidden)
 			return
 		}
 		next(wr, r)
@@ -517,7 +481,7 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 	if w.checkSession(r) {
 		if cookie, err := r.Cookie(sessionCookieName); err == nil {
 			if sess := w.sessionForToken(cookie.Value); sess != nil {
-				w.setSessionCookies(wr, r, sess.Token, sess.CSRFToken)
+				w.setSessionCookies(wr, r, sess.Token)
 				wr.Write([]byte(cookie.Value))
 				return
 			}

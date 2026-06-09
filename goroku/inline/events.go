@@ -5,11 +5,10 @@ import (
 	"log"
 	"reflect"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
-
-
 
 func (im *InlineManager) HandleUpdate(update tgbotapi.Update) {
 	log.Printf("[Inline] HandleUpdate: ID=%d, InlineQuery=%t, CallbackQuery=%t, ChosenInlineResult=%t\n",
@@ -67,7 +66,7 @@ func (im *InlineManager) isUserAuthorizedForInline(userID int64) bool {
 							resSec := mSec.Call(nil)
 							if len(resSec) > 0 && !resSec[0].IsNil() {
 								vSec := unpackInterface(resSec[0])
-								
+
 								// First try the new IsUserInAllUsers method
 								mCheck := vSec.MethodByName("IsUserInAllUsers")
 								if mCheck.IsValid() {
@@ -76,7 +75,7 @@ func (im *InlineManager) isUserAuthorizedForInline(userID int64) bool {
 										return true
 									}
 								}
-								
+
 								// Fallback: reflection on allUsers if IsUserInAllUsers is not found
 								vSecStruct := vSec
 								if vSecStruct.Kind() == reflect.Ptr {
@@ -258,11 +257,15 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 			result = photo
 		}
 	default:
-		article := tgbotapi.NewInlineQueryResultArticle(unitID, unit.Type, unit.Text)
+		text := unit.Text
+		if unit.StartText != "" {
+			text = unit.StartText
+		}
+		article := tgbotapi.NewInlineQueryResultArticle(unitID, unit.Type, text)
 		article.Description = "Goroku Userbot inline result"
 		article.ReplyMarkup = &markup
 		article.InputMessageContent = tgbotapi.InputTextMessageContent{
-			Text:      unit.Text,
+			Text:      text,
 			ParseMode: tgbotapi.ModeHTML,
 		}
 		result = article
@@ -618,7 +621,7 @@ func (im *InlineManager) isUserOwnerOrTrustedForModule(sm interface{}, userID in
 	}
 
 	vSec := unpackInterface(reflect.ValueOf(sm))
-	
+
 	// Try calling IsOwner
 	mIsOwner := vSec.MethodByName("IsOwner")
 	if mIsOwner.IsValid() {
@@ -726,12 +729,38 @@ func (im *InlineManager) handleChosenInlineResult(r *tgbotapi.ChosenInlineResult
 		unitID = r.ResultID
 	}
 	im.mu.Lock()
-	_, exists := im.units[unitID]
+	unit, exists := im.units[unitID]
+	msgInfo := im.activeMessageIDs[unitID]
 	if exists {
 		im.activeInlineMessages[unitID] = r.InlineMessageID
 	}
 	ch, hasCh := im.errorEvents[unitID]
 	im.mu.Unlock()
+
+	if exists && unit != nil && unit.StartText != "" {
+		go func() {
+			markup := im.GenerateMarkup(unit.Buttons)
+			for attempt := 1; attempt <= 5; attempt++ {
+				if attempt > 1 {
+					time.Sleep(time.Duration(attempt*250) * time.Millisecond)
+				}
+				var err error
+				if r.InlineMessageID != "" {
+					err = NewInlineMessage(im, unitID, r.InlineMessageID).Edit(unit.Text, markup)
+				} else if msgInfo.ChatID != 0 && msgInfo.MessageID != 0 {
+					err = NewBotInlineMessage(im, unitID, msgInfo.ChatID, int64(msgInfo.MessageID)).Edit(unit.Text, markup)
+				} else {
+					err = fmt.Errorf("no inline_message_id and no active message id")
+				}
+				if err != nil {
+					log.Printf("[Inline] failed to edit start text for unit %s inline=%s chat=%d message=%d attempt=%d: %v", unitID, r.InlineMessageID, msgInfo.ChatID, msgInfo.MessageID, attempt, err)
+					continue
+				}
+				log.Printf("[Inline] edited start text for unit %s inline=%s chat=%d message=%d attempt=%d", unitID, r.InlineMessageID, msgInfo.ChatID, msgInfo.MessageID, attempt)
+				break
+			}
+		}()
+	}
 
 	if hasCh {
 		ch <- nil

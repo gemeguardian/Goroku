@@ -11,6 +11,7 @@ type Unit struct {
 	ID              string
 	Type            string // "form", "gallery", "list", "query_gallery"
 	Text            string
+	StartText       string
 	Message         interface{}
 	Handler         interface{}
 	TTL             time.Time
@@ -38,6 +39,8 @@ type Unit struct {
 
 type Button struct {
 	Text         string
+	Style        string
+	IconEmojiID  string
 	Data         string
 	URL          string
 	Handler      func(CallbackQuery) error
