@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 // List creates and sends a paginated list menu.
@@ -148,8 +148,10 @@ func (im *InlineManager) updateListPage(unitID string, page int, c CallbackQuery
 	} else {
 		editMsg = tgbotapi.EditMessageTextConfig{
 			BaseEdit: tgbotapi.BaseEdit{
-				ChatID:      c.ChatID,
-				MessageID:   int(c.MessageID),
+				BaseChatMessage: tgbotapi.BaseChatMessage{
+					ChatConfig: tgbotapi.ChatConfig{ChatID: c.ChatID},
+					MessageID:  int(c.MessageID),
+				},
 				ReplyMarkup: &markup,
 			},
 			Text:      text,

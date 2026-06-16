@@ -3,7 +3,7 @@ package inline
 import (
 	"fmt"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 // QueryGallery answers an inline query with articles that expand into full galleries when clicked.

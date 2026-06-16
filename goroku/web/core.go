@@ -7,10 +7,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"time"
 )
+
+const DefaultFallbackTGID = 123456789
 
 type WebCore struct {
 	*Web
@@ -111,7 +114,7 @@ func (wc *WebCore) Start(port int, proxyPass bool) {
 	})
 
 	// Setup static files handler
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web-resources/static"))))
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(filepath.Join(wc.dataRoot, "web-resources/static")))))
 
 	wc.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", wc.port),
@@ -156,7 +159,7 @@ func (wc *WebCore) AddLoader(client interface{}, loader interface{}, db interfac
 	wc.mu.Lock()
 	defer wc.mu.Unlock()
 
-	var id int64 = 123456789
+	var id int64 = DefaultFallbackTGID
 	if client != nil {
 		v := reflect.ValueOf(client)
 		if v.Kind() == reflect.Ptr {

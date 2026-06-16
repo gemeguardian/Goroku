@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tg"
 	"goroku/goroku"
 	"goroku/goroku/inline"
@@ -234,7 +234,7 @@ func (m *Quickstart) sendMenu(chatID int64) error {
 	msg := tgbotapi.NewMessage(chatID, text)
 	msg.ParseMode = tgbotapi.ModeHTML
 	msg.ReplyMarkup = markup
-	msg.DisableWebPagePreview = true
+	msg.LinkPreviewOptions = tgbotapi.LinkPreviewOptions{IsDisabled: true}
 
 	_, err := im.GetBotAPI().Send(msg)
 	return err

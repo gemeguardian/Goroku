@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 // SendMessageWithTopic sends a message to a specific topic thread in a forum chat.

@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tgerr"
 )
 
@@ -551,7 +551,7 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 			cfg := tgbotapi.NewMessage(0, msg)
 			cfg.ChatID = getClientTGID(client)
 			cfg.ParseMode = tgbotapi.ModeHTML
-			cfg.DisableWebPagePreview = true
+			cfg.LinkPreviewOptions = tgbotapi.LinkPreviewOptions{IsDisabled: true}
 			cfg.ReplyMarkup = markup
 			_, _ = inlineBot.Send(cfg)
 		} else {

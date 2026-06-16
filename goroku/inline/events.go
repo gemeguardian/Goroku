@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 func (im *InlineManager) HandleUpdate(update tgbotapi.Update) {
@@ -433,7 +433,7 @@ func (im *InlineManager) answerInlineHelp(q *tgbotapi.InlineQuery) {
 	}
 	article := tgbotapi.NewInlineQueryResultArticle(localRandStr(20), "Goroku inline commands", text.String())
 	article.Description = "Available inline commands"
-	article.InputMessageContent = tgbotapi.InputTextMessageContent{Text: text.String(), ParseMode: tgbotapi.ModeHTML, DisableWebPagePreview: true}
+	article.InputMessageContent = tgbotapi.InputTextMessageContent{Text: text.String(), ParseMode: tgbotapi.ModeHTML}
 	_, err := im.bot.Request(tgbotapi.InlineConfig{InlineQueryID: q.ID, Results: []interface{}{article}, CacheTime: 0, IsPersonal: true})
 	if err != nil {
 		log.Printf("[Inline] failed to answer inline help: %v\n", err)

@@ -3,10 +3,11 @@ module goroku
 go 1.24.4
 
 require (
-	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+	github.com/OvyFlash/telegram-bot-api v0.0.0-20260614133753-78a1eb63fa7a
 	github.com/gotd/td v0.120.0
 	github.com/redis/go-redis/v9 v9.20.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+	github.com/traefik/yaegi v0.16.1
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -30,7 +31,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ogen-go/ogen v1.10.0 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
-	github.com/traefik/yaegi v0.16.1 // indirect
 	go.opentelemetry.io/otel v1.34.0 // indirect
 	go.opentelemetry.io/otel/metric v1.34.0 // indirect
 	go.opentelemetry.io/otel/trace v1.34.0 // indirect

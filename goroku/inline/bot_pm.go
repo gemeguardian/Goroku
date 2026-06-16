@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 // SetFSMState sets the FSM state for a user.
@@ -38,7 +38,7 @@ func (im *InlineManager) GetFSMState(user interface{}) interface{} {
 
 // HandleBotPM is called to process private messages sent to the inline bot.
 func (im *InlineManager) HandleBotPM(m *tgbotapi.Message) {
-	if m.Chat == nil || !m.Chat.IsPrivate() || m.Text == "/start goroku init" {
+	if m.Chat.ID == 0 || !m.Chat.IsPrivate() || m.Text == "/start goroku init" {
 		return
 	}
 

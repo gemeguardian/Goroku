@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 type Unit struct {
@@ -200,8 +200,10 @@ func (m *BotInlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarku
 	}
 	editMsg := tgbotapi.EditMessageTextConfig{
 		BaseEdit: tgbotapi.BaseEdit{
-			ChatID:      m.ChatID,
-			MessageID:   int(m.MessageID),
+			BaseChatMessage: tgbotapi.BaseChatMessage{
+				ChatConfig: tgbotapi.ChatConfig{ChatID: m.ChatID},
+				MessageID:  int(m.MessageID),
+			},
 			ReplyMarkup: replyMarkup,
 		},
 		Text:      text,
@@ -213,8 +215,10 @@ func (m *BotInlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarku
 
 func (m *BotInlineMessage) Delete() (bool, error) {
 	delMsg := tgbotapi.DeleteMessageConfig{
-		ChatID:    m.ChatID,
-		MessageID: int(m.MessageID),
+		BaseChatMessage: tgbotapi.BaseChatMessage{
+			ChatConfig: tgbotapi.ChatConfig{ChatID: m.ChatID},
+			MessageID:  int(m.MessageID),
+		},
 	}
 	_, err := m.InlineManager.bot.Request(delMsg)
 	return err == nil, err
@@ -302,7 +306,7 @@ func (q *InlineQuery) AnswerResults(results []InlineResult, cacheTime int) error
 			article.Description = res.Description
 			article.ThumbURL = res.Thumb
 			article.ReplyMarkup = &markup
-			article.InputMessageContent = tgbotapi.InputTextMessageContent{Text: res.Message, ParseMode: tgbotapi.ModeHTML, DisableWebPagePreview: true}
+			article.InputMessageContent = tgbotapi.InputTextMessageContent{Text: res.Message, ParseMode: tgbotapi.ModeHTML}
 			iResults = append(iResults, article)
 		case res.Photo != "":
 			photo := tgbotapi.NewInlineQueryResultPhoto(id, res.Photo)

@@ -5,8 +5,10 @@ import (
 	"path/filepath"
 )
 
+var VersionRaw = "1.0.0"
+
 func GetVersionRaw() string {
-	return "2.0.0"
+	return VersionRaw
 }
 
 func GetBaseDir() string {

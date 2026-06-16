@@ -20,7 +20,7 @@ func GetMimeType(media interface{}) string {
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
-	if v.IsValid() {
+	if v.IsValid() && v.Kind() == reflect.Struct {
 		f := v.FieldByName("MimeType")
 		if f.IsValid() && f.Kind() == reflect.String {
 			return f.String()

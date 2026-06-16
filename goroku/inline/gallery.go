@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 // Gallery creates a scrollable gallery with next/prev buttons and slideshow support.
@@ -264,11 +264,11 @@ func (im *InlineManager) updateGalleryPage(unitID string, page int, c CallbackQu
 	im.mu.Unlock()
 
 	media := tgbotapi.FileURL(photoURL)
-	var inputMedia interface{}
+	var inputMedia tgbotapi.InputMedia
 
 	isGif := strings.HasSuffix(strings.ToLower(photoURL), ".gif") || strings.HasSuffix(strings.ToLower(photoURL), ".mp4") || unit.Gif
 	if isGif {
-		inputMedia = tgbotapi.InputMediaAnimation{
+		inputMedia = &tgbotapi.InputMediaAnimation{
 			BaseInputMedia: tgbotapi.BaseInputMedia{
 				Type:      "animation",
 				Media:     media,
@@ -277,7 +277,7 @@ func (im *InlineManager) updateGalleryPage(unitID string, page int, c CallbackQu
 			},
 		}
 	} else {
-		inputMedia = tgbotapi.InputMediaPhoto{
+		inputMedia = &tgbotapi.InputMediaPhoto{
 			BaseInputMedia: tgbotapi.BaseInputMedia{
 				Type:      "photo",
 				Media:     media,
@@ -299,8 +299,10 @@ func (im *InlineManager) updateGalleryPage(unitID string, page int, c CallbackQu
 	} else {
 		editMsg = tgbotapi.EditMessageMediaConfig{
 			BaseEdit: tgbotapi.BaseEdit{
-				ChatID:      c.ChatID,
-				MessageID:   int(c.MessageID),
+				BaseChatMessage: tgbotapi.BaseChatMessage{
+					ChatConfig: tgbotapi.ChatConfig{ChatID: c.ChatID},
+					MessageID:  int(c.MessageID),
+				},
 				ReplyMarkup: &markup,
 			},
 			Media: inputMedia,
