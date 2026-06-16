@@ -56,6 +56,21 @@ func GetPlatformName() string {
 	if os.Getenv("DOCKER") != "" {
 		return "Docker"
 	}
+	if os.Getenv("TERMUX_VERSION") != "" {
+		return "Termux"
+	}
+	if os.Getenv("RAILWAY_ENVIRONMENT") != "" {
+		return "Railway"
+	}
+	if os.Getenv("RENDER") != "" {
+		return "Render"
+	}
+	if os.Getenv("FLY_ALLOC_ID") != "" {
+		return "Fly.io"
+	}
+	if os.Getenv("PTERODACTYL") != "" {
+		return "Pterodactyl"
+	}
 	if strings.Contains(os.Getenv("USER"), "userland") {
 		return "UserLand"
 	}
@@ -68,6 +83,9 @@ func GetPlatformName() string {
 	}
 	if runtime.GOOS == "darwin" {
 		return "MacOS"
+	}
+	if runtime.GOOS == "freebsd" {
+		return "FreeBSD"
 	}
 
 	// Check WSL
@@ -88,7 +106,7 @@ func GetPlatformEmoji() string {
 	baseTemplate := `<tg-emoji emoji-id="%d">🪐</tg-emoji><tg-emoji emoji-id="5352934134618549768">🪐</tg-emoji><tg-emoji emoji-id="5352663371290271790">🪐</tg-emoji><tg-emoji emoji-id="5350822883314655367">🪐</tg-emoji>`
 
 	var emojiID int64
-	if strings.Contains(os.Getenv("USER"), "userland") {
+	if strings.Contains(os.Getenv("USER"), "userland") || os.Getenv("TERMUX_VERSION") != "" {
 		emojiID = 5458877818031077824
 	} else if os.Getenv("DOCKER") != "" {
 		emojiID = 5352678227582152630
@@ -121,6 +139,21 @@ func GetNamedPlatformEmoji() string {
 	if os.Getenv("DOCKER") != "" {
 		return "🐳 "
 	}
+	if os.Getenv("TERMUX_VERSION") != "" {
+		return "📱 "
+	}
+	if os.Getenv("RAILWAY_ENVIRONMENT") != "" {
+		return "🚂 "
+	}
+	if os.Getenv("RENDER") != "" {
+		return "🎨 "
+	}
+	if os.Getenv("FLY_ALLOC_ID") != "" {
+		return "🎈 "
+	}
+	if os.Getenv("PTERODACTYL") != "" {
+		return "🦖 "
+	}
 	if strings.Contains(os.Getenv("USER"), "userland") {
 		return "🐧 "
 	}
@@ -133,6 +166,9 @@ func GetNamedPlatformEmoji() string {
 	}
 	if runtime.GOOS == "darwin" {
 		return "🍏 "
+	}
+	if runtime.GOOS == "freebsd" {
+		return "😈 "
 	}
 
 	if runtime.GOOS == "linux" {

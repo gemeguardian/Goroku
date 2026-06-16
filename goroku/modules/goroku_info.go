@@ -230,6 +230,11 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 		"🦅":    `<tg-emoji emoji-id="5427286516797831670">🦅</tg-emoji>`,
 		"💻":    `<tg-emoji emoji-id="5469825590884310445">💻</tg-emoji>`,
 		"🍏":    `<tg-emoji emoji-id="5372908412604525258">🍏</tg-emoji>`,
+		"🎨":    `<tg-emoji emoji-id="5431601614211259074">🎨</tg-emoji>`,
+		"🎈":    `<tg-emoji emoji-id="5413488737229272370">🎈</tg-emoji>`,
+		"🦖":    `<tg-emoji emoji-id="5361730030994991275">🦖</tg-emoji>`,
+		"😈":    `<tg-emoji emoji-id="5384666579604618218">😈</tg-emoji>`,
+		"📱":    `<tg-emoji emoji-id="5407025283456835913">📱</tg-emoji>`,
 	}
 	for emoji, icon := range replacements {
 		platformEmoji = strings.ReplaceAll(platformEmoji, emoji, icon)
