@@ -358,7 +358,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 	if m.bannerURL != "" {
 		isURL := strings.HasPrefix(m.bannerURL, "http://") || strings.HasPrefix(m.bannerURL, "https://")
 		if m.quoteMedia && isURL {
-			text = fmt.Sprintf("<a href=\"%s\">&#8203;</a>\n%s", m.bannerURL, text)
+			text = fmt.Sprintf("<a href=\"%s\">&#8203;</a>%s", m.bannerURL, text)
 			opts = append(opts, goroku.WithWebPageMedia(m.bannerURL, false, true))
 			if m.invertMedia {
 				opts = append(opts, goroku.WithInvertMedia(true))
