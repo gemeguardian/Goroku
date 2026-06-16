@@ -95,7 +95,7 @@ func GetCommitCount() int {
 }
 
 // IsUpToDate checks if the local repo is up-to-date with the remote.
-// It fetches the remote and compares HEAD to origin/HEAD.
+// It fetches the remote and checks if we are behind origin/HEAD.
 func IsUpToDate() bool {
 	if IsNoGit() {
 		return true
@@ -106,12 +106,17 @@ func IsUpToDate() bool {
 	// Fetch silently
 	_ = exec.Command("git", "fetch", "--quiet").Run()
 
-	local, errL := exec.Command("git", "rev-parse", "HEAD").Output()
-	remote, errR := exec.Command("git", "rev-parse", "@{u}").Output()
-	if errL != nil || errR != nil {
+	// Check how many commits we are behind the tracking branch @{u}
+	out, err := exec.Command("git", "rev-list", "--count", "HEAD..@{u}").Output()
+	if err != nil {
 		return true
 	}
-	return strings.TrimSpace(string(local)) == strings.TrimSpace(string(remote))
+	behindCount, errConv := strconv.Atoi(strings.TrimSpace(string(out)))
+	if errConv != nil {
+		return true
+	}
+	// If behindCount is 0, we are not behind (we are up-to-date or ahead).
+	return behindCount == 0
 }
 
 // GetBranch returns the currently checked-out git branch name.
