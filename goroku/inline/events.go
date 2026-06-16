@@ -703,14 +703,32 @@ func (im *InlineManager) handleChosenInlineResult(r *tgbotapi.ChosenInlineResult
 			inputVal = strings.TrimSpace(parts[1])
 		}
 
+		im.mu.RLock()
+		unitID := im.buttonUnits[switchQuery]
+		im.mu.RUnlock()
+
 		cb := CallbackQuery{
 			ID:      r.ResultID,
 			FromID:  r.From.ID,
 			Data:    r.Query,
 			Manager: im,
 		}
-		if r.InlineMessageID != "" {
-			cb.InlineMessage = NewInlineMessage(im, "", r.InlineMessageID)
+
+		if unitID != "" {
+			im.mu.Lock()
+			msgInfo, hasMsgInfo := im.activeMessageIDs[unitID]
+			inlineMsgID, hasInlineMsgID := im.activeInlineMessages[unitID]
+			im.mu.Unlock()
+
+			if hasInlineMsgID && inlineMsgID != "" {
+				cb.InlineMessage = NewInlineMessage(im, unitID, inlineMsgID)
+			} else if hasMsgInfo && msgInfo.ChatID != 0 && msgInfo.MessageID != 0 {
+				cb.BotMessage = NewBotInlineMessage(im, unitID, msgInfo.ChatID, int64(msgInfo.MessageID))
+			}
+		}
+
+		if cb.InlineMessage == nil && cb.BotMessage == nil && r.InlineMessageID != "" {
+			cb.InlineMessage = NewInlineMessage(im, unitID, r.InlineMessageID)
 		}
 
 		go func() {

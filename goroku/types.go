@@ -119,6 +119,10 @@ type ModuleWithConfigReady interface {
 	ConfigReady(config map[string]interface{}) error
 }
 
+type ModuleWithConfigValidators interface {
+	ConfigValidators() map[string]Validator
+}
+
 type ModuleWithAllModules interface {
 	SetAllModules(*Modules)
 }

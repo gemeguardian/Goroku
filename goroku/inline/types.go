@@ -2,6 +2,7 @@ package inline
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
@@ -104,6 +105,12 @@ func (m *InlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarkup) 
 				if btn.CallbackData != nil && *btn.CallbackData != "" {
 					m.InlineManager.buttonUnits[*btn.CallbackData] = m.UnitID
 				}
+				if btn.SwitchInlineQueryCurrentChat != nil && *btn.SwitchInlineQueryCurrentChat != "" {
+					parts := strings.Split(strings.TrimSpace(*btn.SwitchInlineQueryCurrentChat), " ")
+					if len(parts) > 0 {
+						m.InlineManager.buttonUnits[parts[0]] = m.UnitID
+					}
+				}
 			}
 		}
 		m.InlineManager.mu.Unlock()
@@ -188,6 +195,12 @@ func (m *BotInlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarku
 			for _, btn := range row {
 				if btn.CallbackData != nil && *btn.CallbackData != "" {
 					m.InlineManager.buttonUnits[*btn.CallbackData] = m.UnitID
+				}
+				if btn.SwitchInlineQueryCurrentChat != nil && *btn.SwitchInlineQueryCurrentChat != "" {
+					parts := strings.Split(strings.TrimSpace(*btn.SwitchInlineQueryCurrentChat), " ")
+					if len(parts) > 0 {
+						m.InlineManager.buttonUnits[parts[0]] = m.UnitID
+					}
 				}
 			}
 		}

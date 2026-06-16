@@ -16,12 +16,15 @@ import (
 )
 
 type GorokuConfig struct {
-	client     *goroku.CustomTelegramClient
-	db         *goroku.Database
-	translator *goroku.Translator
-	cfgEmoji   string
-	startEmoji string
-	listEmoji  string
+	client               *goroku.CustomTelegramClient
+	db                   *goroku.Database
+	translator           *goroku.Translator
+	cfgEmoji             string
+	startEmoji           string
+	listEmoji            string
+	validationErrorEmoji string
+	detectiveEmoji       string
+	infoEmoji            string
 }
 
 var configEmojiRe = regexp.MustCompile(`(?i)<tg-emoji\s+emoji-id=["']?5341715473882955310["']?>(?:⚙️|🪐)</tg-emoji>`)
@@ -33,17 +36,22 @@ func (m *GorokuConfig) Name() string {
 
 func (m *GorokuConfig) Strings() map[string]string {
 	return map[string]string{
-		"name":             "Goroku Config Module",
-		"args":             "🚫 <b>You specified incorrect args</b>",
-		"no_mod":           "🚫 <b>Module doesn't exist</b>",
-		"no_option":        "🚫 <b>Configuration option doesn't exist</b>",
-		"option_saved":     "⚙️ <b>Option</b> <code>%s</code> <b>of module</b> <code>%s</code><b> saved!</b>\n<b>Current:</b> <code>%s</code>",
-		"option_reset":     "♻️ <b>Option</b> <code>%s</code> <b>of module</b> <code>%s</code> <b>has been reset</b>",
-		"header_modules":   "⚙️ <b>Goroku Userbot Configuration</b>\n\nChoose a module to configure using <code>.config [module_name]</code> or set directly via <code>.setvalue [module] [key] [value]</code>:\n\n",
-		"module_info":      "⚙️ <b>Configuration of module</b> <code>%s</code>:\n\n",
-		"_cfg_cfg_emoji":   "Изменить эмодзи после открытия конфига",
-		"_cfg_list_emoji":  "Эмодзи элемента списка в конфиге",
-		"_cfg_start_emoji": "Эмодзи, отображаемый при открытии конфига. Премиум-теги эмодзи вроде &lt;tg-emoji emoji-id=\"...\"&gt; здесь использовать нельзя — они будут показаны как текст; остальные HTML-теги работают.",
+		"name":                        "Goroku Config Module",
+		"args":                        "🚫 <b>You specified incorrect args</b>",
+		"no_mod":                      "🚫 <b>Module doesn't exist</b>",
+		"no_option":                   "🚫 <b>Configuration option doesn't exist</b>",
+		"option_saved":                "⚙️ <b>Option</b> <code>%s</code> <b>of module</b> <code>%s</code><b> saved!</b>\n<b>Current:</b> <code>%s</code>",
+		"option_reset":                "♻️ <b>Option</b> <code>%s</code> <b>of module</b> <code>%s</code> <b>has been reset</b>",
+		"header_modules":              "⚙️ <b>Goroku Userbot Configuration</b>\n\nChoose a module to configure using <code>.config [module_name]</code> or set directly via <code>.fcfg [module] [key] [value]</code> / reset via <code>.dcfg [module] [key]</code>:\n\n",
+		"module_info":                 "⚙️ <b>Configuration of module</b> <code>%s</code>:\n\n",
+		"builtin":                     "🛰 Встроенные",
+		"external":                    "🛸 Внешние",
+		"_cfg_cfg_emoji":              "Изменить эмодзи после открытия конфига",
+		"_cfg_list_emoji":             "Эмодзи элемента списка в конфиге",
+		"_cfg_start_emoji":            "Эмодзи, отображаемый при открытии конфига. Премиум-теги эмодзи вроде &lt;tg-emoji emoji-id=\"...\"&gt; здесь использовать нельзя — они будут показаны как текст; остальные HTML-теги работают.",
+		"_cfg_validation_error_emoji": "Эмодзи ошибки валидации",
+		"_cfg_detective_emoji":        "Эмодзи детектива (🕵️) в подсказках типов",
+		"_cfg_info_emoji":             "Эмодзи информации (ℹ️) в заголовке",
 	}
 }
 
@@ -55,14 +63,20 @@ func (m *GorokuConfig) Init(client *goroku.CustomTelegramClient, db *goroku.Data
 	m.cfgEmoji = "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>"
 	m.startEmoji = "🍃"
 	m.listEmoji = "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>"
+	m.validationErrorEmoji = "<tg-emoji emoji-id=\"4918014360267260850\">⛔️</tg-emoji>"
+	m.detectiveEmoji = "<tg-emoji emoji-id=\"5350830008665400761\">🕵️</tg-emoji>"
+	m.infoEmoji = "<tg-emoji emoji-id=\"5247029067256987229\">ℹ️</tg-emoji>"
 	return nil
 }
 
 func (m *GorokuConfig) ConfigDefaults() map[string]interface{} {
 	return map[string]interface{}{
-		"cfg_emoji":   "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>",
-		"start_emoji": "🍃",
-		"list_emoji":  "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>",
+		"cfg_emoji":              "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>",
+		"start_emoji":            "🍃",
+		"list_emoji":             "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>",
+		"validation_error_emoji": "<tg-emoji emoji-id=\"4918014360267260850\">⛔️</tg-emoji>",
+		"detective_emoji":        "<tg-emoji emoji-id=\"5350830008665400761\">🕵️</tg-emoji>",
+		"info_emoji":             "<tg-emoji emoji-id=\"5247029067256987229\">ℹ️</tg-emoji>",
 	}
 }
 
@@ -76,7 +90,43 @@ func (m *GorokuConfig) ConfigReady(config map[string]interface{}) error {
 	if val, ok := config["list_emoji"].(string); ok {
 		m.listEmoji = val
 	}
+	if val, ok := config["validation_error_emoji"].(string); ok {
+		m.validationErrorEmoji = val
+	}
+	if val, ok := config["detective_emoji"].(string); ok {
+		m.detectiveEmoji = val
+	}
+	if val, ok := config["info_emoji"].(string); ok {
+		m.infoEmoji = val
+	}
 	return nil
+}
+
+func (m *GorokuConfig) getValidationErrorEmoji() string {
+	if m.db != nil {
+		if dbEmoji, ok := m.db.Get(m.Name(), "validation_error_emoji", "").(string); ok && dbEmoji != "" {
+			m.validationErrorEmoji = dbEmoji
+		}
+	}
+	return m.validationErrorEmoji
+}
+
+func (m *GorokuConfig) getDetectiveEmoji() string {
+	if m.db != nil {
+		if dbEmoji, ok := m.db.Get(m.Name(), "detective_emoji", "").(string); ok && dbEmoji != "" {
+			m.detectiveEmoji = dbEmoji
+		}
+	}
+	return m.detectiveEmoji
+}
+
+func (m *GorokuConfig) getInfoEmoji() string {
+	if m.db != nil {
+		if dbEmoji, ok := m.db.Get(m.Name(), "info_emoji", "").(string); ok && dbEmoji != "" {
+			m.infoEmoji = dbEmoji
+		}
+	}
+	return m.infoEmoji
 }
 
 func (m *GorokuConfig) ClientReady() error { return nil }
@@ -85,10 +135,9 @@ func (m *GorokuConfig) OnDlmod() error     { return nil }
 
 func (m *GorokuConfig) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
-		"config":     m.ConfigCmd,
-		"fconfig":    m.FConfigCmd,
-		"setvalue":   m.SetValueCmd,
-		"resetvalue": m.ResetValueCmd,
+		"config":  m.ConfigCmd,
+		"fconfig": m.FConfigCmd,
+		"dconfig": m.DConfigCmd,
 	}
 }
 
@@ -99,6 +148,9 @@ func (m *GorokuConfig) CommandMetas() map[string]goroku.CommandMeta {
 		},
 		"fconfig": {
 			Aliases: []string{"fcfg"},
+		},
+		"dconfig": {
+			Aliases: []string{"dcfg"},
 		},
 	}
 }
@@ -167,6 +219,14 @@ func (m *GorokuConfig) optionExists(mod goroku.Module, option string) bool {
 	if modSchemas, exists := schemas[strings.ToLower(mod.Name())]; exists {
 		if _, exists := modSchemas[optLower]; exists {
 			return true
+		}
+	}
+	// Check ModuleWithConfigValidators
+	if withValidators, ok := mod.(goroku.ModuleWithConfigValidators); ok {
+		for k := range withValidators.ConfigValidators() {
+			if strings.ToLower(k) == optLower {
+				return true
+			}
 		}
 	}
 	// Check dynamic ConfigDefaults
@@ -485,12 +545,12 @@ func (m *GorokuConfig) ChooseCategory(msg interface{}) error {
 	}
 
 	var catRow []inline.Button
-	builtinBtn := m.makeButton(m.getTrans("builtin", "Built-in"), func(call inline.CallbackQuery) error {
+	builtinBtn := m.makeButton(m.getTrans("builtin", "🛰 Built-in"), func(call inline.CallbackQuery) error {
 		return m.ChooseModuleList(call, true, 0)
 	})
 	catRow = append(catRow, builtinBtn)
 	if hasExternal {
-		externalBtn := m.makeButton(m.getTrans("external", "External"), func(call inline.CallbackQuery) error {
+		externalBtn := m.makeButton(m.getTrans("external", "🛸 External"), func(call inline.CallbackQuery) error {
 			return m.ChooseModuleList(call, false, 0)
 		})
 		catRow = append(catRow, externalBtn)
@@ -727,6 +787,11 @@ func (m *GorokuConfig) ConfigureModule(msg interface{}, modName string, fromFold
 			optionsSet[k] = true
 		}
 	}
+	if withValidators, ok := targetModule.(goroku.ModuleWithConfigValidators); ok {
+		for k := range withValidators.ConfigValidators() {
+			optionsSet[strings.ToLower(k)] = true
+		}
+	}
 	if withConfig, ok := targetModule.(goroku.ModuleWithConfig); ok {
 		for k := range withConfig.ConfigDefaults() {
 			optionsSet[strings.ToLower(k)] = true
@@ -755,7 +820,9 @@ func (m *GorokuConfig) ConfigureModule(msg interface{}, modName string, fromFold
 		opt := optName
 		curVal := m.getOptionValue(targetModule.Name(), opt)
 		curValStr := fmt.Sprintf("%v", curVal)
-		if len(curValStr) > 40 {
+		if m.isOptionHidden(targetModule.Name(), opt) {
+			curValStr = "••••••••"
+		} else if len(curValStr) > 40 {
 			curValStr = curValStr[:37] + "..."
 		}
 		sb.WriteString(fmt.Sprintf("%s <code>%s</code>: <b>%s</b>\n", m.getListEmoji(), opt, utils.EscapeHTML(curValStr)))
@@ -823,7 +890,7 @@ func (m *GorokuConfig) getValidatorDocName(v goroku.Validator) string {
 	return "value"
 }
 
-func (m *GorokuConfig) ConfigureOption(msg interface{}, modName, optionName string, forceHidden bool, fromFolder string) error {
+func (m *GorokuConfig) ConfigureOption(msg interface{}, modName, optionName string, forceHidden bool, fromFolder string, errMsgs ...string) error {
 	im, ok := m.client.GorokuInline.(*inline.InlineManager)
 	if !ok || im == nil {
 		return fmt.Errorf("inline manager not ready")
@@ -833,12 +900,7 @@ func (m *GorokuConfig) ConfigureOption(msg interface{}, modName, optionName stri
 	defVal := m.getDefaultValue(modName, optionName)
 	curVal := m.getOptionValue(modName, optionName)
 
-	var validator goroku.Validator
-	if modSchemas, exists := schemas[strings.ToLower(modName)]; exists {
-		if valtor, exists := modSchemas[strings.ToLower(optionName)]; exists {
-			validator = valtor
-		}
-	}
+	validator := m.getValidator(modName, optionName)
 
 	isBool := false
 	isChoice := false
@@ -888,12 +950,17 @@ func (m *GorokuConfig) ConfigureOption(msg interface{}, modName, optionName stri
 			typehintTrans := m.getTrans("typehint", "🕵️ <b>Must be a{eng_art} {}</b>")
 			typehintTrans = strings.ReplaceAll(typehintTrans, "{eng_art}", engArt)
 			typehintTrans = strings.ReplaceAll(typehintTrans, "{}", docName)
+			typehintTrans = strings.ReplaceAll(typehintTrans, "🕵️", m.getDetectiveEmoji())
 			typeHint = typehintTrans
 		}
 	}
 
 	configuringOptionTrans := m.getTrans("configuring_option", "<tg-emoji emoji-id=5341715473882955310>⚙️</tg-emoji> <b>Configuring option</b> <code>{0}</code> <b>of mod</b> <code>{1}</code>\n<i>ℹ️ {2}</i>\n\n<b>Default:</b> {3}\n\n<b>Current:</b> {4}\n\n{5}")
+	configuringOptionTrans = strings.ReplaceAll(configuringOptionTrans, "ℹ️", m.getInfoEmoji())
 	text := formatTrans(configuringOptionTrans, optionName, modName, doc, defValStr, curValStr, typeHint)
+	if len(errMsgs) > 0 && errMsgs[0] != "" {
+		text = fmt.Sprintf("%s <b>Validation Error: %s</b>\n\n", m.getValidationErrorEmoji(), errMsgs[0]) + text
+	}
 
 	var markup [][]inline.Button
 
@@ -1028,6 +1095,9 @@ func (m *GorokuConfig) ShowOptionSavedScreen(call inline.CallbackQuery, modName,
 
 	curVal := m.getOptionValue(modName, optionName)
 	curValStr := prepValue(curVal)
+	if m.isOptionHidden(modName, optionName) {
+		curValStr = prepValue("••••••••")
+	}
 
 	text := formatTrans(optionSavedTrans, optionName, modName, curValStr)
 
@@ -1072,25 +1142,27 @@ func (m *GorokuConfig) ShowOptionResetScreen(call inline.CallbackQuery, modName,
 }
 
 func (m *GorokuConfig) SetBoolOption(call inline.CallbackQuery, modName, optionName string, val bool, fromFolder string) error {
-	validatedVal, err := validateConfig(modName, optionName, val)
+	validatedVal, err := m.validateConfig(modName, optionName, val)
 	if err != nil {
-		return call.Answer(fmt.Sprintf("❌ Error: %v", err), true)
+		_ = call.Answer(fmt.Sprintf("❌ Error: %v", err), true)
+		return m.ConfigureOption(call, modName, optionName, false, fromFolder, err.Error())
 	}
 	m.db.Set(modName, optionName, validatedVal)
 	m.reloadModule(modName)
 	_ = call.Answer("✅ Option saved!", false)
-	return m.ShowOptionSavedScreen(call, modName, optionName, fromFolder)
+	return m.ConfigureOption(call, modName, optionName, false, fromFolder)
 }
 
 func (m *GorokuConfig) SetChoiceOption(call inline.CallbackQuery, modName, optionName string, val interface{}, fromFolder string) error {
-	validatedVal, err := validateConfig(modName, optionName, val)
+	validatedVal, err := m.validateConfig(modName, optionName, val)
 	if err != nil {
-		return call.Answer(fmt.Sprintf("❌ Error: %v", err), true)
+		_ = call.Answer(fmt.Sprintf("❌ Error: %v", err), true)
+		return m.ConfigureOption(call, modName, optionName, false, fromFolder, err.Error())
 	}
 	m.db.Set(modName, optionName, validatedVal)
 	m.reloadModule(modName)
 	_ = call.Answer("✅ Option saved!", false)
-	return m.ShowOptionSavedScreen(call, modName, optionName, fromFolder)
+	return m.ConfigureOption(call, modName, optionName, false, fromFolder)
 }
 
 func (m *GorokuConfig) SetStringOption(call inline.CallbackQuery, modName, optionName string, val string, fromFolder string) error {
@@ -1120,21 +1192,22 @@ func (m *GorokuConfig) SetStringOption(call inline.CallbackQuery, modName, optio
 		}
 	}
 
-	validatedVal, err := validateConfig(modName, optionName, interfaceVal)
+	validatedVal, err := m.validateConfig(modName, optionName, interfaceVal)
 	if err != nil {
-		return call.Answer(fmt.Sprintf("❌ Error: %v", err), true)
+		_ = call.Answer(fmt.Sprintf("❌ Error: %v", err), true)
+		return m.ConfigureOption(call, modName, optionName, false, fromFolder, err.Error())
 	}
 	m.db.Set(modName, optionName, validatedVal)
 	m.reloadModule(modName)
 	_ = call.Answer("✅ Option saved!", false)
-	return m.ShowOptionSavedScreen(call, modName, optionName, fromFolder)
+	return m.ConfigureOption(call, modName, optionName, false, fromFolder)
 }
 
 func (m *GorokuConfig) ResetDefaultOption(call inline.CallbackQuery, modName, optionName string, fromFolder string) error {
 	m.db.Delete(modName, optionName)
 	m.reloadModule(modName)
 	_ = call.Answer("♻️ Reset to default", false)
-	return m.ShowOptionResetScreen(call, modName, optionName, fromFolder)
+	return m.ConfigureOption(call, modName, optionName, false, fromFolder)
 }
 
 func (m *GorokuConfig) AddSeriesItem(call inline.CallbackQuery, modName, optionName string, itemVal string, fromFolder string) error {
@@ -1172,14 +1245,15 @@ func (m *GorokuConfig) AddSeriesItem(call inline.CallbackQuery, modName, optionN
 
 	list = append(list, itemsToAdd...)
 
-	validatedVal, err := validateConfig(modName, optionName, list)
+	validatedVal, err := m.validateConfig(modName, optionName, list)
 	if err != nil {
-		return call.Answer(fmt.Sprintf("❌ Error: %v", err), true)
+		_ = call.Answer(fmt.Sprintf("❌ Error: %v", err), true)
+		return m.ConfigureOption(call, modName, optionName, false, fromFolder, err.Error())
 	}
 	m.db.Set(modName, optionName, validatedVal)
 	m.reloadModule(modName)
 	_ = call.Answer("➕ Item added!", false)
-	return m.ShowOptionSavedScreen(call, modName, optionName, fromFolder)
+	return m.ConfigureOption(call, modName, optionName, false, fromFolder)
 }
 
 func (m *GorokuConfig) RemoveSeriesItem(call inline.CallbackQuery, modName, optionName string, itemVal string, fromFolder string) error {
@@ -1208,17 +1282,19 @@ func (m *GorokuConfig) RemoveSeriesItem(call inline.CallbackQuery, modName, opti
 	}
 
 	if !found {
-		return call.Answer(fmt.Sprintf("❌ Error: Item %s not found in list", itemVal), true)
+		_ = call.Answer(fmt.Sprintf("❌ Error: Item %s not found in list", itemVal), true)
+		return m.ConfigureOption(call, modName, optionName, false, fromFolder, fmt.Sprintf("Item %s not found in list", itemVal))
 	}
 
-	validatedVal, err := validateConfig(modName, optionName, newList)
+	validatedVal, err := m.validateConfig(modName, optionName, newList)
 	if err != nil {
-		return call.Answer(fmt.Sprintf("❌ Error: %v", err), true)
+		_ = call.Answer(fmt.Sprintf("❌ Error: %v", err), true)
+		return m.ConfigureOption(call, modName, optionName, false, fromFolder, err.Error())
 	}
 	m.db.Set(modName, optionName, validatedVal)
 	m.reloadModule(modName)
 	_ = call.Answer("➖ Item removed!", false)
-	return m.ShowOptionSavedScreen(call, modName, optionName, fromFolder)
+	return m.ConfigureOption(call, modName, optionName, false, fromFolder)
 }
 
 func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
@@ -1235,7 +1311,7 @@ func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 
 	if rawArgs == "" {
 		var text strings.Builder
-		headerTrans := m.getTrans("header_modules", "⚙️ <b>Goroku Userbot Configuration</b>\n\nChoose a module to configure using <code>.config [module_name]</code> or set directly via <code>.setvalue [module] [key] [value]</code>:\n\n")
+		headerTrans := m.getTrans("header_modules", "⚙️ <b>Goroku Userbot Configuration</b>\n\nChoose a module to configure using <code>.config [module_name]</code> or set directly via <code>.fcfg [module] [key] [value]</code> / reset via <code>.dcfg [module] [key]</code>:\n\n")
 		text.WriteString(headerTrans)
 
 		modNames := make([]string, 0, len(modulesList))
@@ -1382,82 +1458,104 @@ func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 	return nil
 }
 
-func (m *GorokuConfig) SetValueCmd(msg *goroku.Message) error {
+func (m *GorokuConfig) DConfigCmd(msg *goroku.Message) error {
 	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
-	parts := strings.SplitN(rawArgs, " ", 3)
-	if len(parts) < 3 {
-		msg.Text = m.getTrans("args", "🚫 <b>You specified incorrect args</b>")
-		msg.Answer(msg.Text)
+	if rawArgs == "" {
+		_ = msg.Answer(m.getTrans("args", "🚫 <b>You specified incorrect args</b>"))
 		return nil
 	}
 
-	modName := parts[0]
-	key := parts[1]
-	valStr := parts[2]
+	parts := []string{}
+	for _, p := range strings.Split(rawArgs, "&&") {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	if len(parts) == 0 {
+		_ = msg.Answer(m.getTrans("args", "🚫 <b>You specified incorrect args</b>"))
+		return nil
+	}
 
-	var val interface{}
-	err := json.Unmarshal([]byte(valStr), &val)
-	if err != nil {
-		if (strings.HasPrefix(valStr, "\"") && strings.HasSuffix(valStr, "\"")) ||
-			(strings.HasPrefix(valStr, "'") && strings.HasSuffix(valStr, "'")) {
-			val = valStr[1 : len(valStr)-1]
-		} else {
-			if strings.ToLower(valStr) == "true" {
-				val = true
-			} else if strings.ToLower(valStr) == "false" {
-				val = false
-			} else if i, err := strconv.ParseInt(valStr, 10, 64); err == nil {
-				val = i
-			} else if f, err := strconv.ParseFloat(valStr, 64); err == nil {
-				val = f
-			} else {
-				val = valStr
+	splitBySpace := func(s string) (string, string) {
+		idx := -1
+		for i, r := range s {
+			if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+				idx = i
+				break
 			}
+		}
+		if idx == -1 {
+			return s, ""
+		}
+		return s[:idx], strings.TrimSpace(s[idx:])
+	}
+
+	p0 := strings.TrimSpace(parts[0])
+	mod, option := splitBySpace(p0)
+	if option == "" {
+		_ = msg.Answer(m.getTrans("args", "🚫 <b>You specified incorrect args</b>"))
+		return nil
+	}
+
+	loader, ok := m.client.Loader.(*goroku.Modules)
+	if !ok || loader == nil {
+		_ = msg.Answer("❌ Error: Modules registry not found.")
+		return nil
+	}
+
+	targetModName := strings.ToLower(mod)
+	var targetModule goroku.Module
+	for _, modObj := range loader.GetModules() {
+		if strings.ToLower(modObj.Name()) == targetModName {
+			targetModule = modObj
+			break
 		}
 	}
 
-	validatedVal, err := validateConfig(modName, key, val)
-	if err != nil {
-		msg.Text = fmt.Sprintf("❌ <b>Validation failed:</b> %s", err.Error())
-		msg.Answer(msg.Text)
+	if targetModule == nil {
+		_ = msg.Answer(m.getTrans("no_mod", "🚫 <b>Module doesn't exist</b>"))
 		return nil
 	}
 
-	m.db.Set(modName, key, validatedVal)
-	m.reloadModule(modName)
-
-	displayVal := fmt.Sprintf("%v", validatedVal)
-	if bytes, err := json.Marshal(validatedVal); err == nil {
-		displayVal = string(bytes)
-	}
-
-	savedTrans := m.getTrans("option_saved", "⚙️ <b>Option</b> <code>{0}</code> <b>of module</b> <code>{1}</code><b> saved!</b>\n<b>Current: {2}</b>")
-	msg.Text = formatTrans(savedTrans, key, modName, displayVal)
-	msg.Answer(msg.Text)
-	return nil
-}
-
-func (m *GorokuConfig) ResetValueCmd(msg *goroku.Message) error {
-	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
-	parts := strings.SplitN(rawArgs, " ", 2)
-	if len(parts) < 2 {
-		msg.Text = m.getTrans("args", "🚫 <b>You specified incorrect args</b>")
-		msg.Answer(msg.Text)
+	if _, hasConfig := targetModule.(goroku.ModuleWithConfig); !hasConfig {
+		_ = msg.Answer("🚫 <b>This module has no configuration options</b>")
 		return nil
 	}
 
-	modName := parts[0]
-	key := parts[1]
+	if !m.optionExists(targetModule, option) {
+		_ = msg.Answer(m.getTrans("no_option", "🚫 <b>Configuration option doesn't exist</b>"))
+		return nil
+	}
 
-	m.db.Delete(modName, key)
-	m.reloadModule(modName)
+	// Check all other options' existence
+	for _, p := range parts[1:] {
+		optName := strings.TrimSpace(p)
+		if !m.optionExists(targetModule, optName) {
+			_ = msg.Answer(m.getTrans("no_option", "🚫 <b>Configuration option doesn't exist</b>"))
+			return nil
+		}
+	}
 
-	defVal := m.getDefaultValue(modName, key)
-	displayVal := prepValue(defVal)
+	applyReset := func(opt string) string {
+		m.db.Delete(targetModule.Name(), opt)
+		m.reloadModule(targetModule.Name())
+		defVal := m.getDefaultValue(targetModule.Name(), opt)
+		return prepValue(defVal)
+	}
 
+	resets := []string{}
+	displayVal := applyReset(option)
 	resetTrans := m.getTrans("option_reset", "♻️ <b>Option</b> <code>{0}</code> <b>of module</b> <code>{1}</code> <b>has been reset to default</b>\n<b>Current: {2}</b>")
-	msg.Text = formatTrans(resetTrans, key, modName, displayVal)
-	msg.Answer(msg.Text)
+	resets = append(resets, formatTrans(resetTrans, option, targetModule.Name(), displayVal))
+
+	for _, p := range parts[1:] {
+		optName := strings.TrimSpace(p)
+		displayVal = applyReset(optName)
+		resets = append(resets, formatTrans(resetTrans, optName, targetModule.Name(), displayVal))
+	}
+
+	_ = msg.Answer(strings.Join(resets, "\n"))
 	return nil
 }
 
@@ -1580,7 +1678,7 @@ func (m *GorokuConfig) FConfigCmd(msg *goroku.Message) error {
 			}
 		}
 
-		validatedVal, err := validateConfig(targetModule.Name(), opt, val)
+		validatedVal, err := m.validateConfig(targetModule.Name(), opt, val)
 		if err != nil {
 			return "", err
 		}
@@ -1597,6 +1695,9 @@ func (m *GorokuConfig) FConfigCmd(msg *goroku.Message) error {
 		return nil
 	}
 	savedTrans := m.getTrans("option_saved", "⚙️ <b>Option</b> <code>{0}</code> <b>of module</b> <code>{1}</code><b> saved!</b>\n<b>Current: {2}</b>")
+	if m.isOptionHidden(targetModule.Name(), option) {
+		displayVal = "••••••••"
+	}
 	updates = append(updates, formatTrans(savedTrans, option, targetModule.Name(), displayVal))
 
 	for _, p := range parts[1:] {
@@ -1608,6 +1709,9 @@ func (m *GorokuConfig) FConfigCmd(msg *goroku.Message) error {
 		if err != nil {
 			_ = msg.Answer(fmt.Sprintf("❌ <b>Validation failed for option %s:</b> %s", optName, err.Error()))
 			return nil
+		}
+		if m.isOptionHidden(targetModule.Name(), optName) {
+			displayVal = "••••••••"
 		}
 		updates = append(updates, formatTrans(savedTrans, optName, targetModule.Name(), displayVal))
 	}
@@ -1634,7 +1738,7 @@ var schemas = map[string]map[string]goroku.Validator{
 		"modules_repo":     &goroku.StringValidator{},
 		"additional_repos": &goroku.SeriesValidator{},
 		"share_link":       &goroku.BooleanValidator{},
-		"basic_auth":       &goroku.StringValidator{},
+		"basic_auth":       &goroku.HiddenValidator{Inner: &goroku.RegExpValidator{Pattern: regexp.MustCompile(`^.*:.*$`)}},
 		"command_emoji":    &goroku.StringValidator{},
 	},
 	"apilimiter": {
@@ -1683,15 +1787,58 @@ var schemas = map[string]map[string]goroku.Validator{
 	},
 }
 
-func validateConfig(modName, option string, value interface{}) (interface{}, error) {
+func (m *GorokuConfig) getValidator(modName, option string) goroku.Validator {
 	modName = strings.ToLower(modName)
 	option = strings.ToLower(option)
-	if modSchemas, exists := schemas[modName]; exists {
-		if val, exists := modSchemas[option]; exists {
-			return val.Validate(value)
+
+	if m.client != nil && m.client.Loader != nil {
+		if loader, ok := m.client.Loader.(*goroku.Modules); ok && loader != nil {
+			if targetMod := loader.LookupByName(modName); targetMod != nil {
+				if withValidators, ok := targetMod.(goroku.ModuleWithConfigValidators); ok {
+					for k, v := range withValidators.ConfigValidators() {
+						if strings.ToLower(k) == option {
+							return v
+						}
+					}
+				}
+			}
 		}
 	}
-	defVal := getDefaultValue(modName, option)
+
+	if modSchemas, exists := schemas[modName]; exists {
+		if val, exists := modSchemas[option]; exists {
+			return val
+		}
+	}
+
+	if modName == "goroku.inline" && option == "bot_token" {
+		return &goroku.HiddenValidator{
+			Inner: &goroku.RegExpValidator{
+				Pattern: regexp.MustCompile(`^[0-9]{8,10}:[a-zA-Z0-9_-]{34,36}$`),
+			},
+		}
+	}
+
+	return nil
+}
+
+func (m *GorokuConfig) isOptionHidden(modName, option string) bool {
+	val := m.getValidator(modName, option)
+	if val != nil {
+		if _, ok := val.(*goroku.HiddenValidator); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *GorokuConfig) validateConfig(modName, option string, value interface{}) (interface{}, error) {
+	modName = strings.ToLower(modName)
+	option = strings.ToLower(option)
+	if val := m.getValidator(modName, option); val != nil {
+		return val.Validate(value)
+	}
+	defVal := m.getDefaultValue(modName, option)
 	switch defVal.(type) {
 	case bool:
 		return (&goroku.BooleanValidator{}).Validate(value)
