@@ -44,6 +44,10 @@ func GetCPUUsage() string {
 }
 
 func GetPlatformName() string {
+	if hostVar := os.Getenv("HOST_VAR"); hostVar != "" {
+		return hostVar
+	}
+
 	// 1. Check for Raspberry / Orange Pi
 	if content, err := os.ReadFile("/proc/device-tree/model"); err == nil {
 		model := strings.TrimSpace(string(content))
