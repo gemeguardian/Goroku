@@ -387,9 +387,17 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuInfo) formatInfoMessage(template string, args map[string]string, firstArg string) string {
-	// First replace Python-style positional placeholders.
-	template = strings.Replace(template, "{0}", firstArg, 1)
-	text := strings.Replace(template, "{}", firstArg, 1)
+	var text string
+	if firstArg == "" {
+		// Remove the placeholder and its trailing newline natively
+		text = strings.Replace(template, "{0}\n", "", 1)
+		text = strings.Replace(text, "{}\n", "", 1)
+		text = strings.Replace(text, "{0}", "", 1)
+		text = strings.Replace(text, "{}", "", 1)
+	} else {
+		template = strings.Replace(template, "{0}", firstArg, 1)
+		text = strings.Replace(template, "{}", firstArg, 1)
+	}
 
 	// Replace named placeholders
 	var pairs []string
