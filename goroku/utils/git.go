@@ -28,7 +28,11 @@ func GetCommitURL() string {
 	if hash == "" {
 		return "Unknown"
 	}
-	return "https://github.com/gemeguardian/Goroku/commit/" + hash
+	short := hash
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	return `<a href="https://github.com/gemeguardian/Goroku/commit/` + hash + `">#` + short + `</a>`
 }
 
 func IsWrongUpstreamOrigin() bool {

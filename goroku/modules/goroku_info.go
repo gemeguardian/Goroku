@@ -206,7 +206,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 	cpuUsage := utils.GetCPUUsage()
 	uptime := utils.FormattedUptime()
 	platformName := utils.GetPlatformName()
-	platformEmoji := utils.GetPlatformEmoji()
+	platformEmoji := utils.GetNamedPlatformEmoji()
 	gitStatus := utils.GetGitStatus()
 	branch := utils.GetBranch()
 	goVersion := runtime.Version()
@@ -223,13 +223,10 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 		"🐳":    `<tg-emoji emoji-id="5431815452437257407">🐳</tg-emoji>`,
 		"🕶":    `<tg-emoji emoji-id="5407025283456835913">📱</tg-emoji>`,
 		"🐈‍⬛":  `<tg-emoji emoji-id="6334750507294262724">🐈‍⬛</tg-emoji>`,
-		"✌️":   `<tg-emoji emoji-id="5469986291380657759">✌️</tg-emoji>`,
 		"💎":    `<tg-emoji emoji-id="5471952986970267163">💎</tg-emoji>`,
 		"🛡":    `<tg-emoji emoji-id="5282731554135615450">🌩</tg-emoji>`,
-		"🌼":    `<tg-emoji emoji-id="5224219153077914783">❤️</tg-emoji>`,
 		"🎡":    `<tg-emoji emoji-id="5226711870492126219">🎡</tg-emoji>`,
 		"🐧":    `<tg-emoji emoji-id="5361541227604878624">🐧</tg-emoji>`,
-		"🧃":    `<tg-emoji emoji-id="5422884965593397853">🧃</tg-emoji>`,
 		"🦅":    `<tg-emoji emoji-id="5427286516797831670">🦅</tg-emoji>`,
 		"💻":    `<tg-emoji emoji-id="5469825590884310445">💻</tg-emoji>`,
 		"🍏":    `<tg-emoji emoji-id="5372908412604525258">🍏</tg-emoji>`,
@@ -243,6 +240,9 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 	kernelVer := getKernelVersion()
 	cpuDetails := fmt.Sprintf("%d core(-s); %s%% total", runtime.NumCPU(), cpuUsage)
 	gitURL := utils.GetCommitURL()
+	if gitStatus != "Clean" && gitStatus != "Git disabled" && gitStatus != "Not a Git repo" && gitStatus != "Unknown" {
+		gitURL += " (modified)"
+	}
 	htlVer := "gotd v0.120.0"
 
 	hostname, _ := os.Hostname()

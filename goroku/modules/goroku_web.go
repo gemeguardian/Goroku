@@ -99,35 +99,8 @@ func (m *GorokuWeb) WebpanelCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	if os.Getenv("JAMHOST") != "" {
-		template := m.getTrans("host_denied", "<tg-emoji emoji-id=6037254263187443802>💬</tg-emoji> Session addition commands are not available on your hosting, please contact your hosting administration.")
-		return msg.Answer(template)
-	}
-
 	im, ok := m.client.GorokuInline.(*inline.InlineManager)
 	hasInline := ok && im != nil && im.IsComplete()
-
-	if os.Getenv("LAVHOST") != "" {
-		lavhostWeb := m.getTrans("lavhost_web", "🕸 <b>Web interface is available.</b>\n\n<i>To add account use button below.</i>")
-		webBtnText := m.getTrans("web_btn", "🔗 Web Panel")
-		url := web.Instance.GetURL(false)
-
-		if hasInline {
-			btn := inline.Button{
-				Text: webBtnText,
-				URL:  url,
-			}
-			_, err := im.Form(
-				lavhostWeb,
-				msg,
-				[][]inline.Button{{btn}},
-				inline.WithPhoto("https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/web_interface.png"),
-			)
-			return err
-		} else {
-			return msg.Answer(fmt.Sprintf("%s\n\n<a href=\"%s\">%s</a>", lavhostWeb, url, webBtnText))
-		}
-	}
 
 	force := strings.Contains(strings.ToLower(msg.Text), "force_insecure")
 
@@ -262,12 +235,6 @@ func (m *GorokuWeb) ApproveWebCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuWeb) AddaccCmd(msg *goroku.Message) error {
-	if os.Getenv("JAMHOST") != "" || os.Getenv("LAVHOST") != "" {
-		template := getTrans(m.translator, m.Name(), "host_denied", "<tg-emoji emoji-id=6037254263187443802>💬</tg-emoji> Session addition commands are not available on your hosting, please contact your hosting administration.")
-		_ = msg.Answer(template)
-		return nil
-	}
-
 	var targetUser *tg.User
 	var targetID int64
 

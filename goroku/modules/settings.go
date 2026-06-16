@@ -873,7 +873,7 @@ func (m *SettingsModule) GorokuCmd(msg *goroku.Message) error {
 }
 
 func (m *SettingsModule) getInstallationMarkup() [][]inline.Button {
-	platforms := []string{"vds", "wsl", "userland", "jamhost", "hikkahost", "lavhost"}
+	platforms := []string{"vds", "wsl", "userland"}
 	var buttons []inline.Button
 	for _, p := range platforms {
 		platformName := p
@@ -899,9 +899,6 @@ func (m *SettingsModule) InstallationCmd(msg *goroku.Message) error {
 		"-vds": "vds_install",
 		"-wsl": "wsl_install",
 		"-ul":  "userland_install",
-		"-jh":  "jamhost_install",
-		"-hh":  "hikkahost_install",
-		"-lh":  "lavhost_install",
 	}
 
 	if guideKey, ok := validArgs[args]; ok {

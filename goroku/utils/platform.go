@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -43,20 +44,102 @@ func GetCPUUsage() string {
 }
 
 func GetPlatformName() string {
+	// 1. Check for Raspberry / Orange Pi
+	if content, err := os.ReadFile("/proc/device-tree/model"); err == nil {
+		model := strings.TrimSpace(string(content))
+		if strings.Contains(model, "Orange") || strings.Contains(model, "Raspberry") {
+			return model
+		}
+	}
+
+	// 2. Check env / runtime
 	if os.Getenv("DOCKER") != "" {
 		return "Docker"
 	}
-	if os.Getenv("LAVHOST") != "" {
-		return "LavHost"
+	if strings.Contains(os.Getenv("USER"), "userland") {
+		return "UserLand"
 	}
+	if strings.Contains(os.Getenv("PATH"), "com.apple") {
+		return "MacOS"
+	}
+
+	if runtime.GOOS == "windows" {
+		return "Windows"
+	}
+	if runtime.GOOS == "darwin" {
+		return "MacOS"
+	}
+
+	// Check WSL
+	if content, err := os.ReadFile("/proc/version"); err == nil {
+		if strings.Contains(strings.ToLower(string(content)), "microsoft") {
+			return "WSL"
+		}
+	}
+
+	if runtime.GOOS == "linux" {
+		return "VDS"
+	}
+
 	return runtime.GOOS
 }
 
 func GetPlatformEmoji() string {
-	if runtime.GOOS == "linux" {
-		return "🐧"
+	baseTemplate := `<tg-emoji emoji-id="%d">🪐</tg-emoji><tg-emoji emoji-id="5352934134618549768">🪐</tg-emoji><tg-emoji emoji-id="5352663371290271790">🪐</tg-emoji><tg-emoji emoji-id="5350822883314655367">🪐</tg-emoji>`
+
+	var emojiID int64
+	if strings.Contains(os.Getenv("USER"), "userland") {
+		emojiID = 5458877818031077824
+	} else if os.Getenv("DOCKER") != "" {
+		emojiID = 5352678227582152630
+	} else {
+		emojiID = 5393588431026674882
 	}
-	return "💎"
+
+	return fmt.Sprintf(baseTemplate, emojiID)
+}
+
+func GetNamedPlatformEmoji() string {
+	// 1. Check for Raspberry / Orange Pi
+	if content, err := os.ReadFile("/proc/device-tree/model"); err == nil {
+		model := string(content)
+		if strings.Contains(model, "Orange") {
+			return "🍊 "
+		}
+		if strings.Contains(model, "Raspberry") {
+			return "🍇 "
+		}
+		return "?"
+	}
+
+	if content, err := os.ReadFile("/proc/version"); err == nil {
+		if strings.Contains(strings.ToLower(string(content)), "microsoft") {
+			return "🍀 "
+		}
+	}
+
+	if os.Getenv("DOCKER") != "" {
+		return "🐳 "
+	}
+	if strings.Contains(os.Getenv("USER"), "userland") {
+		return "🐧 "
+	}
+	if strings.Contains(os.Getenv("PATH"), "com.apple") {
+		return "🍏 "
+	}
+
+	if runtime.GOOS == "windows" {
+		return "💻 "
+	}
+	if runtime.GOOS == "darwin" {
+		return "🍏 "
+	}
+
+	if runtime.GOOS == "linux" {
+		return "💎 "
+	}
+
+	return "? "
 }
 
 func GetGoPath() string {
