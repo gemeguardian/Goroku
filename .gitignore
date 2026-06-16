@@ -217,4 +217,4 @@ goroku/modules/*
 !goroku/modules/test.go
 !goroku/modules/translate.go
 !goroku/modules/translations.go
-!goroku/modules/updater.go
+!goroku/modules/updater.go.kimchi/

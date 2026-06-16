@@ -1583,30 +1583,41 @@ func (m *GorokuConfig) FConfigCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	splitBySpace := func(s string) (string, string) {
-		idx := -1
+	splitBySpaceN := func(s string, n int) []string {
+		var result []string
+		start := 0
+		count := 0
 		for i, r := range s {
-			if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-				idx = i
-				break
+			if r == ' ' || r == '	' || r == '\n' || r == '\r' {
+				if count < n {
+					if i > start {
+						result = append(result, strings.TrimSpace(s[start:i]))
+					}
+					start = i + 1
+					count++
+				}
 			}
 		}
-		if idx == -1 {
-			return s, ""
+		if start < len(s) {
+			result = append(result, strings.TrimSpace(s[start:]))
 		}
-		return s[:idx], strings.TrimSpace(s[idx:])
+		return result
 	}
 
 	p0 := strings.TrimSpace(parts[0])
-	mod, rest := splitBySpace(p0)
-	if rest == "" {
+	firstParts := splitBySpaceN(p0, 2)
+	if len(firstParts) < 2 {
 		_ = msg.Answer(m.getTrans("args", "🚫 <b>You specified incorrect args</b>"))
 		return nil
 	}
 
+	mod := firstParts[0]
 	var option, value string
-	option, value = splitBySpace(rest)
-	if value == "" {
+	if len(firstParts) == 3 {
+		option = firstParts[1]
+		value = firstParts[2]
+	} else {
+		option = firstParts[1]
 		if replyMsg != nil {
 			value = replyMsg.Text
 		}
