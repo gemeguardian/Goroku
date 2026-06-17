@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-
-
 // Rand returns a random alphanumeric string of the specified size.
 func Rand(size int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyz1234567890"

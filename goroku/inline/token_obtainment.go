@@ -16,7 +16,6 @@ import (
 
 const botIDPattern = `(?s)<a[^>]*href="/botfather/bot/(\d+)"[^>]*>(?:[^<]|<[^/]|</[^a]|</[aA][^>])*@%s.*?</a>`
 
-
 var (
 	hashPattern        = regexp.MustCompile(`Main\.init\(\s*['"]([^'"]+)['"]\s*\);?`)
 	botCommandsPattern = regexp.MustCompile(`(?s)data-command=["']([^"']+)["'].*?class=["']tm-row-desc[^"']*["']>\s*([^<]+?)\s*</span>`)
@@ -264,7 +263,7 @@ func (im *InlineManager) createBot(client *http.Client, baseURL, hash string) (b
 
 	var username string
 	latinMock := []string{"Goroku", "Helper", "Userbot", "MyBot"}
-	
+
 	if customBot != "" {
 		username = customBot
 	} else {
@@ -360,7 +359,7 @@ func (im *InlineManager) reassertToken(client *http.Client, baseURL, hash string
 		im.initComplete = false
 		return false, err
 	}
-	
+
 	if ok {
 		err = im.RegisterManager(false, true)
 		return err == nil, err

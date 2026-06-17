@@ -2,10 +2,10 @@ package modules
 
 import (
 	"fmt"
-	"html"
-	"regexp"
 	"goroku/goroku"
 	"goroku/goroku/utils"
+	"html"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,15 +35,15 @@ func (m *Help) Name() string {
 
 func (m *Help) Strings() map[string]string {
 	return map[string]string{
-		"name": "Help",
-		"_cfg_core_emoji": "Bullet emoji/tag for core modules",
-		"_cfg_plain_emoji": "Bullet emoji/tag for plain modules",
-		"_cfg_empty_emoji": "Bullet emoji/tag for empty modules",
-		"_cfg_desc_icon": "Emoji/tag for module description icon",
+		"name":               "Help",
+		"_cfg_core_emoji":    "Bullet emoji/tag for core modules",
+		"_cfg_plain_emoji":   "Bullet emoji/tag for plain modules",
+		"_cfg_empty_emoji":   "Bullet emoji/tag for empty modules",
+		"_cfg_desc_icon":     "Emoji/tag for module description icon",
 		"_cfg_command_emoji": "Emoji/tag for command bullet",
-		"_cfg_banner_url": "Banner image URL shown in help menu",
-		"_cfg_media_quote": "Switch preview media to quote",
-		"_cfg_invert_media": "Invert media position (above/below text)",
+		"_cfg_banner_url":    "Banner image URL shown in help menu",
+		"_cfg_media_quote":   "Switch preview media to quote",
+		"_cfg_invert_media":  "Invert media position (above/below text)",
 	}
 }
 

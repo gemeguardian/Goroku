@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	ruRunes = []rune("ёйцукенгшщзхъфывапролджэячсмитьбю.Ё\"№;%:?ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭ/ЯЧСМИТЬБЮ,")
-	enRunes = []rune("`qwertyuiop[]asdfghjkl;'zxcvbnm,./~@#$%^&QWERTYUIOP{}ASDFGHJKL:\"|ZXCVBNM<>?")
+	ruRunes       = []rune("ёйцукенгшщзхъфывапролджэячсмитьбю.Ё\"№;%:?ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭ/ЯЧСМИТЬБЮ,")
+	enRunes       = []rune("`qwertyuiop[]asdfghjkl;'zxcvbnm,./~@#$%^&QWERTYUIOP{}ASDFGHJKL:\"|ZXCVBNM<>?")
 	cmdNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9_\p{L}]+$`)
 )
 

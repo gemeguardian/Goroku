@@ -33,7 +33,6 @@ func (m *TranslationsModule) Strings() map[string]string {
 	}
 }
 
-
 func (m *TranslationsModule) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
 	m.client = client
 	m.db = db
@@ -60,18 +59,18 @@ func (m *TranslationsModule) Watchers() []goroku.WatcherHandler {
 
 func getFlag(lang string) string {
 	emojiFlags := map[string]string{
-		"🇬🇧": "<tg-emoji emoji-id=6323589145717376403>🇬🇧</tg-emoji>",
-		"🇺🇿": "<tg-emoji emoji-id=5449829434334912605>🇺🇿</tg-emoji>",
-		"🇷🇺": "<tg-emoji emoji-id=6323139226418284334>🇷🇺</tg-emoji>",
-		"🇺🇦": "<tg-emoji emoji-id=5276140694891666474>🇺🇦</tg-emoji>",
-		"🇮🇹": "<tg-emoji emoji-id=6323471399188957082>🇮🇹</tg-emoji>",
-		"🇩🇪": "<tg-emoji emoji-id=6320817337033295141>🇩🇪</tg-emoji>",
-		"🇪🇸": "<tg-emoji emoji-id=6323315062379382237>🇪🇸</tg-emoji>",
-		"🇹🇷": "<tg-emoji emoji-id=6321003171678259486>🇹🇷</tg-emoji>",
-		"🇰🇿": "<tg-emoji emoji-id=5228718354658769982>🇰🇿</tg-emoji>",
-		"🥟": "<tg-emoji emoji-id=5382337996123020810>🥟</tg-emoji>",
-		"🇯🇵": "<tg-emoji emoji-id=5456261908069885892>🇯🇵</tg-emoji>",
-		"🇫🇷": "<tg-emoji emoji-id=5202132623060640759>🇫🇷</tg-emoji>",
+		"🇬🇧":   "<tg-emoji emoji-id=6323589145717376403>🇬🇧</tg-emoji>",
+		"🇺🇿":   "<tg-emoji emoji-id=5449829434334912605>🇺🇿</tg-emoji>",
+		"🇷🇺":   "<tg-emoji emoji-id=6323139226418284334>🇷🇺</tg-emoji>",
+		"🇺🇦":   "<tg-emoji emoji-id=5276140694891666474>🇺🇦</tg-emoji>",
+		"🇮🇹":   "<tg-emoji emoji-id=6323471399188957082>🇮🇹</tg-emoji>",
+		"🇩🇪":   "<tg-emoji emoji-id=6320817337033295141>🇩🇪</tg-emoji>",
+		"🇪🇸":   "<tg-emoji emoji-id=6323315062379382237>🇪🇸</tg-emoji>",
+		"🇹🇷":   "<tg-emoji emoji-id=6321003171678259486>🇹🇷</tg-emoji>",
+		"🇰🇿":   "<tg-emoji emoji-id=5228718354658769982>🇰🇿</tg-emoji>",
+		"🥟":    "<tg-emoji emoji-id=5382337996123020810>🥟</tg-emoji>",
+		"🇯🇵":   "<tg-emoji emoji-id=5456261908069885892>🇯🇵</tg-emoji>",
+		"🇫🇷":   "<tg-emoji emoji-id=5202132623060640759>🇫🇷</tg-emoji>",
 		"🏴‍☠️": "<tg-emoji emoji-id=5386372293263892965>🏴‍☠️</tg-emoji>",
 	}
 
@@ -343,4 +342,3 @@ func (m *TranslationsModule) DlLangPackCmd(msg *goroku.Message) error {
 
 	return nil
 }
-

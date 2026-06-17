@@ -25,10 +25,10 @@ func (m *APIProtection) Name() string {
 
 func (m *APIProtection) Strings() map[string]string {
 	return map[string]string{
-		"name": "APILimiter",
-		"_cfg_time_sample": "Time sample (in seconds) through which request count is measured",
-		"_cfg_threshold": "Threshold of requests to trigger protection",
-		"_cfg_local_floodwait": "Freeze userbot for this amount of time (in seconds) if request limit is exceeded",
+		"name":                   "APILimiter",
+		"_cfg_time_sample":       "Time sample (in seconds) through which request count is measured",
+		"_cfg_threshold":         "Threshold of requests to trigger protection",
+		"_cfg_local_floodwait":   "Freeze userbot for this amount of time (in seconds) if request limit is exceeded",
 		"_cfg_forbidden_methods": "Forbid specified methods from being executed throughout external modules",
 	}
 }

@@ -36,12 +36,12 @@ func (m *LoaderModule) Name() string {
 
 func (m *LoaderModule) Strings() map[string]string {
 	return map[string]string{
-		"name": "Loader",
-		"_cfg_MODULES_REPO": "Main repository URL for downloading modules",
+		"name":                  "Loader",
+		"_cfg_MODULES_REPO":     "Main repository URL for downloading modules",
 		"_cfg_ADDITIONAL_REPOS": "Additional repository URLs for downloading modules",
-		"_cfg_share_link": "Share module link when sending .session files",
-		"_cfg_basic_auth": "Basic auth credentials for remote updates (format user:password)",
-		"_cfg_command_emoji": "Bullet emoji/tag for loading commands in help",
+		"_cfg_share_link":       "Share module link when sending .session files",
+		"_cfg_basic_auth":       "Basic auth credentials for remote updates (format user:password)",
+		"_cfg_command_emoji":    "Bullet emoji/tag for loading commands in help",
 	}
 }
 

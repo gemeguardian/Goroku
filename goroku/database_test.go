@@ -169,4 +169,3 @@ func TestDatabaseAutofix(t *testing.T) {
 		t.Fatal("Expected nil module key to be removed by autofix")
 	}
 }
-

@@ -149,7 +149,7 @@ func TestEscapeQuotes(t *testing.T) {
 
 func TestRemoveHTML(t *testing.T) {
 	input := "<b>Hello</b> <a href='https://example.com'>world</a>! <emoji id=1>🚀</emoji>"
-	
+
 	// Keep Emojis
 	gotKeep := RemoveHTML(input, false, true)
 	expectedKeep := "Hello world! <emoji id=1>🚀</emoji>"
@@ -238,7 +238,7 @@ func TestAssetForumTopic(t *testing.T) {
 
 	// 2. Creator client
 	creator := &mockChannelCreator{}
-	
+
 	// Cache miss, search succeeds
 	topicSearch, err := AssetForumTopic(creator, db, peer, "SearchTopic", "desc", 111, true)
 	if err != nil {

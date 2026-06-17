@@ -137,12 +137,12 @@ func (m *GorokuBackup) ClientReady() error {
 				}
 
 				periodText := m.getTrans("period", "⌚️ <b>The unit «ALPHA»</b> creates regular backups...")
-				
+
 				photo := tgbotapi.NewPhoto(m.client.TGID, tgbotapi.FileURL("https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/unit_alpha.png"))
 				photo.Caption = periodText
 				photo.ParseMode = tgbotapi.ModeHTML
 				photo.ReplyMarkup = im.GenerateMarkup(markup)
-				
+
 				_, err := botAPI.Send(photo)
 				if err != nil {
 					log.Printf("Failed to send backup period msg via bot: %v\n", err)
@@ -251,7 +251,6 @@ func (m *GorokuBackup) getBackupTopicID() int32 {
 	}
 	return 0
 }
-
 
 func (m *GorokuBackup) handleConvertCallback(call inline.CallbackQuery, ans string, fileContent string) error {
 	prefix := "."

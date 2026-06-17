@@ -206,7 +206,6 @@ func (t *Translator) HasRawData(lang string) bool {
 	return ok
 }
 
-
 type Strings struct {
 	mod        Module
 	translator *Translator

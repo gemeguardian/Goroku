@@ -153,4 +153,3 @@ func TestSecurityCheckTsecRules(t *testing.T) {
 		t.Fatal("any user in tsec_chat should pass for test_cmd")
 	}
 }
-

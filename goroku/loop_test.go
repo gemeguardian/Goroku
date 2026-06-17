@@ -48,7 +48,7 @@ func TestInfiniteLoopPanicRecovery(t *testing.T) {
 
 	l := NewInfiniteLoop(panickingFn, 2*time.Millisecond, "PanicMod", false)
 	l.Start()
-	
+
 	// Wait for loop to run and panic
 	time.Sleep(10 * time.Millisecond)
 

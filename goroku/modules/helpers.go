@@ -22,7 +22,6 @@ func closeForm(call inline.CallbackQuery) error {
 	return nil
 }
 
-
 func camelToSnake(s string) string {
 	var res strings.Builder
 	for i, r := range s {

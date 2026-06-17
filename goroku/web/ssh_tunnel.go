@@ -13,17 +13,17 @@ import (
 )
 
 type SSHTunnel struct {
-	port               int
-	changeURLCallback  func(string)
-	tunnelURL          string
-	urlAvailable       chan struct{}
-	process            *exec.Cmd
-	currentCmdIndex    int
-	sshCommands        [][]string
-	allCommandsFailed  bool
-	mu                 sync.Mutex
-	ctx                context.Context
-	cancel             context.CancelFunc
+	port              int
+	changeURLCallback func(string)
+	tunnelURL         string
+	urlAvailable      chan struct{}
+	process           *exec.Cmd
+	currentCmdIndex   int
+	sshCommands       [][]string
+	allCommandsFailed bool
+	mu                sync.Mutex
+	ctx               context.Context
+	cancel            context.CancelFunc
 }
 
 func NewSSHTunnel(port int, changeURLCallback func(string)) *SSHTunnel {

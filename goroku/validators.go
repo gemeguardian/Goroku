@@ -290,4 +290,3 @@ type RandomLinkListValidator struct{}
 func (r *RandomLinkListValidator) Validate(value interface{}) (interface{}, error) {
 	return value, nil
 }
-

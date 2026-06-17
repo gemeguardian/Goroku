@@ -67,8 +67,8 @@ func (m *Test) ClientReady() error {
 	}
 	return nil
 }
-func (m *Test) OnUnload() error    { return nil }
-func (m *Test) OnDlmod() error     { return nil }
+func (m *Test) OnUnload() error { return nil }
+func (m *Test) OnDlmod() error  { return nil }
 
 func (m *Test) ConfigDefaults() map[string]interface{} {
 	return map[string]interface{}{

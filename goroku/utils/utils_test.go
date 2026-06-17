@@ -256,4 +256,3 @@ func TestPlatformUnixUtils(t *testing.T) {
 		t.Error("GetDiskUsage returned empty string")
 	}
 }
-

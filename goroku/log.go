@@ -3,6 +3,7 @@ package goroku
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"math/rand"
@@ -12,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"html"
 
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"

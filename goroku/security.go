@@ -802,7 +802,6 @@ func (sm *SecurityManager) IsUserInAllUsers(userID int64) bool {
 	return false
 }
 
-
 func (sm *SecurityManager) CheckModuleAccess(userID int64, moduleName string) bool {
 	if sm.IsOwner(userID) {
 		return true
@@ -859,5 +858,3 @@ func (sm *SecurityManager) CheckModuleAccess(userID int64, moduleName string) bo
 
 	return false
 }
-
-

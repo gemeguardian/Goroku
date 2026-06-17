@@ -12,7 +12,6 @@ import (
 
 var restarting int32
 
-
 func FwProtect() {
 	time.Sleep(time.Duration(1000) * time.Millisecond)
 }
@@ -196,4 +195,3 @@ func HandleAuthKeyUnregistered(tgID int64, sessionPath string) {
 	_ = os.Remove(configPath)
 	Restart()
 }
-
