@@ -781,6 +781,10 @@ func (sm *SecurityManager) IsOwner(userID int64) bool {
 	return false
 }
 
+func (sm *SecurityManager) GetOwnerList() *PointerList {
+	return sm.owner
+}
+
 func (sm *SecurityManager) IsUserInAllUsers(userID int64) bool {
 	if sm.IsOwner(userID) {
 		return true

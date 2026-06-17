@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"goroku/goroku/cache"
+
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 )
@@ -145,10 +147,10 @@ type CustomTelegramClient struct {
 	entityCache            map[string]interface{}
 	permsCache             map[string]interface{}
 	cacheMu                sync.RWMutex
-	GorokuEntityCache      map[interface{}]CacheRecordEntity
-	GorokuPermsCache       map[interface{}]map[interface{}]CacheRecordPerms
-	GorokuFullChannelCache map[interface{}]CacheRecordFullChannel
-	GorokuFullUserCache    map[interface{}]CacheRecordFullUser
+	GorokuEntityCache      map[interface{}]cache.CacheRecordEntity
+	GorokuPermsCache       map[interface{}]map[interface{}]cache.CacheRecordPerms
+	GorokuFullChannelCache map[interface{}]cache.CacheRecordFullChannel
+	GorokuFullUserCache    map[interface{}]cache.CacheRecordFullUser
 	ForbiddenConstructors  []uint32
 	GorokuMe               interface{}
 	GorokuDB               interface{}
@@ -180,10 +182,10 @@ func NewCustomTelegramClient(tgID int64) *CustomTelegramClient {
 		TGID:                   tgID,
 		entityCache:            make(map[string]interface{}),
 		permsCache:             make(map[string]interface{}),
-		GorokuEntityCache:      make(map[interface{}]CacheRecordEntity),
-		GorokuPermsCache:       make(map[interface{}]map[interface{}]CacheRecordPerms),
-		GorokuFullChannelCache: make(map[interface{}]CacheRecordFullChannel),
-		GorokuFullUserCache:    make(map[interface{}]CacheRecordFullUser),
+		GorokuEntityCache:      make(map[interface{}]cache.CacheRecordEntity),
+		GorokuPermsCache:       make(map[interface{}]map[interface{}]cache.CacheRecordPerms),
+		GorokuFullChannelCache: make(map[interface{}]cache.CacheRecordFullChannel),
+		GorokuFullUserCache:    make(map[interface{}]cache.CacheRecordFullUser),
 		ForbiddenConstructors:  make([]uint32, 0),
 	}
 }

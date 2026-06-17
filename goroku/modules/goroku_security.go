@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tg"
@@ -133,27 +132,11 @@ func (m *GorokuSecurity) saveGroups(groups map[string]securityGroup) {
 }
 
 func (m *GorokuSecurity) getOwnerList() *goroku.PointerList {
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	sm := m.getSecurityManager()
+	if sm == nil {
 		return nil
 	}
-	dispatcher := loader.GetDispatcher()
-	if dispatcher == nil {
-		return nil
-	}
-	val := reflect.ValueOf(dispatcher).Elem()
-	securityField := val.FieldByName("security")
-	if !securityField.IsValid() {
-		return nil
-	}
-	securityPtr := reflect.NewAt(securityField.Type(), unsafe.Pointer(securityField.UnsafeAddr())).Elem().Interface()
-
-	smVal := reflect.ValueOf(securityPtr).Elem()
-	ownerField := smVal.FieldByName("owner")
-	if !ownerField.IsValid() {
-		return nil
-	}
-	return reflect.NewAt(ownerField.Type(), unsafe.Pointer(ownerField.UnsafeAddr())).Elem().Interface().(*goroku.PointerList)
+	return sm.GetOwnerList()
 }
 
 func (m *GorokuSecurity) getSecurityManager() *goroku.SecurityManager {
