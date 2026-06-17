@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goroku/goroku/cache"
+	"goroku/goroku/inline"
 
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
@@ -152,10 +153,10 @@ type CustomTelegramClient struct {
 	GorokuFullChannelCache map[interface{}]cache.CacheRecordFullChannel
 	GorokuFullUserCache    map[interface{}]cache.CacheRecordFullUser
 	ForbiddenConstructors  []uint32
-	GorokuMe               interface{}
-	GorokuDB               interface{}
-	Loader                 interface{}
-	GorokuInline           interface{}
+	GorokuMe               *tg.User
+	GorokuDB               *Database
+	Loader                 *Modules
+	GorokuInline           *inline.InlineManager
 	phoneCodeHash          string
 	qrLoginSignal          <-chan struct{}
 	readyCh                chan struct{}
@@ -209,8 +210,6 @@ func (c *CustomTelegramClient) Disconnect() error {
 	}
 	return nil
 }
-
-type JSONSerializable interface{}
 
 // AnimateMessage cycles through frames in a Telegram message.
 // It edits the message with each frame, waiting interval between frames.

@@ -54,7 +54,7 @@ func (m *Updater) ClientReady() error {
 	pollLoop := goroku.NewInfiniteLoop(m.pollerTick, 60*time.Second, m.Name(), true)
 	announcementLoop := goroku.NewInfiniteLoop(m.announcementTick, 60*time.Second, m.Name(), true)
 
-	if loader, ok := m.client.Loader.(*goroku.Modules); ok {
+	if loader := m.client.Loader; loader != nil {
 		loader.RegisterLoop(pollLoop)
 		loader.RegisterLoop(announcementLoop)
 	}

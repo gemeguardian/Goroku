@@ -99,8 +99,8 @@ func (m *GorokuWeb) WebpanelCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	hasInline := ok && im != nil && im.IsComplete()
+	im := m.client.GorokuInline
+	hasInline := im != nil && im.IsComplete()
 
 	force := strings.Contains(strings.ToLower(msg.Text), "force_insecure")
 
@@ -142,8 +142,8 @@ func (m *GorokuWeb) WebpanelCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuWeb) showWebpanelTunnel(call interface{}, isCallback bool) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	hasInline := ok && im != nil && im.IsComplete()
+	im := m.client.GorokuInline
+	hasInline := im != nil && im.IsComplete()
 
 	openingText := m.getTrans("opening_tunnel", "🕔 <b>Opening tunnel...</b>")
 	waitBtn := inline.Button{
@@ -283,8 +283,8 @@ func (m *GorokuWeb) AddaccCmd(msg *goroku.Message) error {
 		prefix = p
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil || !im.IsComplete() {
+	im := m.client.GorokuInline
+	if im == nil || !im.IsComplete() {
 		template := getTrans(m.translator, m.Name(), "add_user_insecure", "Do you really want to add an account {} ({})? Use the <code>{}addacc {} force_insecure</code> command to confirm.")
 		text := formatTrans(template, targetUser.FirstName, fmt.Sprintf("%d", targetID), prefix, fmt.Sprintf("%d", targetID))
 		_ = msg.Answer(text)
@@ -322,8 +322,8 @@ func (m *GorokuWeb) InlineLoginCallback(call inline.CallbackQuery, targetUser *t
 }
 
 func (m *GorokuWeb) InlineLogin(call interface{}, targetUser *tg.User, afterFail bool) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
@@ -401,8 +401,8 @@ func (m *GorokuWeb) InlinePhoneHandler(c inline.CallbackQuery, data string, targ
 }
 
 func (m *GorokuWeb) PromptCode(c inline.CallbackQuery, tempClient *goroku.CustomTelegramClient, phone string, targetUser *tg.User, errMsg string) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
@@ -469,8 +469,8 @@ func (m *GorokuWeb) InlineCodeHandler(c inline.CallbackQuery, code string, tempC
 }
 
 func (m *GorokuWeb) Prompt2FA(c inline.CallbackQuery, tempClient *goroku.CustomTelegramClient, phone string, targetUser *tg.User, errMsg string) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 

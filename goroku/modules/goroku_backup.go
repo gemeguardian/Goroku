@@ -90,8 +90,8 @@ func (m *GorokuBackup) getTrans(key, def string) string {
 func (m *GorokuBackup) ClientReady() error {
 	periodVal := m.db.Get("GorokuBackup", "period", nil)
 	if periodVal == nil {
-		im, ok := m.client.GorokuInline.(*inline.InlineManager)
-		if ok && im != nil {
+		im := m.client.GorokuInline
+		if im != nil {
 			go func() {
 				// Wait for inline manager to be ready
 				for i := 0; i < 30; i++ {
@@ -292,8 +292,8 @@ func (m *GorokuBackup) handleConvertCallback(call inline.CallbackQuery, ans stri
 			},
 		},
 	}
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil {
+	im := m.client.GorokuInline
+	if im != nil {
 		_ = call.Edit(adviceText, im.GenerateMarkup(markup))
 	}
 	return nil
@@ -367,8 +367,8 @@ func (m *GorokuBackup) RestoreDBCmd(msg *goroku.Message) error {
 
 	reHikka := regexp.MustCompile(`"(hikka\.)(\S+":)`)
 	if reHikka.MatchString(fileContent) {
-		im, ok := m.client.GorokuInline.(*inline.InlineManager)
-		if ok && im != nil && im.IsComplete() {
+		im := m.client.GorokuInline
+		if im != nil && im.IsComplete() {
 			markup := [][]inline.Button{
 				{
 					{
@@ -737,8 +737,8 @@ func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
 	}
 
 	// 2. If inline bot is ready, send a Form with "Restore this" button that references the sent message ID
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil && im.IsComplete() {
+	im := m.client.GorokuInline
+	if im != nil && im.IsComplete() {
 		markup := [][]inline.Button{
 			{
 				{
@@ -800,8 +800,8 @@ func (m *GorokuBackup) handleRestoreFromMessageCallback(call inline.CallbackQuer
 			},
 		},
 	}
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil {
+	im := m.client.GorokuInline
+	if im != nil {
 		_ = call.Edit("❓ <b>Are you sure?</b>", im.GenerateMarkup(markup))
 	}
 	return nil
@@ -972,8 +972,8 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 	}
 
 	// Send Form with button if inline is ready
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil && im.IsComplete() {
+	im := m.client.GorokuInline
+	if im != nil && im.IsComplete() {
 		markup := [][]inline.Button{
 			{
 				{

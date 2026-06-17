@@ -149,8 +149,8 @@ func (m *Quickstart) ClientReady() error {
 		// Welcome message with language selector
 		sentMsg, ok := m.db.Get("Quickstart", "no_msg", false).(bool)
 		if !ok || !sentMsg {
-			im, ok := m.client.GorokuInline.(*inline.InlineManager)
-			if ok && im != nil {
+			im := m.client.GorokuInline
+			if im != nil {
 				for i := 0; i < 20; i++ {
 					if im.IsComplete() {
 						break
@@ -199,8 +199,8 @@ func (m *Quickstart) QuickstartCmd(msg *goroku.Message) error {
 }
 
 func (m *Quickstart) showQuickstart(msg *goroku.Message) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil && im.IsComplete() {
+	im := m.client.GorokuInline
+	if im != nil && im.IsComplete() {
 		_ = msg.Delete()
 		return m.sendMenu(msg.ChatID)
 	}
@@ -223,8 +223,8 @@ func (m *Quickstart) HandleBotPM(msg *tgbotapi.Message) {
 }
 
 func (m *Quickstart) sendMenu(chatID int64) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
@@ -241,8 +241,8 @@ func (m *Quickstart) sendMenu(chatID int64) error {
 }
 
 func (m *Quickstart) editMenu(c inline.CallbackQuery) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 

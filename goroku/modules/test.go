@@ -281,9 +281,9 @@ func (m *Test) LogsCmd(msg *goroku.Message) error {
 		}
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
+	im := m.client.GorokuInline
 	if lvl == -1 {
-		if ok && im != nil && im.IsComplete() {
+		if im != nil && im.IsComplete() {
 			markup := [][]inline.Button{
 				{
 					m.makeButton("🚫 Critical", func(call inline.CallbackQuery) error {
@@ -351,8 +351,8 @@ func (m *Test) SendLogs(msg interface{}, lvl int, force bool) error {
 	}
 
 	if lvl < 30 && !force && !strings.Contains(strings.ToLower(rawText), "force_insecure") {
-		im, ok := m.client.GorokuInline.(*inline.InlineManager)
-		if ok && im != nil && im.IsComplete() {
+		im := m.client.GorokuInline
+		if im != nil && im.IsComplete() {
 			markup := [][]inline.Button{
 				{
 					m.makeButton(m.getTrans("send_anyway", "📤 Send anyway"), func(call inline.CallbackQuery) error {

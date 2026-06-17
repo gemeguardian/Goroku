@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gotd/td/tg"
 	"github.com/traefik/yaegi/interp"
 	"github.com/traefik/yaegi/stdlib"
 )
@@ -97,10 +96,8 @@ func (m *Eval) censor(text string) string {
 	var extras []string
 	if m.client != nil {
 		extras = append(extras, m.client.APIHash)
-		if m.client.GorokuMe != nil {
-			if u, ok := m.client.GorokuMe.(*tg.User); ok && u.Phone != "" {
-				extras = append(extras, u.Phone)
-			}
+		if u := m.client.GorokuMe; u != nil && u.Phone != "" {
+			extras = append(extras, u.Phone)
 		}
 	}
 	if m.db != nil {
@@ -539,7 +536,7 @@ func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, s
 	if err := i.Use(stdlib.Symbols); err != nil {
 		return "", "", "", err
 	}
-	loader, _ := m.client.Loader.(*goroku.Modules)
+	loader := m.client.Loader
 	if err := i.Use(interp.Exports{
 		"gorokuctx/gorokuctx": map[string]reflect.Value{
 			"Msg":    reflect.ValueOf(msg),

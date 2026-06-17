@@ -208,7 +208,7 @@ func (m *GorokuConfig) getStartText() string {
 }
 
 func (m *GorokuConfig) reloadModule(modName string) {
-	if loader, ok := m.client.Loader.(*goroku.Modules); ok && loader != nil {
+	if loader := m.client.Loader; loader != nil {
 		loader.ReloadModuleConfig(modName)
 	}
 }
@@ -405,8 +405,8 @@ func getDefaultValue(modName, key string) interface{} {
 }
 
 func (m *GorokuConfig) getDefaultValue(modName, key string) interface{} {
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if ok && loader != nil {
+	loader := m.client.Loader
+	if loader != nil {
 		if mod := loader.LookupByName(modName); mod != nil {
 			if withConfig, ok := mod.(goroku.ModuleWithConfig); ok {
 				for cfgKey, value := range withConfig.ConfigDefaults() {
@@ -455,8 +455,8 @@ func (m *GorokuConfig) getOptionDoc(modName, key string) string {
 
 	// 4. Try fallback to direct lookup in target module's Strings()
 	if doc == "" || doc == "Unknown string" {
-		loader, ok := m.client.Loader.(*goroku.Modules)
-		if ok && loader != nil {
+		loader := m.client.Loader
+		if loader != nil {
 			targetMod := loader.LookupByName(modName)
 			if targetMod != nil {
 				// Try _cfg_doc_key
@@ -480,12 +480,12 @@ func (m *GorokuConfig) getOptionDoc(modName, key string) string {
 
 func (m *GorokuConfig) ConfigCmd(msg *goroku.Message) error {
 	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil && im.IsComplete() {
+	im := m.client.GorokuInline
+	if im != nil && im.IsComplete() {
 		if rawArgs != "" {
 			parts := strings.Fields(rawArgs)
-			loader, ok := m.client.Loader.(*goroku.Modules)
-			if ok && loader != nil {
+			loader := m.client.Loader
+			if loader != nil {
 				targetModule := loader.LookupByName(parts[0])
 				if targetModule != nil {
 					if _, hasConfig := targetModule.(goroku.ModuleWithConfig); !hasConfig {
@@ -506,8 +506,8 @@ func (m *GorokuConfig) ConfigCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuConfig) ChooseCategory(msg interface{}) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
@@ -531,8 +531,8 @@ func (m *GorokuConfig) ChooseCategory(msg interface{}) error {
 	})
 
 	var hasExternal bool
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if ok && loader != nil {
+	loader := m.client.Loader
+	if loader != nil {
 		for _, mod := range loader.GetModules() {
 			nameLower := strings.ToLower(mod.Name())
 			if !builtInModules[nameLower] {
@@ -606,13 +606,13 @@ var builtInModules = map[string]bool{
 }
 
 func (m *GorokuConfig) ChooseModuleList(msg interface{}, isBuiltin bool, page int) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		return fmt.Errorf("modules registry not found")
 	}
 
@@ -707,8 +707,8 @@ func (m *GorokuConfig) ChooseFolderList(msg interface{}) error {
 }
 
 func (m *GorokuConfig) ChooseFolderModuleList(msg interface{}, folderName string) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
@@ -766,13 +766,13 @@ func (m *GorokuConfig) ChooseFolderModuleList(msg interface{}, folderName string
 }
 
 func (m *GorokuConfig) ConfigureModule(msg interface{}, modName string, fromFolder string) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		return fmt.Errorf("modules registry not found")
 	}
 
@@ -891,8 +891,8 @@ func (m *GorokuConfig) getValidatorDocName(v goroku.Validator) string {
 }
 
 func (m *GorokuConfig) ConfigureOption(msg interface{}, modName, optionName string, forceHidden bool, fromFolder string, errMsgs ...string) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
@@ -1110,8 +1110,8 @@ func (m *GorokuConfig) ShowOptionSavedScreen(call inline.CallbackQuery, modName,
 		},
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil {
+	im := m.client.GorokuInline
+	if im != nil {
 		return call.Edit(text, im.GenerateMarkup(markup))
 	}
 	return nil
@@ -1134,8 +1134,8 @@ func (m *GorokuConfig) ShowOptionResetScreen(call inline.CallbackQuery, modName,
 		},
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil {
+	im := m.client.GorokuInline
+	if im != nil {
 		return call.Edit(text, im.GenerateMarkup(markup))
 	}
 	return nil
@@ -1299,8 +1299,8 @@ func (m *GorokuConfig) RemoveSeriesItem(call inline.CallbackQuery, modName, opti
 
 func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		msg.Text = "❌ Error: Modules registry not found."
 		msg.Answer(msg.Text)
 		return nil
@@ -1498,8 +1498,8 @@ func (m *GorokuConfig) DConfigCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		_ = msg.Answer("❌ Error: Modules registry not found.")
 		return nil
 	}
@@ -1627,8 +1627,8 @@ func (m *GorokuConfig) FConfigCmd(msg *goroku.Message) error {
 		}
 	}
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		_ = msg.Answer("❌ Error: Modules registry not found.")
 		return nil
 	}
@@ -1803,7 +1803,7 @@ func (m *GorokuConfig) getValidator(modName, option string) goroku.Validator {
 	option = strings.ToLower(option)
 
 	if m.client != nil && m.client.Loader != nil {
-		if loader, ok := m.client.Loader.(*goroku.Modules); ok && loader != nil {
+		if loader := m.client.Loader; loader != nil {
 			if targetMod := loader.LookupByName(modName); targetMod != nil {
 				if withValidators, ok := targetMod.(goroku.ModuleWithConfigValidators); ok {
 					for k, v := range withValidators.ConfigValidators() {

@@ -245,11 +245,9 @@ func (db *Database) normalizeOwner(owner string) string {
 
 	// 2. Try case-insensitive match against registered modules
 	if db.client != nil && db.client.Loader != nil {
-		if loader, ok := db.client.Loader.(*Modules); ok && loader != nil {
-			for _, mod := range loader.GetModules() {
-				if strings.EqualFold(mod.Name(), owner) {
-					return mod.Name()
-				}
+		for _, mod := range db.client.Loader.GetModules() {
+			if strings.EqualFold(mod.Name(), owner) {
+				return mod.Name()
 			}
 		}
 	}
@@ -312,12 +310,7 @@ func (db *Database) Set(owner, key string, value interface{}) bool {
 
 	saved := db.Save()
 	if saved && db.client != nil && db.client.Loader != nil {
-		type configReloader interface {
-			ReloadModuleConfig(name string)
-		}
-		if reloader, ok := db.client.Loader.(configReloader); ok {
-			go reloader.ReloadModuleConfig(owner)
-		}
+		go db.client.Loader.ReloadModuleConfig(owner)
 	}
 	return saved
 }
@@ -332,12 +325,7 @@ func (db *Database) Delete(owner, key string) bool {
 
 	saved := db.Save()
 	if saved && db.client != nil && db.client.Loader != nil {
-		type configReloader interface {
-			ReloadModuleConfig(name string)
-		}
-		if reloader, ok := db.client.Loader.(configReloader); ok {
-			go reloader.ReloadModuleConfig(owner)
-		}
+		go db.client.Loader.ReloadModuleConfig(owner)
 	}
 	return saved
 }

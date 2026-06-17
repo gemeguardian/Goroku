@@ -1,6 +1,8 @@
 package goroku
 
 import (
+	cryptoRand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,8 +14,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	cryptoRand "crypto/rand"
-	"encoding/hex"
 
 	"goroku/goroku/utils"
 	"goroku/goroku/web"

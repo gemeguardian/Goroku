@@ -71,8 +71,8 @@ func (m *GorokuSettings) getWatchers() ([]string, map[string]interface{}) {
 		disabled = dw
 	}
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		return nil, disabled
 	}
 
@@ -437,8 +437,8 @@ func (m *GorokuSettings) NoNickCmdCmd(msg *goroku.Message) error {
 	}
 	cmdInput := strings.TrimSpace(parts[1])
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		return msg.Answer("❌ Loader not found.")
 	}
 	if _, exists := loader.Dispatch(cmdInput); !exists {
@@ -507,8 +507,8 @@ func (m *GorokuSettings) NoNickCmdsCmd(msg *goroku.Message) error {
 
 // SettingsCmd launches the interactive inline dashboard.
 func (m *GorokuSettings) SettingsCmd(msg *goroku.Message) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return msg.Answer("❌ Inline manager is not initialized.")
 	}
 
@@ -707,8 +707,8 @@ func (m *GorokuSettings) getSettingsMarkup(im *inline.InlineManager) [][]inline.
 							_ = c2.Answer("Updating userbot...", true)
 							_ = closeForm(c2)
 							go func() {
-								loader, ok := m.client.Loader.(*goroku.Modules)
-								if ok && loader != nil {
+								loader := m.client.Loader
+								if loader != nil {
 									msg := &goroku.Message{
 										ChatID: m.client.TGID,
 										Client: m.client,
@@ -760,8 +760,8 @@ func (m *GorokuSettings) RemoveCoreProtectionCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("core_protection_already_removed", "⚠️ Core protection already removed"))
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return msg.Answer("❌ Inline manager is not initialized.")
 	}
 
@@ -800,8 +800,8 @@ func (m *GorokuSettings) EnableCoreProtectionCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("core_protection_already_enabled", "⚠️ Core protection already enabled"))
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return msg.Answer("❌ Inline manager is not initialized.")
 	}
 

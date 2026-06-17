@@ -2,7 +2,6 @@ package goroku
 
 import (
 	"fmt"
-	"goroku/goroku/inline"
 	"log"
 	"strings"
 	"sync"
@@ -250,9 +249,9 @@ func (m *Modules) SendReady() {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	if im, ok := m.client.GorokuInline.(*inline.InlineManager); ok && im != nil {
+	if m.client.GorokuInline != nil {
 		go func() {
-			if err := im.RegisterManager(false, false); err != nil {
+			if err := m.client.GorokuInline.RegisterManager(false, false); err != nil {
 				log.Printf("Error registering inline manager: %v\n", err)
 			}
 		}()

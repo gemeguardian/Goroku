@@ -167,8 +167,8 @@ func (m *TranslationsModule) SetLangCmd(msg *goroku.Message) error {
 }
 
 func (m *TranslationsModule) ChooseLanguage(msg interface{}, isMeme bool) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil || !im.IsComplete() {
+	im := m.client.GorokuInline
+	if im == nil || !im.IsComplete() {
 		if msgObj, ok := msg.(*goroku.Message); ok {
 			text := getTrans(m.translator, m.Name(), "incorrect_language", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Incorrect language specified</b>")
 			_ = msgObj.Answer(text)

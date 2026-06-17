@@ -499,10 +499,7 @@ func (sm *SecurityManager) getFlagsForCommand(command string) int {
 	if sm.client.Loader == nil {
 		return sm.defaultMask & boundingMask
 	}
-	modules, ok := sm.client.Loader.(*Modules)
-	if !ok {
-		return sm.defaultMask & boundingMask
-	}
+	modules := sm.client.Loader
 
 	for _, mod := range modules.GetModules() {
 		if _, exists := mod.Commands()[command]; exists {
@@ -565,10 +562,7 @@ func (sm *SecurityManager) isCommandInModule(command, moduleName string) bool {
 	if sm.client.Loader == nil {
 		return false
 	}
-	modules, ok := sm.client.Loader.(*Modules)
-	if !ok {
-		return false
-	}
+	modules := sm.client.Loader
 
 	for _, mod := range modules.GetModules() {
 		if strings.EqualFold(mod.Name(), moduleName) {

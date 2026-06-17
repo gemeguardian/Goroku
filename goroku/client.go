@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,7 +18,6 @@ import (
 	"unicode/utf16"
 
 	"goroku/goroku/cache"
-	"goroku/goroku/inline"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 
@@ -54,8 +52,8 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 			}
 
 			// Rate limiting check
-			db, okDB := f.client.GorokuDB.(*Database)
-			if okDB && db != nil {
+			db := f.client.GorokuDB
+			if db != nil {
 				disableProtectionVal := db.Get("APILimiter", "disable_protection", true)
 				disableProtection, _ := disableProtectionVal.(bool)
 				if !disableProtection {
@@ -137,8 +135,8 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 									"Suspended all target calls for %d seconds to prevent API ban.", localFloodWait)
 
 								// Send report via Bot API if available to bypass gotd suspension block, otherwise fall back to SendFile
-								im, okInline := f.client.GorokuInline.(*inline.InlineManager)
-								if okInline && im != nil && im.GetBotAPI() != nil {
+								im := f.client.GorokuInline
+								if im != nil && im.GetBotAPI() != nil {
 									botClient := im.GetBotAPI()
 									fb := tgbotapi.FileBytes{Name: "report.json", Bytes: reportBytes}
 									go func() {
@@ -203,12 +201,10 @@ func (c *CustomTelegramClient) Connect() error {
 
 		hMsg := c.buildMessageFromTG(msg)
 		if c.Loader != nil {
-			if modules, ok := c.Loader.(*Modules); ok {
-				disp := modules.GetDispatcher()
-				if disp != nil {
-					disp.HandleCommand(hMsg)
-					disp.HandleIncoming(hMsg)
-				}
+			disp := c.Loader.GetDispatcher()
+			if disp != nil {
+				disp.HandleCommand(hMsg)
+				disp.HandleIncoming(hMsg)
 			}
 		}
 		return nil
@@ -223,12 +219,10 @@ func (c *CustomTelegramClient) Connect() error {
 
 		hMsg := c.buildMessageFromTG(msg)
 		if c.Loader != nil {
-			if modules, ok := c.Loader.(*Modules); ok {
-				disp := modules.GetDispatcher()
-				if disp != nil {
-					disp.HandleCommand(hMsg)
-					disp.HandleIncoming(hMsg)
-				}
+			disp := c.Loader.GetDispatcher()
+			if disp != nil {
+				disp.HandleCommand(hMsg)
+				disp.HandleIncoming(hMsg)
 			}
 		}
 		return nil
@@ -243,11 +237,9 @@ func (c *CustomTelegramClient) Connect() error {
 
 		hMsg := c.buildMessageFromTG(m)
 		if c.Loader != nil {
-			if modules, ok := c.Loader.(*Modules); ok {
-				disp := modules.GetDispatcher()
-				if disp != nil {
-					disp.HandleIncoming(hMsg)
-				}
+			disp := c.Loader.GetDispatcher()
+			if disp != nil {
+				disp.HandleIncoming(hMsg)
 			}
 		}
 		return nil
@@ -264,11 +256,9 @@ func (c *CustomTelegramClient) Connect() error {
 	dispatcher.OnBotInlineQuery(func(ctx context.Context, e tg.Entities, u *tg.UpdateBotInlineQuery) error {
 		c.cacheEntities(e)
 		if c.Loader != nil {
-			if modules, ok := c.Loader.(*Modules); ok {
-				disp := modules.GetDispatcher()
-				if disp != nil {
-					disp.HandleInlineQuery(u)
-				}
+			disp := c.Loader.GetDispatcher()
+			if disp != nil {
+				disp.HandleInlineQuery(u)
 			}
 		}
 		return nil
@@ -277,11 +267,9 @@ func (c *CustomTelegramClient) Connect() error {
 	dispatcher.OnBotCallbackQuery(func(ctx context.Context, e tg.Entities, u *tg.UpdateBotCallbackQuery) error {
 		c.cacheEntities(e)
 		if c.Loader != nil {
-			if modules, ok := c.Loader.(*Modules); ok {
-				disp := modules.GetDispatcher()
-				if disp != nil {
-					disp.HandleCallbackQuery(u)
-				}
+			disp := c.Loader.GetDispatcher()
+			if disp != nil {
+				disp.HandleCallbackQuery(u)
 			}
 		}
 		return nil
@@ -423,10 +411,8 @@ func (c *CustomTelegramClient) ResolveUsername(username string) (bool, error) {
 }
 
 func (c *CustomTelegramClient) CheckBot(username string) (bool, error) {
-	if im, ok := c.GorokuInline.(interface {
-		CheckBot(username string) (bool, error)
-	}); ok && im != nil {
-		return im.CheckBot(username)
+	if c.GorokuInline != nil {
+		return c.GorokuInline.CheckBot(username)
 	}
 	return false, fmt.Errorf("inline manager not available or does not support CheckBot")
 }
@@ -435,16 +421,14 @@ func (c *CustomTelegramClient) GetLogChatID() int64 {
 	if c.GorokuDB == nil {
 		return 0
 	}
-	if db, ok := c.GorokuDB.(*Database); ok && db != nil {
-		if val := db.Get("goroku.forums", "channel_id", nil); val != nil {
-			switch v := val.(type) {
-			case float64:
-				return int64(v)
-			case int64:
-				return v
-			case int:
-				return int64(v)
-			}
+	if val := c.GorokuDB.Get("goroku.forums", "channel_id", nil); val != nil {
+		switch v := val.(type) {
+		case float64:
+			return int64(v)
+		case int64:
+			return v
+		case int:
+			return int64(v)
 		}
 	}
 	return 0
@@ -559,7 +543,8 @@ func (c *CustomTelegramClient) SendFileWithOptions(chat interface{}, file interf
 
 	logChatID := c.GetLogChatID()
 	if logChatID != 0 && targetChatID != 0 && isSameChat(targetChatID, logChatID) && c.GorokuInline != nil {
-		if im, ok := c.GorokuInline.(*inline.InlineManager); ok && im != nil && im.IsComplete() {
+		im := c.GorokuInline
+		if im.IsComplete() {
 			botClient := im.GetBotAPI()
 			if botClient != nil {
 				var topicID int
@@ -759,7 +744,8 @@ func (c *CustomTelegramClient) SendMessageWithOptions(chat interface{}, message 
 
 	logChatID := c.GetLogChatID()
 	if logChatID != 0 && targetChatID != 0 && isSameChat(targetChatID, logChatID) && c.GorokuInline != nil {
-		if im, ok := c.GorokuInline.(*inline.InlineManager); ok && im != nil && im.IsComplete() {
+		im := c.GorokuInline
+		if im.IsComplete() {
 			botClient := im.GetBotAPI()
 			if botClient != nil {
 				var topicID int
@@ -1011,7 +997,7 @@ func (m *Message) Answer(text string, opts ...MsgOption) error {
 	switch plan.mode {
 	case answerModeInlineList:
 		if m.Client != nil {
-			if im, ok := m.Client.GorokuInline.(*inline.InlineManager); ok && im != nil && im.IsComplete() {
+			if im := m.Client.GorokuInline; im != nil && im.IsComplete() {
 				if _, err := im.List(m, plan.pages); err == nil {
 					return nil
 				}
@@ -1532,17 +1518,11 @@ func (c *CustomTelegramClient) InviteBotToChannel(channelPeer interface{}) error
 
 	var botUser tg.InputUserClass
 	if c.GorokuInline != nil {
-		val := reflect.ValueOf(c.GorokuInline)
-		if val.Kind() == reflect.Ptr {
-			field := val.Elem().FieldByName("BotUsername")
-			if field.IsValid() && field.Kind() == reflect.String {
-				botUsername := field.String()
-				peer, err := c.ResolvePeer(botUsername)
-				if err == nil {
-					if u, ok := peer.(*tg.InputPeerUser); ok {
-						botUser = &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash}
-					}
-				}
+		botUsername := c.GorokuInline.BotUsername
+		peer, err := c.ResolvePeer(botUsername)
+		if err == nil {
+			if u, ok := peer.(*tg.InputPeerUser); ok {
+				botUser = &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash}
 			}
 		}
 	}
@@ -1576,17 +1556,11 @@ func (c *CustomTelegramClient) PromoteBotToAdmin(channelPeer interface{}) error 
 
 	var botUser tg.InputUserClass
 	if c.GorokuInline != nil {
-		val := reflect.ValueOf(c.GorokuInline)
-		if val.Kind() == reflect.Ptr {
-			field := val.Elem().FieldByName("BotUsername")
-			if field.IsValid() && field.Kind() == reflect.String {
-				botUsername := field.String()
-				peer, err := c.ResolvePeer(botUsername)
-				if err == nil {
-					if u, ok := peer.(*tg.InputPeerUser); ok {
-						botUser = &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash}
-					}
-				}
+		botUsername := c.GorokuInline.BotUsername
+		peer, err := c.ResolvePeer(botUsername)
+		if err == nil {
+			if u, ok := peer.(*tg.InputPeerUser); ok {
+				botUser = &tg.InputUser{UserID: u.UserID, AccessHash: u.AccessHash}
 			}
 		}
 	}
@@ -1667,9 +1641,7 @@ func (c *CustomTelegramClient) CreateForumTopic(channelPeer interface{}, title, 
 
 	var premium bool
 	if c.GorokuMe != nil {
-		if u, ok := c.GorokuMe.(*tg.User); ok {
-			premium = u.Premium
-		}
+		premium = c.GorokuMe.Premium
 	}
 
 	if premium && iconEmojiID != 0 {

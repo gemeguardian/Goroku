@@ -19,7 +19,6 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
-	"goroku/goroku/inline"
 )
 
 type TelegramLogsHandler struct {
@@ -110,22 +109,18 @@ func (h *TelegramLogsHandler) flush() {
 	// Retrieve "Logs" topic ID if available from the database cache
 	var topicID int64
 	if h.client.GorokuDB != nil {
-		if db, ok := h.client.GorokuDB.(interface {
-			Get(owner, key string, defaultValue interface{}) interface{}
-		}); ok {
-			forumsCacheVal := db.Get("goroku.forums", "forums_cache", nil)
-			if forumsCache, ok := forumsCacheVal.(map[string]interface{}); ok {
-				if subCacheVal, ok := forumsCache["goroku-userbot"]; ok {
-					if subCache, ok := subCacheVal.(map[string]interface{}); ok {
-						if idVal, ok := subCache["Logs"]; ok {
-							switch idt := idVal.(type) {
-							case float64:
-								topicID = int64(idt)
-							case int64:
-								topicID = idt
-							case int:
-								topicID = int64(idt)
-							}
+		forumsCacheVal := h.client.GorokuDB.Get("goroku.forums", "forums_cache", nil)
+		if forumsCache, ok := forumsCacheVal.(map[string]interface{}); ok {
+			if subCacheVal, ok := forumsCache["goroku-userbot"]; ok {
+				if subCache, ok := subCacheVal.(map[string]interface{}); ok {
+					if idVal, ok := subCache["Logs"]; ok {
+						switch idt := idVal.(type) {
+						case float64:
+							topicID = int64(idt)
+						case int64:
+							topicID = idt
+						case int:
+							topicID = int64(idt)
 						}
 					}
 				}
@@ -136,8 +131,8 @@ func (h *TelegramLogsHandler) flush() {
 	// Route logs through the helper inline bot if it is complete and ready
 	var botClient *tgbotapi.BotAPI
 	if h.client.GorokuInline != nil {
-		if im, ok := h.client.GorokuInline.(*inline.InlineManager); ok && im != nil && im.IsComplete() {
-			botClient = im.GetBotAPI()
+		if h.client.GorokuInline.IsComplete() {
+			botClient = h.client.GorokuInline.GetBotAPI()
 		}
 	}
 

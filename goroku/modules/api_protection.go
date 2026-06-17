@@ -158,8 +158,8 @@ func (m *APIProtection) AntifloodCmd(msg *goroku.Message) error {
 }
 
 func (m *APIProtection) APIFWProtectionCmd(msg *goroku.Message) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil && im.IsComplete() {
+	im := m.client.GorokuInline
+	if im != nil && im.IsComplete() {
 		_, err := im.Form(
 			m.getTrans("u_sure", "<tg-emoji emoji-id=5312383351217201533>⚠️</tg-emoji> <b>Are you sure?</b>"),
 			msg,

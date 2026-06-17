@@ -97,8 +97,8 @@ func (m *LoaderModule) ClientReady() error {
 		json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck
 	}
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		return nil
 	}
 
@@ -284,8 +284,8 @@ func (m *LoaderModule) findLink(moduleName string) (string, error) {
 func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
 	if rawArgs == "" {
-		im, ok := m.client.GorokuInline.(*inline.InlineManager)
-		if ok && im != nil {
+		im := m.client.GorokuInline
+		if im != nil {
 			repoList, err := m.getRepoList()
 			if err == nil && len(repoList) > 0 {
 				var pages []string
@@ -503,8 +503,8 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 	}
 
 	modName := strings.ToLower(rawArgs)
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		msg.Text = "❌ Modules registry not found."
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
@@ -585,8 +585,8 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 }
 
 func (m *LoaderModule) ClearmodulesCmd(msg *goroku.Message) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return m.executeClearModules(msg)
 	}
 
@@ -768,8 +768,8 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		msg.Text = "❌ Modules registry not found."
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)

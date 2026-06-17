@@ -242,8 +242,8 @@ func (m *Help) HelphideCmd(msg *goroku.Message) error {
 		return msg.Answer(getTrans(m.translator, m.Name(), "no_mod", "🚫 <b>Specify module to hide</b>"))
 	}
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		return msg.Answer("❌ Error: Modules registry not found.")
 	}
 
@@ -306,8 +306,8 @@ func (m *Help) HelphideCmd(msg *goroku.Message) error {
 
 // HelpCmd handles the .help [module] command.
 func (m *Help) HelpCmd(msg *goroku.Message) error {
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		return msg.Answer("❌ Error: Modules registry not found.")
 	}
 

@@ -123,8 +123,8 @@ func (m *Presets) ClientReady() error {
 		return nil
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil {
+	im := m.client.GorokuInline
+	if im != nil {
 		go func() {
 			for i := 0; i < 20; i++ {
 				if im.IsComplete() {
@@ -198,8 +198,8 @@ func (m *Presets) HandleBotPM(msg *tgbotapi.Message) {
 }
 
 func (m *Presets) sendMenu(chatID int64) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
@@ -322,16 +322,16 @@ func (m *Presets) ListPresetsCmd(msg *goroku.Message) error {
 }
 
 func (m *Presets) PresetsCmd(msg *goroku.Message) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil && im.IsComplete() {
+	im := m.client.GorokuInline
+	if im != nil && im.IsComplete() {
 		return m.ChoosePresetsMenu(msg)
 	}
 	return m.ListPresetsCmd(msg)
 }
 
 func (m *Presets) ChoosePresetsMenu(msg interface{}) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
@@ -802,8 +802,8 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil && im.IsComplete() {
+	im := m.client.GorokuInline
+	if im != nil && im.IsComplete() {
 		// Use inline form for interactive confirmation & details
 		var modTextLines []string
 		var toInstall []string
@@ -946,8 +946,8 @@ func (m *Presets) AddToFolderCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		_ = msg.Answer("❌ Modules registry not found.")
 		return nil
 	}
@@ -1109,8 +1109,8 @@ func (m *Presets) LoadAliasesCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		_ = msg.Answer("❌ Modules registry not found.")
 		return nil
 	}
@@ -1142,8 +1142,8 @@ func (m *Presets) LoadAliasesCmd(msg *goroku.Message) error {
 }
 
 func (m *Presets) AliasLoadCmd(msg *goroku.Message) error {
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		_ = msg.Answer("❌ Modules registry not found.")
 		return nil
 	}

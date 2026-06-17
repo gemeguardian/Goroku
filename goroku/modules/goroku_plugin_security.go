@@ -60,8 +60,8 @@ func getModuleHash(name string) string {
 }
 
 func (m *GorokuPluginSecurity) resolveModule(query string) (goroku.Module, string) {
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		return nil, ""
 	}
 	modules := loader.GetModules()

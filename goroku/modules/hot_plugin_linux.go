@@ -20,8 +20,8 @@ func RegisterModulesHot(msg *goroku.Message, structNames []string) error {
 		return fmt.Errorf("message client is required for hot module loading")
 	}
 
-	loader, ok := msg.Client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := msg.Client.Loader
+	if loader == nil {
 		return fmt.Errorf("modules registry not found")
 	}
 

@@ -140,8 +140,8 @@ func (m *GorokuSecurity) getOwnerList() *goroku.PointerList {
 }
 
 func (m *GorokuSecurity) getSecurityManager() *goroku.SecurityManager {
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		return nil
 	}
 	dispatcher := loader.GetDispatcher()
@@ -357,8 +357,8 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</tg-emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil || !im.IsComplete() {
+	im := m.client.GorokuInline
+	if im == nil || !im.IsComplete() {
 		ol := m.getOwnerList()
 		if ol != nil && !pointerContainsID(ol, user.ID) {
 			ol.Append(user.ID)
@@ -565,11 +565,11 @@ func (m *GorokuSecurity) SecurityCmd(msg *goroku.Message) error {
 		args = strings.TrimSpace(parts[1])
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil || !im.IsComplete() {
+	im := m.client.GorokuInline
+	if im == nil || !im.IsComplete() {
 		if args != "" {
-			loader, ok := m.client.Loader.(*goroku.Modules)
-			if !ok || loader == nil {
+			loader := m.client.Loader
+			if loader == nil {
 				return msg.Answer("❌ Error: Modules loader not ready.")
 			}
 			_, exists := loader.Dispatch(args)
@@ -595,8 +595,8 @@ func (m *GorokuSecurity) SecurityCmd(msg *goroku.Message) error {
 		return err
 	}
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := m.client.Loader
+	if loader == nil {
 		return msg.Answer("❌ Error: Modules loader not ready.")
 	}
 	_, exists := loader.Dispatch(args)
@@ -774,8 +774,8 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("no_rule", "Не указано правило безопасности"))
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if len(possibleRules) > 1 && ok && im != nil && im.IsComplete() {
+	im := m.client.GorokuInline
+	if len(possibleRules) > 1 && im != nil && im.IsComplete() {
 		var lines []string
 		for _, rule := range possibleRules {
 			ruleParts := strings.Split(rule, "/")
@@ -1186,8 +1186,8 @@ func (m *GorokuSecurity) InlinesecCmd(msg *goroku.Message) error {
 	}
 	args = strings.ToLower(args)
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil || !im.IsComplete() {
+	im := m.client.GorokuInline
+	if im == nil || !im.IsComplete() {
 		return msg.Answer("❌ Error: Inline bot is not active.")
 	}
 
@@ -1237,8 +1237,8 @@ func (m *GorokuSecurity) InlinesecCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuSecurity) QuerysecCmd(msg *goroku.Message) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil || !im.IsComplete() {
+	im := m.client.GorokuInline
+	if im == nil || !im.IsComplete() {
 		return msg.Answer("❌ Error: Inline bot is not active.")
 	}
 
@@ -1426,8 +1426,8 @@ func (m *GorokuSecurity) lookupRules(needle string) []string {
 
 	var results []string
 
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if ok && loader != nil {
+	loader := m.client.Loader
+	if loader != nil {
 		_, isCmd := loader.Dispatch(command)
 		if isCmd {
 			results = append(results, "command/"+command)
@@ -1439,7 +1439,7 @@ func (m *GorokuSecurity) lookupRules(needle string) []string {
 		}
 	}
 
-	if im, ok := m.client.GorokuInline.(*inline.InlineManager); ok && im != nil {
+	if im := m.client.GorokuInline; im != nil {
 		vIm := reflect.ValueOf(im)
 		mInlineModules := vIm.MethodByName("inlineModules")
 		if mInlineModules.IsValid() {
@@ -1487,8 +1487,8 @@ func (m *GorokuSecurity) getCommandMask(commandName string) int {
 		return goroku.OWNER
 	}
 	key := ""
-	loader, ok := m.client.Loader.(*goroku.Modules)
-	if ok && loader != nil {
+	loader := m.client.Loader
+	if loader != nil {
 		for _, mod := range loader.GetModules() {
 			if _, exists := mod.Commands()[commandName]; exists {
 				key = fmt.Sprintf("%s.%s", mod.Name(), commandName)
@@ -1558,7 +1558,7 @@ func (m *GorokuSecurity) buildMarkupGlobal(isInline bool) [][]inline.Button {
 				m.db.Set("goroku.security", "bounding_mask", newMask)
 				_ = call.Answer("Bounding mask value set!", false)
 
-				im := m.client.GorokuInline.(*inline.InlineManager)
+				im := m.client.GorokuInline
 				newMarkup := im.GenerateMarkup(m.buildMarkupGlobal(isInline))
 				return call.Edit(m.getTrans("global", "Global bounding mask..."), newMarkup)
 			},
@@ -1613,8 +1613,8 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 				}
 
 				key := ""
-				loader, ok := m.client.Loader.(*goroku.Modules)
-				if ok && loader != nil {
+				loader := m.client.Loader
+				if loader != nil {
 					for _, mod := range loader.GetModules() {
 						if _, exists := mod.Commands()[commandName]; exists {
 							key = fmt.Sprintf("%s.%s", mod.Name(), commandName)
@@ -1653,7 +1653,7 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 				textTemplate := m.getTrans("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
 				textFormatted := formatTrans(textTemplate, prefix, commandName)
 
-				im := m.client.GorokuInline.(*inline.InlineManager)
+				im := m.client.GorokuInline
 				newMarkup := im.GenerateMarkup(m.buildMarkupCommand(commandName, isInline))
 				return call.Edit(textFormatted, newMarkup)
 			},
@@ -1701,7 +1701,7 @@ func (m *GorokuSecurity) buildMarkupQuerysec() [][]inline.Button {
 					m.db.Set("goroku.security", "allow_inline_query", newVal)
 					_ = call.Answer("Inline query permission set!", false)
 
-					im := m.client.GorokuInline.(*inline.InlineManager)
+					im := m.client.GorokuInline
 					newMarkup := im.GenerateMarkup(m.buildMarkupQuerysec())
 					return call.Edit(m.getTrans("querysec_info", "Здесь вы можете переключить..."), newMarkup)
 				},
@@ -1784,8 +1784,8 @@ func (m *GorokuSecurity) listAllRules(msg *goroku.Message) error {
 }
 
 func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType string, targetID int64, targetName string, targetURL string, rule string, duration int) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil || !im.IsComplete() {
+	im := m.client.GorokuInline
+	if im == nil || !im.IsComplete() {
 		if targetType == "sgroup" {
 			groups := m.loadGroups()
 			sg, ok := groups[targetName]

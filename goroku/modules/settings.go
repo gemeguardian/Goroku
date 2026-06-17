@@ -45,7 +45,7 @@ func (m *SettingsModule) Init(client *goroku.CustomTelegramClient, db *goroku.Da
 
 func (m *SettingsModule) ClientReady() error {
 	// Load aliases from database on startup
-	if loader, ok := m.client.Loader.(*goroku.Modules); ok && loader != nil {
+	if loader := m.client.Loader; loader != nil {
 		aliasesVal := m.db.Get("Settings", "aliases", map[string]interface{}{})
 		if aliases, ok := aliasesVal.(map[string]interface{}); ok {
 			for alias, targetVal := range aliases {
@@ -137,7 +137,7 @@ func (m *SettingsModule) blacklistCommon(msg *goroku.Message) (string, bool, err
 	}
 
 	if module != "" {
-		if loader, ok := m.client.Loader.(*goroku.Modules); ok && loader != nil {
+		if loader := m.client.Loader; loader != nil {
 			if mod := loader.LookupByName(module); mod != nil {
 				module = mod.Name()
 			}
@@ -475,8 +475,8 @@ func (m *SettingsModule) SetPrefixCmd(msg *goroku.Message) error {
 }
 
 func (m *SettingsModule) AliasesCmd(msg *goroku.Message) error {
-	loader, ok := msg.Client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := msg.Client.Loader
+	if loader == nil {
 		return nil
 	}
 
@@ -508,8 +508,8 @@ func (m *SettingsModule) AddAliasCmd(msg *goroku.Message) error {
 	alias := parts[0]
 	cmd := parts[1]
 
-	loader, ok := msg.Client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := msg.Client.Loader
+	if loader == nil {
 		return nil
 	}
 
@@ -548,8 +548,8 @@ func (m *SettingsModule) DelAliasCmd(msg *goroku.Message) error {
 
 	alias := args[0]
 
-	loader, ok := msg.Client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := msg.Client.Loader
+	if loader == nil {
 		return nil
 	}
 
@@ -575,8 +575,8 @@ func (m *SettingsModule) DelAliasCmd(msg *goroku.Message) error {
 }
 
 func (m *SettingsModule) ClearDBCmd(msg *goroku.Message) error {
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		raw := strings.TrimSpace(utils.GetArgsRaw(msg.Text))
 		if raw != "-f" && raw != "--force" {
 			_ = msg.Answer("⚠️ <b>This will clear the entire database!</b>\nTo confirm, run: <code>.cleardb -f</code>")
@@ -628,8 +628,8 @@ func (m *SettingsModule) ToggleCmdCmd(msg *goroku.Message) error {
 
 	modArg, cmdArg := args[0], args[1]
 
-	loader, ok := msg.Client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := msg.Client.Loader
+	if loader == nil {
 		_ = msg.Answer("❌ Modules registry not found")
 		return nil
 	}
@@ -711,8 +711,8 @@ func (m *SettingsModule) ToggleModCmd(msg *goroku.Message) error {
 	}
 
 	modArg := args[0]
-	loader, ok := msg.Client.Loader.(*goroku.Modules)
-	if !ok || loader == nil {
+	loader := msg.Client.Loader
+	if loader == nil {
 		_ = msg.Answer("❌ Modules registry not found")
 		return nil
 	}
@@ -787,7 +787,7 @@ func (m *SettingsModule) ClearModuleCmd(msg *goroku.Message) error {
 	modArg := args[0]
 	moduleKey := modArg
 
-	if loader, ok := msg.Client.Loader.(*goroku.Modules); ok && loader != nil {
+	if loader := msg.Client.Loader; loader != nil {
 		if mod := loader.LookupByName(modArg); mod != nil {
 			moduleKey = mod.Name()
 		}
@@ -823,7 +823,7 @@ func (m *SettingsModule) ClearModuleCmd(msg *goroku.Message) error {
 func (m *SettingsModule) GorokuCmd(msg *goroku.Message) error {
 	isPremium := false
 	if m.client != nil && m.client.GorokuMe != nil {
-		if u, ok := m.client.GorokuMe.(*tg.User); ok {
+		if u := m.client.GorokuMe; u != nil {
 			isPremium = u.Premium
 		}
 	}
@@ -907,8 +907,8 @@ func (m *SettingsModule) InstallationCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if ok && im != nil {
+	im := m.client.GorokuInline
+	if im != nil {
 		text := m.getTrans("choose_installation", "<tg-emoji emoji-id=5363805650327450240>🪐</tg-emoji> <b>Choose your Goroku installation option:</b>")
 		markup := m.getInstallationMarkup()
 		photoURL := "https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/goroku_installation.png"

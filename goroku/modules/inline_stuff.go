@@ -109,8 +109,8 @@ func (m *InlineStuff) Watchers() []goroku.WatcherHandler {
 			if !msg.Out {
 				return nil
 			}
-			im, ok := m.client.GorokuInline.(*inline.InlineManager)
-			if !ok || im == nil {
+			im := m.client.GorokuInline
+			if im == nil {
 				return nil
 			}
 			if msg.ViaBotID == im.BotID && strings.Contains(msg.Text, "This message will be deleted automatically") {
@@ -122,8 +122,8 @@ func (m *InlineStuff) Watchers() []goroku.WatcherHandler {
 			if !msg.Out {
 				return nil
 			}
-			im, ok := m.client.GorokuInline.(*inline.InlineManager)
-			if !ok || im == nil {
+			im := m.client.GorokuInline
+			if im == nil {
 				return nil
 			}
 			if msg.ViaBotID != im.BotID || !strings.Contains(msg.Text, "Opening gallery...") {
@@ -303,8 +303,8 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 		return
 	}
 
-	im, ok := m.client.GorokuInline.(*inline.InlineManager)
-	if !ok || im == nil {
+	im := m.client.GorokuInline
+	if im == nil {
 		return
 	}
 
