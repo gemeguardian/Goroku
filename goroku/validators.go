@@ -243,6 +243,9 @@ func (u *UnionValidator) Validate(value interface{}) (interface{}, error) {
 type NoneTypeValidator struct{}
 
 func (n *NoneTypeValidator) Validate(value interface{}) (interface{}, error) {
+	if value != nil {
+		return nil, &ValidationError{Message: "Value is not None"}
+	}
 	return nil, nil
 }
 

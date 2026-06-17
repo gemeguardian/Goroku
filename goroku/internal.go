@@ -67,12 +67,6 @@ func Restart() {
 
 	fmt.Println("🔄 Restarting...")
 
-	if os.Getenv("LAVHOST") != "" {
-		cmd := exec.Command("lavhost", "restart")
-		cmd.Run()
-		return
-	}
-
 	sysRestart(execPath)
 }
 
@@ -130,14 +124,19 @@ func GetBranchName(repoPath string) string {
 	return "master"
 }
 
-func ResetToMaster(repoPath string) {
+func ResetToMaster(repoPath string) error {
 	cmd1 := exec.Command("git", "reset", "--hard", "HEAD")
 	cmd1.Dir = repoPath
-	_ = cmd1.Run()
+	if err := cmd1.Run(); err != nil {
+		return fmt.Errorf("git reset hard failed: %w", err)
+	}
 
 	cmd2 := exec.Command("git", "checkout", "master", "-f")
 	cmd2.Dir = repoPath
-	_ = cmd2.Run()
+	if err := cmd2.Run(); err != nil {
+		return fmt.Errorf("git checkout master failed: %w", err)
+	}
+	return nil
 }
 
 func RestoreWorktree(repoPath string) bool {
@@ -181,17 +180,25 @@ func CheckBranch(meID int64, allowedIDs []int64) {
 		return
 	}
 
-	ResetToMaster(repoPath)
-	RestoreWorktree(repoPath)
+	if err := ResetToMaster(repoPath); err != nil {
+		fmt.Printf("Error resetting to master: %v\n", err)
+	}
+	if !RestoreWorktree(repoPath) {
+		fmt.Println("Error restoring worktree")
+	}
 	Restart()
 }
 
 func HandleAuthKeyUnregistered(tgID int64, sessionPath string) {
 	fmt.Printf("🔴 AUTH_KEY_UNREGISTERED detected for client %d. Cleaning up session/config and restarting to initial state...\n", tgID)
 	if sessionPath != "" {
-		_ = os.Remove(sessionPath)
+		if err := os.Remove(sessionPath); err != nil && !os.IsNotExist(err) {
+			fmt.Printf("Error removing session: %v\n", err)
+		}
 	}
 	configPath := filepath.Join(BaseDir, fmt.Sprintf("config-%d.json", tgID))
-	_ = os.Remove(configPath)
+	if err := os.Remove(configPath); err != nil && !os.IsNotExist(err) {
+		fmt.Printf("Error removing config: %v\n", err)
+	}
 	Restart()
 }

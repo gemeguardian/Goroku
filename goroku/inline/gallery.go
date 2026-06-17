@@ -92,7 +92,7 @@ func (im *InlineManager) Gallery(
 	im.registerGalleryCallbacks(unitID, caption)
 
 	// Invoke unit
-	_, err := im.InvokeUnit(unitID, chatID, replyToMsgID)
+	err := im.InvokeUnit(unitID, chatID, replyToMsgID)
 	if err != nil {
 		im.mu.Lock()
 		im.removeUnitLocked(unitID)

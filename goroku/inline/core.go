@@ -394,10 +394,10 @@ func getSentMessageID(resp interface{}) int64 {
 	return 0
 }
 
-func (im *InlineManager) InvokeUnit(unitID string, chatID int64, replyToMsgID int64) (interface{}, error) {
+func (im *InlineManager) InvokeUnit(unitID string, chatID int64, replyToMsgID int64) error {
 	client, ok := im.client.(TelegramClient)
 	if !ok {
-		return nil, fmt.Errorf("client does not implement TelegramClient interface")
+		return fmt.Errorf("client does not implement TelegramClient interface")
 	}
 
 	im.mu.Lock()
@@ -416,7 +416,7 @@ func (im *InlineManager) InvokeUnit(unitID string, chatID int64, replyToMsgID in
 
 	results, err := client.InlineQuery(im.BotUsername, unitID, chatID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	var queryID int64
@@ -430,12 +430,12 @@ func (im *InlineManager) InvokeUnit(unitID string, chatID int64, replyToMsgID in
 	}
 
 	if !found {
-		return nil, fmt.Errorf("no query results returned")
+		return fmt.Errorf("no query results returned")
 	}
 
 	updates, err := client.SendInlineBotResult(chatID, queryID, resultID, replyToMsgID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	msgID := getSentMessageID(updates)
@@ -452,13 +452,13 @@ func (im *InlineManager) InvokeUnit(unitID string, chatID int64, replyToMsgID in
 	select {
 	case err := <-errCh:
 		if err != nil {
-			return nil, err
+			return err
 		}
 	case <-time.After(10 * time.Second):
-		return nil, fmt.Errorf("timeout waiting for inline message selection")
+		return fmt.Errorf("timeout waiting for inline message selection")
 	}
 
-	return nil, nil
+	return nil
 }
 
 func (im *InlineManager) GetButton(data string) (Button, bool) {

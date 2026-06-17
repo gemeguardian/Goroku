@@ -272,12 +272,17 @@ func TestUnionValidator(t *testing.T) {
 
 func TestNoneTypeValidator(t *testing.T) {
 	v := &NoneTypeValidator{}
-	res, err := v.Validate("anything")
+	res, err := v.Validate(nil)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
 	if res != nil {
 		t.Errorf("Expected nil output, got %v", res)
+	}
+
+	_, err = v.Validate("anything")
+	if err == nil {
+		t.Errorf("Expected error for non-nil input")
 	}
 }
 

@@ -631,7 +631,7 @@ func (db *Database) FetchAsset(assetID int) (*Message, error) {
 	}
 
 	if msg == nil {
-		return nil, nil
+		return nil, ErrNotFound
 	}
 
 	hMsg := &Message{

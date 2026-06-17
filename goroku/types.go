@@ -2,6 +2,7 @@ package goroku
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -187,9 +188,15 @@ func NewCustomTelegramClient(tgID int64) *CustomTelegramClient {
 	}
 }
 
+var (
+	ErrClientNotInitialized = errors.New("client not initialized")
+	ErrNoReply              = errors.New("message has no reply")
+	ErrNotFound             = errors.New("not found")
+)
+
 func (c *CustomTelegramClient) GetMe() (interface{}, error) {
 	if c.rawAPI == nil {
-		return nil, nil
+		return nil, ErrClientNotInitialized
 	}
 	return c.client.Self(c.ctx)
 }
@@ -235,8 +242,11 @@ func InvokeCommand(modules *Modules, msg *Message, cmdName string, args string) 
 }
 
 func (msg *Message) GetReplyMessage() (*Message, error) {
-	if msg.Client == nil || msg.ReplyToMsgID == 0 {
-		return nil, nil
+	if msg.Client == nil {
+		return nil, ErrClientNotInitialized
+	}
+	if msg.ReplyToMsgID == 0 {
+		return nil, ErrNoReply
 	}
 	return msg.Client.GetMessage(msg.ChatID, msg.ReplyToMsgID)
 }

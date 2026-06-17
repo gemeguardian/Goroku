@@ -104,7 +104,9 @@ func IsUpToDate() bool {
 		return true
 	}
 	// Fetch silently
-	_ = exec.Command("git", "fetch", "--quiet").Run()
+	if err := exec.Command("git", "fetch", "--quiet").Run(); err != nil {
+		// Log but continue checking since we can still run rev-list against local cache
+	}
 
 	// Check how many commits we are behind the tracking branch @{u}
 	out, err := exec.Command("git", "rev-list", "--count", "HEAD..@{u}").Output()

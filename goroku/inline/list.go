@@ -78,7 +78,7 @@ func (im *InlineManager) List(
 	im.mu.Unlock()
 
 	// Invoke unit
-	_, err := im.InvokeUnit(unitID, chatID, replyToMsgID)
+	err := im.InvokeUnit(unitID, chatID, replyToMsgID)
 	if err != nil {
 		im.mu.Lock()
 		im.removeUnitLocked(unitID)
