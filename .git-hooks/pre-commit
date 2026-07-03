@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+# Run gofmt check
+unformatted=$(gofmt -l .)
+if [ -n "$unformatted" ]; then
+    echo "gofmt needed for:"
+    echo "$unformatted"
+    exit 1
+fi
+
+# Run go vet
+go vet ./...
+
+# Run tests
+go test ./...
