@@ -1,9 +1,13 @@
 package cache
 
-import "time"
+import (
+	"time"
+
+	"github.com/gotd/td/tg"
+)
 
 type CacheRecordEntity struct {
-	Entity interface{}
+	Entity tg.InputPeerClass
 	Exp    int64
 	TS     int64
 }

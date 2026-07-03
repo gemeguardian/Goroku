@@ -2,12 +2,12 @@ package inline
 
 import (
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
+	"go.uber.org/zap"
 )
 
 // Gallery creates a scrollable gallery with next/prev buttons and slideshow support.
@@ -221,7 +221,7 @@ func (im *InlineManager) runSlideshow(unitID string, c CallbackQuery, caption in
 
 		err := im.updateGalleryPage(unitID, nextPage, c, caption)
 		if err != nil {
-			log.Printf("[Gallery] slideshow error: %v\n", err)
+			L().Info("[Gallery] slideshow error: {0}", zap.Any("arg0", err))
 			return
 		}
 	}

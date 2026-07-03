@@ -3,9 +3,10 @@ package inline
 import (
 	"crypto/rand"
 	"fmt"
-	"log"
 	"math/big"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type FormOpt func(*Unit)
@@ -145,10 +146,10 @@ func (im *InlineManager) Form(
 				time.Sleep(time.Duration(attempt*250) * time.Millisecond)
 			}
 			if err := del.Delete(); err != nil {
-				log.Printf("[Inline] failed to delete source form message attempt=%d: %v", attempt, err)
+				L().Warn("Failed to delete source form message", zap.Int("attempt", attempt), zap.Error(err))
 				continue
 			}
-			log.Printf("[Inline] deleted source form message attempt=%d", attempt)
+			L().Debug("Deleted source form message", zap.Int("attempt", attempt))
 			break
 		}
 	}

@@ -6,7 +6,6 @@ import (
 	"goroku/goroku"
 	"goroku/goroku/utils"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 )
 
 type Translate struct {
@@ -232,7 +232,7 @@ func (m *Translate) TranslateCmd(msg *goroku.Message) error {
 	if idx := strings.Index(msg.RawText, " "); idx >= 0 {
 		payloadStartByte = idx + 1
 	}
-	log.Printf("[Translate] start raw=%q rawArgs=%q msgEntities=%d [%s]", msg.RawText, rawText, len(msg.Entities), describeEntities(msg.Entities))
+	L().Debug("start raw={0} rawArgs={1} msgEntities={2} [{3}]", zap.Any("arg0", msg.RawText), zap.Any("arg1", rawText), zap.Any("arg2", len(msg.Entities)), zap.String("entities", describeEntities(msg.Entities)))
 
 	if rawText == "" {
 		lang = m.getTrans("language", "en")
@@ -258,20 +258,20 @@ func (m *Translate) TranslateCmd(msg *goroku.Message) error {
 		payloadStart := utf16Len(msg.RawText[:payloadStartByte])
 		payloadLen := utf16Len(text)
 		entities = sliceMessageEntities(msg.Entities, payloadStart, payloadLen)
-		log.Printf("[Translate] inline payloadStartByte=%d payloadStartUTF16=%d payloadLenUTF16=%d text=%q slicedEntities=%d [%s]", payloadStartByte, payloadStart, payloadLen, text, len(entities), describeEntities(entities))
+		L().Debug("inline payloadStartByte={0} payloadStartUTF16={1} payloadLenUTF16={2} text={3} slicedEntities={4} [{5}]", zap.Any("arg0", payloadStartByte), zap.Any("arg1", payloadStart), zap.Any("arg2", payloadLen), zap.Any("arg3", text), zap.Any("arg4", len(entities)), zap.String("entities", describeEntities(entities)))
 	}
 
 	if !hasText || text == "" {
 		replyMsg, err := msg.GetReplyMessage()
 		if err != nil || replyMsg == nil {
-			log.Printf("[Translate] no text and no reply: err=%v replyNil=%v", err, replyMsg == nil)
+			L().Debug("no text and no reply: err={0} replyNil={1}", zap.Any("arg0", err), zap.Any("arg1", replyMsg == nil))
 			_ = msg.Answer(m.getTrans("no_args", "<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>No arguments provided</b>"))
 			return nil
 		}
 		text = replyMsg.RawText
 		entities = replyMsg.Entities
 		replyMsgID = int(msg.ReplyToMsgID)
-		log.Printf("[Translate] reply text=%q replyEntities=%d [%s]", text, len(entities), describeEntities(entities))
+		L().Debug("reply text={0} replyEntities={1} [{2}]", zap.Any("arg0", text), zap.Any("arg1", len(entities)), zap.String("entities", describeEntities(entities)))
 	}
 
 	var trText string
@@ -283,32 +283,32 @@ func (m *Translate) TranslateCmd(msg *goroku.Message) error {
 
 	if m.provider == "telegram" {
 		if replyMsgID != 0 && !hasText {
-			log.Printf("[Translate] calling telegram provider by message lang=%q msgID=%d", lang, replyMsgID)
+			L().Debug("calling telegram provider by message lang={0} msgID={1}", zap.Any("arg0", lang), zap.Any("arg1", replyMsgID))
 			trText, translateErr = m.client.Translate(msg.ChatID, replyMsgID, lang)
 		} else {
-			log.Printf("[Translate] calling telegram provider lang=%q html=%q", lang, translateInput)
+			L().Debug("calling telegram provider lang={0} html={1}", zap.Any("arg0", lang), zap.Any("arg1", translateInput))
 			trText, translateErr = m.client.TranslateText(msg.ChatID, translateInput, nil, lang)
 		}
 	} else {
-		log.Printf("[Translate] calling google provider lang=%q html=%q", lang, translateInput)
+		L().Debug("calling google provider lang={0} html={1}", zap.Any("arg0", lang), zap.Any("arg1", translateInput))
 		trText, translateErr = translateGoogle(translateInput, lang)
 	}
 
 	if translateErr != nil {
-		log.Printf("[Translate] translate failed: %v", translateErr)
+		L().Debug("translate failed: {0}", zap.Any("arg0", translateErr))
 		_ = msg.Answer(m.getTrans("error", "<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>Unable to translate text</b>"))
 		return nil
 	}
 	trText = applyCustomEmojiFallback(trText, text, entities)
-	log.Printf("[Translate] translated html=%q", trText)
+	L().Debug("translated html={0}", zap.Any("arg0", trText))
 
 	if m.onlyText {
-		log.Printf("[Translate] answer onlyText html=%q", trText)
+		L().Debug("answer onlyText html={0}", zap.Any("arg0", trText))
 		_ = msg.Answer(trText)
 	} else {
 		textTemplate := m.getTrans("translated_text", "<tg-emoji emoji-id=\"5972247240217988372\">🅰</tg-emoji> Translated text:\n<blockquote>{tr_text}</blockquote>")
 		formatted := strings.ReplaceAll(textTemplate, "{tr_text}", trText)
-		log.Printf("[Translate] answer formatted html=%q", formatted)
+		L().Debug("answer formatted html={0}", zap.Any("arg0", formatted))
 		_ = msg.Answer(formatted)
 	}
 

@@ -1,23 +1,31 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"goroku/goroku/logger"
+
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tgerr"
+	"go.uber.org/zap"
 )
+
+// L returns the package-level zap logger.
+func L() *zap.Logger { return logger.L() }
 
 type TelegramClient interface {
 	Connect() error
@@ -44,9 +52,10 @@ type WebConfig struct {
 }
 
 type PendingAuth struct {
-	Token    string
-	Approved chan struct{}
-	Expiry   time.Time
+	Token     string
+	Approved  chan struct{}
+	approveMu sync.Once
+	Expiry    time.Time
 }
 
 type WebSession struct {
@@ -187,8 +196,6 @@ func (w *Web) checkSetupToken(r *http.Request) bool {
 		return false
 	}
 	candidates := []string{
-		r.URL.Query().Get("token"),
-		r.URL.Query().Get("setup_token"),
 		r.Header.Get("X-Goroku-Setup-Token"),
 	}
 	if cookie, err := r.Cookie("setup_token"); err == nil {
@@ -384,7 +391,17 @@ func (w *Web) SetTGApiHandler(wr http.ResponseWriter, r *http.Request) {
 
 	text := string(body)
 	apiHash := text[:32]
-	apiID := text[32:]
+	apiIDRaw := strings.TrimSpace(text[32:])
+
+	if matched, _ := regexp.MatchString(`^[0-9a-fA-F]{32}$`, apiHash); !matched {
+		http.Error(wr, "API HASH must be 32 hex characters", http.StatusBadRequest)
+		return
+	}
+	apiID, err := strconv.ParseInt(apiIDRaw, 10, 64)
+	if err != nil || apiID <= 0 {
+		http.Error(wr, "API ID must be a positive integer", http.StatusBadRequest)
+		return
+	}
 
 	if w.saveConfig != nil {
 		w.saveConfig("api_id", apiID)
@@ -393,7 +410,7 @@ func (w *Web) SetTGApiHandler(wr http.ResponseWriter, r *http.Request) {
 	w.mu.Lock()
 	w.apiToken = apiHash
 	w.mu.Unlock()
-	log.Printf("web: Telegram API credentials saved, api_id=%s\n", apiID)
+	L().Info("Telegram API credentials saved", zap.Int64("api_id", apiID))
 
 	wr.Write([]byte("ok"))
 }
@@ -411,11 +428,11 @@ func (w *Web) SendTGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	phone := parsePhone(strings.TrimSpace(string(body)))
 	if phone == "" {
-		log.Printf("web: send_tg_code rejected empty or invalid phone from %s\n", r.RemoteAddr)
+		L().Info("send_tg_code rejected empty or invalid phone from {0}", zap.Any("arg0", r.RemoteAddr))
 		http.Error(wr, "Invalid phone number", http.StatusBadRequest)
 		return
 	}
-	log.Printf("web: send_tg_code started for phone=%s from=%s\n", maskPhone(phone), r.RemoteAddr)
+	L().Info("send_tg_code started for phone={0} from={1}", zap.Any("arg0", maskPhone(phone)), zap.Any("arg1", r.RemoteAddr))
 
 	w.mu.Lock()
 	if w.pendingClient != nil {
@@ -427,16 +444,16 @@ func (w *Web) SendTGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 			w.qrLogin = nil
 			w.qrTaskActive = false
 			w.twoFANeeded = false
-			log.Printf("web: pending QR login client cleared for phone auth\n")
+			L().Info("pending QR login client cleared for phone auth")
 		} else {
 			w.mu.Unlock()
-			log.Printf("web: send_tg_code rejected: auth already pending\n")
+			L().Info("send_tg_code rejected: auth already pending")
 			http.Error(wr, "Already pending", http.StatusConflict)
 			return
 		}
 	}
 	if w.getClient != nil {
-		log.Printf("web: creating pending Telegram client for phone auth\n")
+		L().Info("creating pending Telegram client for phone auth")
 		w.pendingClient = w.getClient()
 	}
 	client, ok := w.pendingClient.(TelegramClient)
@@ -444,20 +461,20 @@ func (w *Web) SendTGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 
 	if ok && client != nil {
 		if err := client.Connect(); err != nil {
-			log.Printf("web: Telegram client connect failed for phone auth: %v\n", err)
+			L().Info("Telegram client connect failed for phone auth: {0}", zap.Any("arg0", err))
 			http.Error(wr, "connect failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		log.Printf("web: Telegram client connected, sending login code to %s\n", maskPhone(phone))
+		L().Info("Telegram client connected, sending login code to {0}", zap.Any("arg0", maskPhone(phone)))
 		err := client.SendCodeRequest(phone)
 		if err != nil {
-			log.Printf("web: send code failed for %s: %v\n", maskPhone(phone), err)
+			L().Info("send code failed for {0}: {1}", zap.Any("arg0", maskPhone(phone)), zap.Any("arg1", err))
 			writeTelegramAuthError(wr, err)
 			return
 		}
-		log.Printf("web: login code sent to %s\n", maskPhone(phone))
+		L().Info("login code sent to {0}", zap.Any("arg0", maskPhone(phone)))
 	} else {
-		log.Printf("web: send_tg_code failed: pending client unavailable\n")
+		L().Info("send_tg_code failed: pending client unavailable")
 		http.Error(wr, "Telegram client not available", http.StatusInternalServerError)
 		return
 	}
@@ -614,41 +631,57 @@ func randomToken(size int) string {
 }
 
 func clientIP(r *http.Request) string {
-	ips := r.Header.Get("X-FORWARDED-FOR")
-	if ips == "" {
-		ips = r.Header.Get("CF-Connecting-IP")
+	// Cloudflare-provided client IP is the most trustworthy when present.
+	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+		return cf
 	}
-	if ips == "" {
-		ips = r.RemoteAddr
+	// Otherwise use the left-most entry of X-Forwarded-For. This assumes
+	// the server is behind a trusted reverse proxy; without such a proxy
+	// the header is trivially spoofable.
+	if xfwd := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xfwd != "" {
+		parts := strings.Split(xfwd, ",")
+		for _, p := range parts {
+			ip := strings.TrimSpace(p)
+			if ip != "" {
+				return ip
+			}
+		}
 	}
-	return ips
+	return r.RemoteAddr
+}
+
+func normalizeClientIP(ip string) string {
+	// Strip port if present.
+	host, _, err := net.SplitHostPort(ip)
+	if err == nil {
+		ip = host
+	}
+	return ip
 }
 
 func (w *Web) checkEndpointRateLimit(endpoint, ips string, maxAttempts int, window time.Duration) bool {
 	now := time.Now().Unix()
-	ipRe := regexp.MustCompile(`[0-9]{1,3}(?:\.[0-9]{1,3}){3}`)
-	found := ipRe.FindAllString(ips, -1)
-	if len(found) == 0 {
-		found = []string{ips}
+	ip := normalizeClientIP(ips)
+	if ip == "" {
+		return false
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for _, ip := range found {
-		key := endpoint + ":" + ip
-		var recent []int64
-		for _, ts := range w.ratelimit[key] {
-			if now-ts < int64(window.Seconds()) {
-				recent = append(recent, ts)
-			}
+
+	key := endpoint + ":" + ip
+	var recent []int64
+	for _, ts := range w.ratelimit[key] {
+		if now-ts < int64(window.Seconds()) {
+			recent = append(recent, ts)
 		}
-		if len(recent) >= maxAttempts {
-			w.ratelimit[key] = recent
-			return false
-		}
-		recent = append(recent, now)
-		w.ratelimit[key] = recent
 	}
+	if len(recent) >= maxAttempts {
+		w.ratelimit[key] = recent
+		return false
+	}
+	recent = append(recent, now)
+	w.ratelimit[key] = recent
 	return true
 }
 
@@ -691,11 +724,7 @@ func (w *Web) ApproveWebAuth(token string) bool {
 	defer w.pendingAuthsMu.Unlock()
 	if auth, exists := w.pendingAuths[token]; exists {
 		if time.Now().Before(auth.Expiry) {
-			select {
-			case <-auth.Approved:
-			default:
-				close(auth.Approved)
-			}
+			auth.approveMu.Do(func() { close(auth.Approved) })
 			return true
 		}
 	}
@@ -716,7 +745,7 @@ func (w *Web) TGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 	text := string(body)
 	split := strings.Split(text, "\n")
 	if len(split) < 2 {
-		log.Printf("web: tg_code rejected malformed payload from %s\n", r.RemoteAddr)
+		L().Info("tg_code rejected malformed payload from {0}", zap.Any("arg0", r.RemoteAddr))
 		http.Error(wr, "Invalid code payload", http.StatusBadRequest)
 		return
 	}
@@ -746,21 +775,21 @@ func (w *Web) TGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 	w.mu.Unlock()
 
 	if ok && client != nil {
-		log.Printf("web: signing in with code for phone=%s, has_password=%t\n", maskPhone(phone), password != "")
+		L().Info("signing in with code for phone={0}, has_password={1}", zap.Any("arg0", maskPhone(phone)), zap.Any("arg1", password != ""))
 		err := client.SignIn(phone, code, password)
 		if err != nil {
-			log.Printf("web: sign in failed for %s: %v\n", maskPhone(phone), err)
+			L().Info("sign in failed for {0}: {1}", zap.Any("arg0", maskPhone(phone)), zap.Any("arg1", err))
 			writeTelegramAuthError(wr, err)
 			return
 		}
-		log.Printf("web: sign in succeeded for %s\n", maskPhone(phone))
+		L().Info("sign in succeeded for {0}", zap.Any("arg0", maskPhone(phone)))
 		if err := w.finishPendingLogin(client); err != nil {
-			log.Printf("web: finish after tg_code failed: %v\n", err)
+			L().Info("finish after tg_code failed: {0}", zap.Any("arg0", err))
 			http.Error(wr, err.Error(), http.StatusInternalServerError)
 			return
 		}
 	} else {
-		log.Printf("web: tg_code failed: pending client unavailable\n")
+		L().Info("tg_code failed: pending client unavailable")
 		http.Error(wr, "Telegram client not available", http.StatusInternalServerError)
 		return
 	}
@@ -779,11 +808,11 @@ func (w *Web) FinishLoginHandler(wr http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := w.finishPendingLogin(client); err != nil {
-		log.Printf("web: finish_login failed: %v\n", err)
+		L().Info("finish_login failed: {0}", zap.Any("arg0", err))
 		http.Error(wr, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("web: finish_login completed\n")
+	L().Info("finish_login completed")
 	wr.Write([]byte("ok"))
 	return
 
@@ -791,7 +820,7 @@ func (w *Web) FinishLoginHandler(wr http.ResponseWriter, r *http.Request) {
 
 func (w *Web) finishPendingLogin(client interface{}) error {
 	if w.onLogin != nil {
-		log.Printf("web: finish_login started, registering pending Telegram client\n")
+		L().Info("finish_login started, registering pending Telegram client")
 		if err := w.onLogin(client); err != nil {
 			return err
 		}
@@ -848,14 +877,14 @@ func (w *Web) CustomBotHandler(wr http.ResponseWriter, r *http.Request) {
 	if w.saveConfig != nil {
 		w.saveConfig("custom_bot", username)
 	}
-	log.Printf("web: custom inline bot saved: %s\n", username)
+	L().Info("custom inline bot saved: {0}", zap.Any("arg0", username))
 	wr.Write([]byte("OK"))
 }
 
 func (w *Web) InitQRLoginHandler(wr http.ResponseWriter, r *http.Request) {
 	url, err := w.initQRLogin(r)
 	if err != nil {
-		log.Printf("web: QR login init failed: %v\n", err)
+		L().Info("QR login init failed: {0}", zap.Any("arg0", err))
 		http.Error(wr, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -879,11 +908,11 @@ func (w *Web) initQRLogin(r *http.Request) (string, error) {
 		w.pendingClient = nil
 		w.qrLogin = nil
 		w.twoFANeeded = false
-		log.Printf("web: previous pending auth client cleared for new QR login\n")
+		L().Info("previous pending auth client cleared for new QR login")
 	}
 	w.qrTaskActive = true
 	if w.pendingClient == nil && w.getClient != nil {
-		log.Printf("web: creating pending Telegram client for QR login\n")
+		L().Info("creating pending Telegram client for QR login")
 		w.pendingClient = w.getClient()
 	}
 	client, ok := w.pendingClient.(TelegramClient)
@@ -897,11 +926,11 @@ func (w *Web) initQRLogin(r *http.Request) (string, error) {
 	}()
 
 	if ok && client != nil {
-		log.Printf("web: QR login connect started from=%s\n", r.RemoteAddr)
+		L().Info("QR login connect started from={0}", zap.Any("arg0", r.RemoteAddr))
 		if err := client.Connect(); err != nil {
 			return "", fmt.Errorf("connect failed: %v", err)
 		}
-		log.Printf("web: QR login export token started\n")
+		L().Info("QR login export token started")
 		url, err := client.QRLogin()
 		if err != nil {
 			return "", err
@@ -909,7 +938,7 @@ func (w *Web) initQRLogin(r *http.Request) (string, error) {
 		w.mu.Lock()
 		w.qrLogin = url
 		w.mu.Unlock()
-		log.Printf("web: QR login URL generated, len=%d\n", len(url))
+		L().Info("QR login URL generated, len={0}", zap.Any("arg0", len(url)))
 		go w.pollQRLogin(client)
 		return url, nil
 	}
@@ -917,56 +946,63 @@ func (w *Web) initQRLogin(r *http.Request) (string, error) {
 }
 
 func (w *Web) pollQRLogin(client TelegramClient) {
-	log.Printf("web: waiting for QR login completion\n")
-	deadline := time.Now().Add(90 * time.Second)
-	for time.Now().Before(deadline) {
-		w.mu.Lock()
-		if w.pendingClient != client {
-			w.mu.Unlock()
-			log.Printf("web: stopping QR login poll because pending client changed\n")
-			return
-		}
-		w.mu.Unlock()
+	L().Info("waiting for QR login completion")
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
-		status, err := client.QRLoginStatus()
-		if err != nil {
-			if strings.Contains(err.Error(), "SESSION_PASSWORD_NEEDED") || strings.Contains(strings.ToLower(err.Error()), "password") {
+	for {
+		select {
+		case <-ctx.Done():
+			w.mu.Lock()
+			if w.pendingClient == client {
+				w.qrTaskActive = false
+			}
+			w.mu.Unlock()
+			L().Info("QR login poll timeout")
+			return
+		case <-ticker.C:
+			w.mu.Lock()
+			if w.pendingClient != client {
+				w.mu.Unlock()
+				L().Info("stopping QR login poll because pending client changed")
+				return
+			}
+			w.mu.Unlock()
+
+			status, err := client.QRLoginStatus()
+			if err != nil {
+				if strings.Contains(err.Error(), "SESSION_PASSWORD_NEEDED") || strings.Contains(strings.ToLower(err.Error()), "password") {
+					w.mu.Lock()
+					w.twoFANeeded = true
+					w.qrLogin = true
+					w.qrTaskActive = false
+					w.mu.Unlock()
+					L().Info("QR login completed, 2FA required")
+					return
+				}
+				L().Info("QR login poll error", zap.Error(err))
+				errStr := strings.ToLower(err.Error())
+				if strings.Contains(errStr, "canceled") || strings.Contains(errStr, "closed") || strings.Contains(errStr, "dead") {
+					L().Info("stopping QR login poll because client connection is inactive")
+					return
+				}
+			} else if status == "SUCCESS" {
+				if err := w.finishPendingLogin(client); err != nil {
+					L().Info("QR finish_login failed", zap.Error(err))
+					return
+				}
 				w.mu.Lock()
-				w.twoFANeeded = true
+				w.twoFANeeded = false
 				w.qrLogin = true
 				w.qrTaskActive = false
 				w.mu.Unlock()
-				log.Printf("web: QR login completed, 2FA required\n")
+				L().Info("QR login completed successfully")
 				return
 			}
-			log.Printf("web: QR login poll error: %v\n", err)
-			errStr := strings.ToLower(err.Error())
-			if strings.Contains(errStr, "canceled") || strings.Contains(errStr, "closed") || strings.Contains(errStr, "dead") {
-				log.Printf("web: stopping QR login poll because client connection is inactive\n")
-				return
-			}
-		} else if status == "SUCCESS" {
-			if err := w.finishPendingLogin(client); err != nil {
-				log.Printf("web: QR finish_login failed: %v\n", err)
-				return
-			}
-			w.mu.Lock()
-			w.twoFANeeded = false
-			w.qrLogin = true
-			w.qrTaskActive = false
-			w.mu.Unlock()
-			log.Printf("web: QR login completed successfully\n")
-			return
 		}
-		time.Sleep(2 * time.Second)
 	}
-
-	w.mu.Lock()
-	if w.pendingClient == client {
-		w.qrTaskActive = false
-	}
-	w.mu.Unlock()
-	log.Printf("web: QR login poll timeout\n")
 }
 
 func (w *Web) GetQRURLHandler(wr http.ResponseWriter, r *http.Request) {
@@ -989,10 +1025,10 @@ func (w *Web) GetQRURLHandler(wr http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("web: get_qr_url called before QR exists, initializing\n")
+	L().Info("get_qr_url called before QR exists, initializing")
 	url, err := w.initQRLogin(r)
 	if err != nil {
-		log.Printf("web: get_qr_url init failed: %v\n", err)
+		L().Info("get_qr_url init failed: {0}", zap.Any("arg0", err))
 		http.Error(wr, "Internal Server Error: Unable to initialize QR login: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1024,15 +1060,15 @@ func (w *Web) QR2FAHandler(wr http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("web: QR 2FA password received, checking\n")
+	L().Info("QR 2FA password received, checking")
 	if err := client.SignIn("", "", password); err != nil {
-		log.Printf("web: QR 2FA failed: %v\n", err)
+		L().Info("QR 2FA failed: {0}", zap.Any("arg0", err))
 		http.Error(wr, err.Error(), http.StatusForbidden)
 		return
 	}
-	log.Printf("web: QR 2FA accepted\n")
+	L().Info("QR 2FA accepted")
 	if err := w.finishPendingLogin(client); err != nil {
-		log.Printf("web: QR 2FA finish_login failed: %v\n", err)
+		L().Info("QR 2FA finish_login failed: {0}", zap.Any("arg0", err))
 		http.Error(wr, err.Error(), http.StatusInternalServerError)
 		return
 	}

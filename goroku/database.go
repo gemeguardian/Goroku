@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"goroku/goroku/utils"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,8 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"goroku/goroku/utils"
+
 	"github.com/gotd/td/tg"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 var (
@@ -82,7 +84,7 @@ func (db *Database) redisFlushLoop() {
 		bytes, err := json.Marshal(db.data)
 		if err != nil {
 			db.mu.Unlock()
-			log.Printf("Database Redis flush marshal failed: %v\n", err)
+			L().Info("Database Redis flush marshal failed: {0}", zap.Any("arg0", err))
 			continue
 		}
 		db.mu.Unlock()
@@ -91,7 +93,7 @@ func (db *Database) redisFlushLoop() {
 		err = db.redisClient.Set(ctx, fmt.Sprintf("%d", db.tgID), bytes, 0).Err()
 		cancel()
 		if err != nil {
-			log.Printf("Database Redis flush failed: %v\n", err)
+			L().Info("Database Redis flush failed: {0}", zap.Any("arg0", err))
 			continue
 		}
 
@@ -122,7 +124,7 @@ func (db *Database) read() {
 	content, err := os.ReadFile(db.dbFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("Error reading database file: %v\n", err)
+			L().Info("Error reading database file: {0}", zap.Any("arg0", err))
 		}
 		db.data = make(map[string]map[string]interface{})
 		return
@@ -138,7 +140,7 @@ func (db *Database) read() {
 	if err := json.Unmarshal([]byte(dbStr), &parsed); err == nil {
 		db.data = parsed
 	} else {
-		log.Printf("Database read failed! Creating new one... Error: %v\n", err)
+		L().Info("Database read failed! Creating new one... Error: {0}", zap.Any("arg0", err))
 		db.data = make(map[string]map[string]interface{})
 	}
 }
@@ -191,14 +193,14 @@ func (db *Database) saveInner() bool {
 
 	bytes, err := json.MarshalIndent(db.data, "", "    ")
 	if err != nil {
-		log.Printf("Database save failed to marshal: %v\n", err)
+		L().Info("Database save failed to marshal: {0}", zap.Any("arg0", err))
 		return false
 	}
 
 	err = os.WriteFile(db.dbFile, bytes, 0600)
 	utils.SecureFile(db.dbFile)
 	if err != nil {
-		log.Printf("Database save failed: %v\n", err)
+		L().Info("Database save failed: {0}", zap.Any("arg0", err))
 		return false
 	}
 
@@ -289,7 +291,7 @@ func (db *Database) Set(owner, key string, value interface{}) bool {
 	if dbProtectedOwners[owner] {
 		caller := db.getWriteCaller()
 		if !dbAllowedWriters[caller] {
-			log.Printf("Blocked db write to protected owner=%s key=%s from %s\n", owner, key, caller)
+			L().Info("Blocked db write to protected owner={0} key={1} from {2}", zap.Any("arg0", owner), zap.Any("arg1", key), zap.Any("arg2", caller))
 			return false
 		}
 	}
@@ -297,7 +299,7 @@ func (db *Database) Set(owner, key string, value interface{}) bool {
 	// Validate JSON serializability
 	_, err := json.Marshal(value)
 	if err != nil {
-		log.Printf("Attempted to write non-serializable object to db key=%s: %v\n", key, err)
+		L().Info("Attempted to write non-serializable object to db key={0}: {1}", zap.Any("arg0", key), zap.Any("arg1", err))
 		return false
 	}
 
@@ -385,7 +387,7 @@ func (db *Database) Update(items map[string]map[string]interface{}) bool {
 		if dbProtectedOwners[normOwner] {
 			caller := db.getWriteCaller()
 			if !dbAllowedWriters[caller] {
-				log.Printf("Blocked bulk db write to protected owner=%s from %s\n", normOwner, caller)
+				L().Info("Blocked bulk db write to protected owner={0} from {1}", zap.Any("arg0", normOwner), zap.Any("arg1", caller))
 				return false
 			}
 		}

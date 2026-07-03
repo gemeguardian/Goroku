@@ -6,7 +6,6 @@ import (
 	"fmt"
 	stdhtml "html"
 	"io"
-	"log"
 	"math/rand"
 	"net/http"
 	"os"
@@ -31,6 +30,7 @@ import (
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 )
 
 // Extracted cache and resolve components are now in separate files cache_*.go
@@ -46,7 +46,7 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 			typeID := t.TypeID()
 			for _, forbidden := range f.client.ForbiddenConstructors {
 				if typeID == forbidden {
-					log.Printf("🎉 [API Protection] Blocked forbidden constructor call: %d\n", typeID)
+					L().Warn("Blocked forbidden constructor call", zap.Int64("type_id", int64(typeID)))
 					return fmt.Errorf("constructor %d is forbidden", typeID)
 				}
 			}
@@ -135,7 +135,7 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 									"Suspended all target calls for %d seconds to prevent API ban.", localFloodWait)
 
 								// Send report via Bot API if available to bypass gotd suspension block, otherwise fall back to SendFile
-								im := f.client.GorokuInline
+								im := f.client.InlineManager()
 								if im != nil && im.GetBotAPI() != nil {
 									botClient := im.GetBotAPI()
 									fb := tgbotapi.FileBytes{Name: "report.json", Bytes: reportBytes}
@@ -181,10 +181,14 @@ func (c *CustomTelegramClient) Connect() error {
 		return fmt.Errorf("telegram api_id/api_hash is not configured")
 	}
 
+	// Cancel any previous connection attempt so we don't leak goroutines or
+	// race against an old client.Run.
+	if c.cancel != nil {
+		c.cancel()
+	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
-	c.readyCh = make(chan struct{})
-	connectErrCh := make(chan error, 1)
 
+	connectResult := make(chan error, 1)
 	sessionPath := c.SessionPath
 	if sessionPath == "" {
 		sessionPath = filepath.Join(BaseDir, fmt.Sprintf("goroku-%d.session", c.TGID))
@@ -288,20 +292,16 @@ func (c *CustomTelegramClient) Connect() error {
 	})
 
 	c.client = client
-	c.rawAPI = tg.NewClient(&forbiddenInvoker{parent: client, client: c})
+	c.runDone = make(chan struct{})
 
 	go func() {
+		defer close(c.runDone)
 		err := client.Run(c.ctx, func(ctx context.Context) error {
 			status, err := client.Auth().Status(ctx)
 			if err != nil {
 				select {
-				case connectErrCh <- err:
+				case connectResult <- err:
 				default:
-				}
-				select {
-				case <-c.readyCh:
-				default:
-					close(c.readyCh)
 				}
 				return err
 			}
@@ -317,39 +317,32 @@ func (c *CustomTelegramClient) Connect() error {
 			}
 
 			select {
-			case <-c.readyCh:
+			case connectResult <- nil:
 			default:
-				close(c.readyCh)
 			}
 			<-ctx.Done()
 			return nil
 		})
 		if err != nil {
-			log.Printf("gotd client run error: %v\n", err)
 			if strings.Contains(err.Error(), "AUTH_KEY_UNREGISTERED") {
 				HandleAuthKeyUnregistered(c.TGID, c.SessionPath)
 			}
+			L().Error("gotd client run error", zap.Error(err))
 			select {
-			case connectErrCh <- err:
+			case connectResult <- err:
 			default:
-			}
-			select {
-			case <-c.readyCh:
-			default:
-				close(c.readyCh)
 			}
 		}
 	}()
 
 	select {
-	case <-c.readyCh:
-		select {
-		case err := <-connectErrCh:
-			return err
-		default:
+	case err := <-connectResult:
+		if err != nil {
+			c.cancel()
 		}
-		return nil
+		return err
 	case <-time.After(30 * time.Second):
+		c.cancel()
 		return fmt.Errorf("connection timeout")
 	}
 }
@@ -411,8 +404,8 @@ func (c *CustomTelegramClient) ResolveUsername(username string) (bool, error) {
 }
 
 func (c *CustomTelegramClient) CheckBot(username string) (bool, error) {
-	if c.GorokuInline != nil {
-		return c.GorokuInline.CheckBot(username)
+	if c.InlineManager() != nil {
+		return c.InlineManager().CheckBot(username)
 	}
 	return false, fmt.Errorf("inline manager not available or does not support CheckBot")
 }
@@ -542,8 +535,8 @@ func (c *CustomTelegramClient) SendFileWithOptions(chat interface{}, file interf
 	}
 
 	logChatID := c.GetLogChatID()
-	if logChatID != 0 && targetChatID != 0 && isSameChat(targetChatID, logChatID) && c.GorokuInline != nil {
-		im := c.GorokuInline
+	if logChatID != 0 && targetChatID != 0 && isSameChat(targetChatID, logChatID) && c.InlineManager() != nil {
+		im := c.InlineManager()
 		if im.IsComplete() {
 			botClient := im.GetBotAPI()
 			if botClient != nil {
@@ -743,8 +736,8 @@ func (c *CustomTelegramClient) SendMessageWithOptions(chat interface{}, message 
 	}
 
 	logChatID := c.GetLogChatID()
-	if logChatID != 0 && targetChatID != 0 && isSameChat(targetChatID, logChatID) && c.GorokuInline != nil {
-		im := c.GorokuInline
+	if logChatID != 0 && targetChatID != 0 && isSameChat(targetChatID, logChatID) && c.InlineManager() != nil {
+		im := c.InlineManager()
 		if im.IsComplete() {
 			botClient := im.GetBotAPI()
 			if botClient != nil {
@@ -997,7 +990,7 @@ func (m *Message) Answer(text string, opts ...MsgOption) error {
 	switch plan.mode {
 	case answerModeInlineList:
 		if m.Client != nil {
-			if im := m.Client.GorokuInline; im != nil && im.IsComplete() {
+			if im := m.Client.InlineManager(); im != nil && im.IsComplete() {
 				if _, err := im.List(m, plan.pages); err == nil {
 					return nil
 				}
@@ -1097,7 +1090,7 @@ func (c *CustomTelegramClient) SignIn(phone, code, password string) error {
 	if c.client == nil {
 		return fmt.Errorf("client not initialized")
 	}
-	log.Printf("[DEBUG SignIn] phone=%q, code=%q, phoneCodeHash=%q, password=%q\n", phone, code, c.phoneCodeHash, password)
+	L().Debug("SignIn", zap.String("phone", phone), zap.String("code", code), zap.String("hash", c.phoneCodeHash), zap.Bool("has_password", password != ""))
 	var err error
 	if password != "" {
 		// 2FA password flow
@@ -1201,7 +1194,6 @@ func (c *CustomTelegramClient) GetMessage(chat interface{}, msgID int64) (*Messa
 	}
 
 	var res tg.MessagesMessagesClass
-
 	if peerChan, ok := peer.(*tg.InputPeerChannel); ok {
 		inputChannel := &tg.InputChannel{
 			ChannelID:  peerChan.ChannelID,
@@ -1517,8 +1509,8 @@ func (c *CustomTelegramClient) InviteBotToChannel(channelPeer interface{}) error
 	}
 
 	var botUser tg.InputUserClass
-	if c.GorokuInline != nil {
-		botUsername := c.GorokuInline.BotUsername
+	if c.InlineManager() != nil {
+		botUsername := c.InlineManager().BotUsernameStr()
 		peer, err := c.ResolvePeer(botUsername)
 		if err == nil {
 			if u, ok := peer.(*tg.InputPeerUser); ok {
@@ -1555,8 +1547,8 @@ func (c *CustomTelegramClient) PromoteBotToAdmin(channelPeer interface{}) error 
 	}
 
 	var botUser tg.InputUserClass
-	if c.GorokuInline != nil {
-		botUsername := c.GorokuInline.BotUsername
+	if c.InlineManager() != nil {
+		botUsername := c.InlineManager().BotUsernameStr()
 		peer, err := c.ResolvePeer(botUsername)
 		if err == nil {
 			if u, ok := peer.(*tg.InputPeerUser); ok {
@@ -1872,20 +1864,20 @@ func (c *CustomTelegramClient) TranslateText(chat interface{}, text string, enti
 	}
 	req := &tg.MessagesTranslateTextRequest{ToLang: toLang}
 	req.SetText([]tg.TextWithEntities{{Text: text, Entities: entities}})
-	log.Printf("[TranslateText] request text=%q entities=%d [%s] lang=%q", text, len(entities), describeTGEntities(entities), toLang)
+	L().Debug("TranslateText request", zap.String("text", text), zap.Int("entities", len(entities)), zap.String("lang", toLang))
 	res, err := c.rawAPI.MessagesTranslateText(c.ctx, req)
 	if err != nil {
-		log.Printf("[TranslateText] request failed: %v", err)
+		L().Error("TranslateText failed", zap.Error(err))
 		return "", err
 	}
 	var sb strings.Builder
 	for _, tw := range res.Result {
-		log.Printf("[TranslateText] response text=%q entities=%d [%s]", tw.Text, len(tw.Entities), describeTGEntities(tw.Entities))
+		L().Debug("TranslateText response", zap.String("text", tw.Text), zap.Int("entities", len(tw.Entities)))
 		htmlText := tw.Text
 		if len(tw.Entities) > 0 {
 			htmlText = entitiesToHTML(tw.Text, tw.Entities)
 		}
-		log.Printf("[TranslateText] response html=%q", htmlText)
+		L().Debug("TranslateText HTML", zap.String("html", htmlText))
 		sb.WriteString(htmlText)
 	}
 	return sb.String(), nil

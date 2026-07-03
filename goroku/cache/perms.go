@@ -3,7 +3,7 @@ package cache
 import "time"
 
 type CacheRecordPerms struct {
-	Perms interface{}
+	Perms any
 	Exp   int64
 	TS    int64
 }

@@ -2,6 +2,7 @@ package goroku
 
 import (
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -9,9 +10,11 @@ import (
 
 func TestInfiniteLoopLifecycle(t *testing.T) {
 	var count int32
+	done := make(chan struct{}, 10)
 
 	loopFn := func() error {
 		atomic.AddInt32(&count, 1)
+		done <- struct{}{}
 		return nil
 	}
 
@@ -21,15 +24,26 @@ func TestInfiniteLoopLifecycle(t *testing.T) {
 	}
 
 	l.Start()
-	// Wait a bit to ensure it ticked
-	time.Sleep(15 * time.Millisecond)
+
+	// Wait for at least one tick via channel.
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Loop did not tick within timeout")
+	}
 
 	if !l.IsRunning() {
 		t.Error("Loop should be running after Start")
 	}
 
 	l.Stop()
-	time.Sleep(10 * time.Millisecond)
+
+	// Wait for the goroutine to signal that it has exited.
+	select {
+	case <-l.Stopped():
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Loop did not stop within timeout")
+	}
 
 	if l.IsRunning() {
 		t.Error("Loop should not be running after Stop")
@@ -49,8 +63,11 @@ func TestInfiniteLoopPanicRecovery(t *testing.T) {
 	l := NewInfiniteLoop(panickingFn, 2*time.Millisecond, "PanicMod", false)
 	l.Start()
 
-	// Wait for loop to run and panic
-	time.Sleep(10 * time.Millisecond)
+	select {
+	case <-l.Stopped():
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Loop did not stop after panic within timeout")
+	}
 
 	if l.IsRunning() {
 		t.Error("Loop should have stopped running due to panic")
@@ -58,12 +75,33 @@ func TestInfiniteLoopPanicRecovery(t *testing.T) {
 }
 
 func TestInfiniteLoopErrorLogging(t *testing.T) {
+	var mu sync.Mutex
+	var errCount int
+	errDone := make(chan struct{}, 1)
+
 	errorFn := func() error {
+		mu.Lock()
+		errCount++
+		mu.Unlock()
+		errDone <- struct{}{}
 		return errors.New("intentional error")
 	}
 
 	l := NewInfiniteLoop(errorFn, 2*time.Millisecond, "ErrorMod", false)
 	l.Start()
-	time.Sleep(10 * time.Millisecond)
+
+	select {
+	case <-errDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Loop did not error within timeout")
+	}
+
 	l.Stop()
+	<-l.Stopped()
+
+	mu.Lock()
+	if errCount < 1 {
+		t.Errorf("Expected at least 1 error, got %d", errCount)
+	}
+	mu.Unlock()
 }

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,11 +15,14 @@ import (
 	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
+	"go.uber.org/zap"
 
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
 )
+
+func L() *zap.Logger { return zap.NewNop() }
 
 // GorokuBackup handles database and module backups.
 type GorokuBackup struct {
@@ -145,7 +147,7 @@ func (m *GorokuBackup) ClientReady() error {
 
 				_, err := botAPI.Send(photo)
 				if err != nil {
-					log.Printf("Failed to send backup period msg via bot: %v\n", err)
+					L().Info("Failed to send backup period msg via bot: {0}", zap.Any("arg0", err))
 				}
 			}()
 		}
@@ -274,7 +276,7 @@ func (m *GorokuBackup) handleConvertCallback(call inline.CallbackQuery, ans stri
 
 		_, err := m.client.SendFile(call.ChatID, nr, caption)
 		if err != nil {
-			log.Printf("Convert send file error: %v", err)
+			L().Warn("Convert send file error", zap.Error(err))
 		}
 		_ = closeForm(call)
 		return nil
@@ -772,7 +774,7 @@ func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
 
 		_, err = im.Form(formTextFormatted, formTarget, markup)
 		if err != nil {
-			log.Printf("Failed to send inline restore form: %v", err)
+			L().Error("Failed to send inline restore form", zap.Error(err))
 		}
 
 		if topicID != 0 {
@@ -916,7 +918,7 @@ func (m *GorokuBackup) backupLoop() {
 
 		if m.backupPeriod > 0 {
 			if err := m.sendPeriodicBackup(); err != nil {
-				log.Printf("GorokuBackup periodic backup failed: %v", err)
+				L().Error("GorokuBackup periodic backup failed", zap.Error(err))
 				select {
 				case <-m.stopBackup:
 					return

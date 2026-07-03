@@ -1,12 +1,15 @@
 package cache
 
-import "time"
+import (
+	"time"
+
+	"github.com/gotd/td/tg"
+)
 
 type CacheRecordFullChannel struct {
-	ChannelID   interface{}
-	FullChannel interface{}
-	Exp         int64
-	TS          int64
+	Channel *tg.MessagesChatFull
+	Exp     int64
+	TS      int64
 }
 
 func (r CacheRecordFullChannel) Expired() bool {

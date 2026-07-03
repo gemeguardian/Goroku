@@ -549,7 +549,7 @@ func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, s
 	}
 
 	if isFullPackageGo(code) {
-		_, err := m.evalYaegiWithTimeout(i, code)
+		_, err := m.evalYaegiWithTimeout(i, code, false)
 		if err != nil {
 			return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
 		}
@@ -557,18 +557,61 @@ func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, s
 	}
 
 	source := m.buildYaegiSource(code, true)
-	value, err := m.evalYaegiWithTimeout(i, source)
+	value, err := m.evalYaegiWithTimeout(i, source, !isFullPackageGo(code))
 	if err != nil {
 		source = m.buildYaegiSource(code, false)
-		value, err = m.evalYaegiWithTimeout(i, source)
+		value, err = m.evalYaegiWithTimeout(i, source, !isFullPackageGo(code))
 	}
 	if err != nil {
 		return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
 	}
 
+	resultText, runErr, multiValuePanic := m.runYaegiRunner(value, &stdout, &stderr)
+	if multiValuePanic {
+		// Expression mode compiled but the expression is a multi-value function call.
+		// Retry as a statement so the side effects run without trying to return values.
+		source = m.buildYaegiSource(code, false)
+		value, err = m.evalYaegiWithTimeout(i, source, !isFullPackageGo(code))
+		if err != nil {
+			return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
+		}
+		resultText, runErr, _ = m.runYaegiRunner(value, &stdout, &stderr)
+	}
+	if runErr != nil {
+		return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), runErr
+	}
+	return resultText, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), nil
+}
+
+func (m *Eval) runYaegiRunner(value reflect.Value, stdout, stderr *bytes.Buffer) (string, error, bool) {
 	runner, ok := value.Interface().(func() interface{})
 	if !ok {
-		return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), fmt.Errorf("invalid yaegi runner signature")
+		if !value.IsValid() || value.Kind() != reflect.Func {
+			return "", fmt.Errorf("invalid yaegi runner signature"), false
+		}
+		done := make(chan struct{})
+		var result reflect.Value
+		var panicValue interface{}
+		go func() {
+			defer func() {
+				panicValue = recover()
+				close(done)
+			}()
+			result = value.Call(nil)[0]
+		}()
+		select {
+		case <-done:
+			if panicValue != nil {
+				return "", fmt.Errorf("panic: %v", panicValue), isMultiValuePanic(panicValue)
+			}
+		case <-time.After(15 * time.Second):
+			return "", fmt.Errorf("eval timeout"), false
+		}
+		resultText := ""
+		if result.IsValid() && !result.IsNil() {
+			resultText = fmt.Sprintf("%v", result.Interface())
+		}
+		return resultText, nil, false
 	}
 	done := make(chan struct{})
 	var result interface{}
@@ -583,17 +626,27 @@ func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, s
 	select {
 	case <-done:
 		if panicValue != nil {
-			return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), fmt.Errorf("panic: %v", panicValue)
+			return "", fmt.Errorf("panic: %v", panicValue), isMultiValuePanic(panicValue)
 		}
 	case <-time.After(15 * time.Second):
-		return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), fmt.Errorf("eval timeout")
+		return "", fmt.Errorf("eval timeout"), false
 	}
 
 	resultText := ""
 	if result != nil {
 		resultText = fmt.Sprintf("%v", result)
 	}
-	return resultText, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), nil
+	return resultText, nil, false
+}
+
+func isMultiValuePanic(v interface{}) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	return strings.Contains(s, "not assignable to type") ||
+		strings.Contains(s, "multiple-value") ||
+		strings.Contains(s, "too many arguments to return")
 }
 
 func (m *Eval) buildYaegiSource(code string, expression bool) string {
@@ -622,13 +675,13 @@ func __run__() interface{} {
 `, body)
 }
 
-func (m *Eval) evalYaegiWithTimeout(i *interp.Interpreter, source string) (reflect.Value, error) {
+func (m *Eval) evalYaegiWithTimeout(i *interp.Interpreter, source string, needRunFunc bool) (reflect.Value, error) {
 	done := make(chan struct{})
 	var value reflect.Value
 	var err error
 	go func() {
 		value, err = i.Eval(source)
-		if err == nil && !isFullPackageGo(source) {
+		if err == nil && needRunFunc {
 			value, err = i.Eval("__run__")
 		}
 		close(done)

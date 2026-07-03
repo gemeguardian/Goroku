@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -11,7 +10,11 @@ import (
 	"reflect"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
+
+var _ = zap.NewNop
 
 const DefaultFallbackTGID = 123456789
 
@@ -130,9 +133,9 @@ func (wc *WebCore) Start(port int, proxyPass bool) {
 	wc.running = true
 	wc.mu.Unlock()
 
-	log.Printf("Goroku Userbot Web Interface running on %d\n", wc.port)
+	L().Info("Goroku Userbot Web Interface running on {0}", zap.Any("arg0", wc.port))
 	if err := wc.server.ListenAndServe(); err != http.ErrServerClosed {
-		log.Printf("Web server error: %v\n", err)
+		L().Info("Web server error: {0}", zap.Any("arg0", err))
 	}
 }
 

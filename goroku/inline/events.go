@@ -2,17 +2,18 @@ package inline
 
 import (
 	"fmt"
-	"log"
 	"reflect"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
+	"go.uber.org/zap"
 )
 
+func L() *zap.Logger { return zap.NewNop() }
+
 func (im *InlineManager) HandleUpdate(update tgbotapi.Update) {
-	log.Printf("[Inline] HandleUpdate: ID=%d, InlineQuery=%t, CallbackQuery=%t, ChosenInlineResult=%t\n",
-		update.UpdateID, update.InlineQuery != nil, update.CallbackQuery != nil, update.ChosenInlineResult != nil)
+	L().Debug("HandleUpdate", zap.Int("ID", update.UpdateID), zap.Bool("InlineQuery", update.InlineQuery != nil), zap.Bool("CallbackQuery", update.CallbackQuery != nil), zap.Bool("ChosenInlineResult", update.ChosenInlineResult != nil))
 	if update.InlineQuery != nil {
 		im.handleInlineQuery(update.InlineQuery)
 	} else if update.CallbackQuery != nil {
@@ -158,7 +159,7 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 		}
 		_, err := im.bot.Request(inlineConf)
 		if err != nil {
-			log.Printf("[Inline] Failed to answer input inline query: %v\n", err)
+			L().Info("[Inline] Failed to answer input inline query: {0}", zap.Any("arg0", err))
 		}
 		return
 	}
@@ -169,7 +170,7 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 	im.mu.Unlock()
 
 	if !exists {
-		log.Printf("[Inline] Unit not found for query: %s\n", unitID)
+		L().Info("[Inline] Unit not found for query: {0}", zap.Any("arg0", unitID))
 		return
 	}
 
@@ -280,7 +281,7 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 
 	_, err := im.bot.Request(inlineConf)
 	if err != nil {
-		log.Printf("[Inline] Failed to answer inline query: %v\n", err)
+		L().Info("[Inline] Failed to answer inline query: {0}", zap.Any("arg0", err))
 	}
 }
 
@@ -365,12 +366,12 @@ func (im *InlineManager) handleCallbackQuery(c *tgbotapi.CallbackQuery) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("[Inline] Callback panic: %v\n", r)
+				L().Info("[Inline] Callback panic: {0}", zap.Any("arg0", r))
 			}
 		}()
 		err := btn.Handler(cb)
 		if err != nil {
-			log.Printf("[Inline] Callback handler error: %v\n", err)
+			L().Info("[Inline] Callback handler error: {0}", zap.Any("arg0", err))
 			_ = cb.Answer(fmt.Sprintf("Error: %v", err), true)
 		}
 	}()
@@ -393,7 +394,7 @@ func (im *InlineManager) handleModuleInlineQuery(q *tgbotapi.InlineQuery, cmd st
 		query := &InlineQuery{QueryID: q.ID, Query: q.Query, Args: args, FromID: q.From.ID, Manager: im}
 		results, err := handler(query)
 		if err != nil {
-			log.Printf("[Inline] module inline handler %s failed: %v\n", cmd, err)
+			L().Info("[Inline] module inline handler {0} failed: {1}", zap.Any("arg0", cmd), zap.Any("arg1", err))
 			_ = query.E500()
 			return true
 		}
@@ -401,7 +402,7 @@ func (im *InlineManager) handleModuleInlineQuery(q *tgbotapi.InlineQuery, cmd st
 			return true
 		}
 		if err := query.AnswerResults(results, 0); err != nil {
-			log.Printf("[Inline] failed to answer module inline query %s: %v\n", cmd, err)
+			L().Info("[Inline] failed to answer module inline query {0}: {1}", zap.Any("arg0", cmd), zap.Any("arg1", err))
 		}
 		return true
 	}
@@ -436,7 +437,7 @@ func (im *InlineManager) answerInlineHelp(q *tgbotapi.InlineQuery) {
 	article.InputMessageContent = tgbotapi.InputTextMessageContent{Text: text.String(), ParseMode: tgbotapi.ModeHTML}
 	_, err := im.bot.Request(tgbotapi.InlineConfig{InlineQueryID: q.ID, Results: []interface{}{article}, CacheTime: 0, IsPersonal: true})
 	if err != nil {
-		log.Printf("[Inline] failed to answer inline help: %v\n", err)
+		L().Info("[Inline] failed to answer inline help: {0}", zap.Any("arg0", err))
 	}
 }
 
@@ -465,11 +466,11 @@ func (im *InlineManager) dispatchModuleCallbacks(cb CallbackQuery) {
 			go func(h func(CallbackQuery) error) {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Printf("[Inline] module callback panic: %v\n", r)
+						L().Info("[Inline] module callback panic: {0}", zap.Any("arg0", r))
 					}
 				}()
 				if err := h(cb); err != nil {
-					log.Printf("[Inline] module callback handler failed: %v\n", err)
+					L().Info("[Inline] module callback handler failed: {0}", zap.Any("arg0", err))
 				}
 			}(handler)
 		}
@@ -531,28 +532,27 @@ func (im *InlineManager) findUnitByButtonDataLocked(data string) *Unit {
 }
 
 func (im *InlineManager) isCallbackAllowed(unit *Unit, userID int64) bool {
-	log.Printf("[SecurityDebug] isCallbackAllowed called: userID=%d, ownerID=%d, unit.Module=%q, DisableSecurity=%t, ForceMe=%t\n",
-		userID, im.ownerID(), unit.Module, unit.DisableSecurity, unit.ForceMe)
+	L().Debug("isCallbackAllowed", zap.Int64("user_id", userID), zap.String("module", unit.Module), zap.Bool("disable_security", unit.DisableSecurity), zap.Bool("force_me", unit.ForceMe))
 
 	if unit.DisableSecurity {
-		log.Printf("[SecurityDebug] Allow click: security is disabled for this unit.\n")
+		L().Info("[SecurityDebug] Allow click: security is disabled for this unit.")
 		return true
 	}
 	for _, allowed := range unit.AlwaysAllow {
 		if allowed == userID {
-			log.Printf("[SecurityDebug] Allow click: userID=%d is in AlwaysAllow list.\n", userID)
+			L().Info("[SecurityDebug] Allow click: userID={0} is in AlwaysAllow list.", zap.Any("arg0", userID))
 			return true
 		}
 	}
 	if unit.ForceMe {
 		res := userID == im.ownerID()
-		log.Printf("[SecurityDebug] ForceMe check: allowed=%t (userID=%d, ownerID=%d)\n", res, userID, im.ownerID())
+		L().Info("[SecurityDebug] ForceMe check: allowed={0} (userID={1}, ownerID={2})", zap.Any("arg0", res), zap.Any("arg1", userID), zap.Any("arg2", im.ownerID()))
 		return res
 	}
 
 	// Default security check
 	if userID == im.ownerID() {
-		log.Printf("[SecurityDebug] Allow click: userID=%d matches ownerID=%d.\n", userID, im.ownerID())
+		L().Info("[SecurityDebug] Allow click: userID={0} matches ownerID={1}.", zap.Any("arg0", userID), zap.Any("arg1", im.ownerID()))
 		return true
 	}
 
@@ -563,7 +563,7 @@ func (im *InlineManager) isCallbackAllowed(unit *Unit, userID int64) bool {
 		if mIsOwner.IsValid() {
 			resVals := mIsOwner.Call([]reflect.Value{reflect.ValueOf(userID)})
 			if len(resVals) > 0 && resVals[0].Kind() == reflect.Bool && resVals[0].Bool() {
-				log.Printf("[SecurityDebug] Allow click: userID=%d is verified owner by SecurityManager.\n", userID)
+				L().Info("[SecurityDebug] Allow click: userID={0} is verified owner by SecurityManager.", zap.Any("arg0", userID))
 				return true
 			}
 		}
@@ -571,16 +571,16 @@ func (im *InlineManager) isCallbackAllowed(unit *Unit, userID int64) bool {
 		// Check module trust
 		if unit.Module != "" {
 			res := im.isUserOwnerOrTrustedForModule(sm, userID, unit.Module)
-			log.Printf("[SecurityDebug] Module trust check: userID=%d, module=%q, allowed=%t\n", userID, unit.Module, res)
+			L().Info("[SecurityDebug] Module trust check: userID={0}, module={1}, allowed={2}", zap.Any("arg0", userID), zap.Any("arg1", unit.Module), zap.Any("arg2", res))
 			return res
 		} else {
-			log.Printf("[SecurityDebug] unit.Module is empty!\n")
+			L().Info("[SecurityDebug] unit.Module is empty!")
 		}
 	} else {
-		log.Printf("[SecurityDebug] SecurityManager is not available!\n")
+		L().Info("[SecurityDebug] SecurityManager is not available!")
 	}
 
-	log.Printf("[SecurityDebug] Deny click: userID=%d has no permission for module=%q.\n", userID, unit.Module)
+	L().Info("[SecurityDebug] Deny click: userID={0} has no permission for module={1}.", zap.Any("arg0", userID), zap.Any("arg1", unit.Module))
 	return false
 }
 
@@ -734,7 +734,7 @@ func (im *InlineManager) handleChosenInlineResult(r *tgbotapi.ChosenInlineResult
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("[Inline] Input handler panic: %v\n", r)
+					L().Info("[Inline] Input handler panic: {0}", zap.Any("arg0", r))
 				}
 			}()
 			_ = btn.InputHandler(cb, inputVal)
@@ -771,10 +771,10 @@ func (im *InlineManager) handleChosenInlineResult(r *tgbotapi.ChosenInlineResult
 					err = fmt.Errorf("no inline_message_id and no active message id")
 				}
 				if err != nil {
-					log.Printf("[Inline] failed to edit start text for unit %s inline=%s chat=%d message=%d attempt=%d: %v", unitID, r.InlineMessageID, msgInfo.ChatID, msgInfo.MessageID, attempt, err)
+					L().Warn("Failed to edit start text", zap.String("unit", unitID), zap.String("inline", r.InlineMessageID), zap.Int64("chat", msgInfo.ChatID), zap.Int64("message", msgInfo.MessageID), zap.Int("attempt", attempt), zap.Error(err))
 					continue
 				}
-				log.Printf("[Inline] edited start text for unit %s inline=%s chat=%d message=%d attempt=%d", unitID, r.InlineMessageID, msgInfo.ChatID, msgInfo.MessageID, attempt)
+				L().Debug("Edited start text", zap.String("unit", unitID), zap.String("inline", r.InlineMessageID), zap.Int64("chat", msgInfo.ChatID), zap.Int64("message", msgInfo.MessageID), zap.Int("attempt", attempt))
 				break
 			}
 		}()

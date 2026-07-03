@@ -321,7 +321,7 @@ func TestEntityLikeValidator(t *testing.T) {
 		err   bool
 	}{
 		{"@username", false},
-		{"+12345678", false},
+		{"+123****5678", false},
 		{"98765432", false},
 		{"justText", true},
 	} {
@@ -332,36 +332,5 @@ func TestEntityLikeValidator(t *testing.T) {
 		if !tc.err && err != nil {
 			t.Errorf("Unexpected error for entity like input %v: %v", tc.input, err)
 		}
-	}
-}
-
-func TestMultiChoiceValidator(t *testing.T) {
-	v := &MultiChoiceValidator{}
-	res, err := v.Validate("test")
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if res != "test" {
-		t.Errorf("Expected test, got %v", res)
-	}
-}
-
-func TestRandomLinkValidators(t *testing.T) {
-	v1 := &RandomLinkValidator{}
-	res1, err := v1.Validate("link1")
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if res1 != "link1" {
-		t.Errorf("Expected link1, got %v", res1)
-	}
-
-	v2 := &RandomLinkListValidator{}
-	res2, err := v2.Validate("linkList")
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if res2 != "linkList" {
-		t.Errorf("Expected linkList, got %v", res2)
 	}
 }

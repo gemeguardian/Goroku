@@ -2,9 +2,10 @@ package goroku
 
 import (
 	"fmt"
-	"log"
 	"strings"
 	"sync"
+
+	"go.uber.org/zap"
 )
 
 type Modules struct {
@@ -121,7 +122,7 @@ func (m *Modules) RegisterModule(mod Module) error {
 		})
 	}
 
-	log.Printf("Successfully registered module: %s\n", mod.Name())
+	L().Info("Successfully registered module", zap.String("module", mod.Name()))
 	return nil
 }
 
@@ -141,7 +142,7 @@ func (m *Modules) loadModuleConfig(mod Module) {
 	}
 	if ready, ok := mod.(ModuleWithConfigReady); ok {
 		if err := ready.ConfigReady(config); err != nil {
-			log.Printf("ConfigReady failed for module %s: %v\n", moduleName, err)
+			L().Error("ConfigReady failed", zap.String("module", moduleName), zap.Error(err))
 		}
 	}
 }
@@ -178,7 +179,7 @@ func (m *Modules) UnloadModule(name string) error {
 
 	err := mod.OnUnload()
 	if err != nil {
-		log.Printf("Error during on_unload hook for %s: %v\n", name, err)
+		L().Error("Error during on_unload hook", zap.String("module", name), zap.Error(err))
 	}
 
 	return nil
@@ -252,7 +253,7 @@ func (m *Modules) SendReady() {
 	if m.client.GorokuInline != nil {
 		go func() {
 			if err := m.client.GorokuInline.RegisterManager(false, false); err != nil {
-				log.Printf("Error registering inline manager: %v\n", err)
+				L().Error("Error registering inline manager", zap.Error(err))
 			}
 		}()
 	}
@@ -260,7 +261,7 @@ func (m *Modules) SendReady() {
 	for _, mod := range m.modules {
 		go func(o Module) {
 			if err := o.ClientReady(); err != nil {
-				log.Printf("Error calling ClientReady on module %s: %v\n", o.Name(), err)
+				L().Error("Error calling ClientReady", zap.String("module", o.Name()), zap.Error(err))
 			}
 		}(mod)
 	}

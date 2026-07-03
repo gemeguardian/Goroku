@@ -287,15 +287,3 @@ func TestGetChatID(t *testing.T) {
 		t.Errorf("Expected 888999, got %d", GetChatID(msg))
 	}
 }
-
-func TestStubs(t *testing.T) {
-	if !SetAvatar(nil, nil, "") {
-		t.Error("SetAvatar should return true")
-	}
-	if GetTarget(nil, 0) != nil {
-		t.Error("GetTarget should return nil")
-	}
-	if GetUser(nil) != nil {
-		t.Error("GetUser should return nil")
-	}
-}

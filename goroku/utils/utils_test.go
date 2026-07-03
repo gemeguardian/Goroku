@@ -103,13 +103,25 @@ func TestOtherUtils(t *testing.T) {
 	if got := FormatFileSize(1048576); got != "1.0 MB" {
 		t.Errorf("FormatFileSize(1048576) failed: got %q", got)
 	}
+	if got := FormatFileSize(1073741824); got != "1.0 GB" {
+		t.Errorf("FormatFileSize(1073741824) failed: got %q", got)
+	}
+	if got := FormatFileSize(1099511627776); got != "1.0 TB" {
+		t.Errorf("FormatFileSize(1099511627776) failed: got %q", got)
+	}
 
 	// Test IsURL
 	if !IsURL("https://google.com/search") {
 		t.Error("IsURL failed for valid URL")
 	}
+	if !IsURL("http://localhost:8080") {
+		t.Error("IsURL failed for localhost URL")
+	}
 	if IsURL("google.com") {
 		t.Error("IsURL should fail for URL without scheme")
+	}
+	if IsURL("") {
+		t.Error("IsURL should fail for empty string")
 	}
 
 	// Test IsURLRegex

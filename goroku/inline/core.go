@@ -2,13 +2,15 @@ package inline
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 )
+
+var _ = zap.NewNop
 
 type MessageIDInfo struct {
 	ChatID    int64
@@ -58,6 +60,18 @@ func NewInlineManager(client, db, allModules interface{}) *InlineManager {
 	}
 	im.token = im.getToken()
 	return im
+}
+
+func (im *InlineManager) BotUsernameStr() string {
+	im.mu.RLock()
+	defer im.mu.RUnlock()
+	return im.BotUsername
+}
+
+func (im *InlineManager) BotIDVal() int64 {
+	im.mu.RLock()
+	defer im.mu.RUnlock()
+	return im.BotID
 }
 
 func (im *InlineManager) RegisterManager(afterBreak bool, ignoreTokenChecks bool) error {
@@ -127,7 +141,7 @@ func (im *InlineManager) RegisterManager(afterBreak bool, ignoreTokenChecks bool
 		}
 
 		if lastBotID != bot.Self.ID {
-			log.Printf("[Inline] Inline bot ID changed from %d to %d (or first run). Resetting bootstrap flags.\n", lastBotID, bot.Self.ID)
+			L().Info("[Inline] Inline bot ID changed from {0} to {1} (or first run). Resetting bootstrap flags.", zap.Any("arg0", lastBotID), zap.Any("arg1", bot.Self.ID))
 			dbTyped.Set("goroku.inline", "folder_created", false)
 			dbTyped.Set("goroku.inline", "bootstrapped_group", nil)
 			dbTyped.Set("goroku.inline", "last_bot_id", bot.Self.ID)
@@ -144,7 +158,7 @@ func (im *InlineManager) RegisterManager(afterBreak bool, ignoreTokenChecks bool
 	go im.startPolling()
 	go im.ttlCleaner()
 
-	log.Printf("InlineManager started: @%s\n", im.BotUsername)
+	L().Info("InlineManager started: @{0}", zap.Any("arg0", im.BotUsername))
 	return nil
 }
 
@@ -193,15 +207,15 @@ func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 			if okDb && !afterBreak {
 				dbTyped.Set("goroku.inline", "bot_token", nil)
 				im.token = ""
-				log.Printf("[Inline] Failed to start inline bot, token reset: %v\n", err)
+				L().Info("[Inline] Failed to start inline bot, token reset: {0}", zap.Any("arg0", err))
 				return im.RegisterManager(true, false)
 			}
 			return fmt.Errorf("failed to start inline bot @%s: %w", im.BotUsername, err)
 		}
-		log.Printf("[Inline] Inline bot @%s initialized via userbot side: %T\n", im.BotUsername, msg)
+		L().Info("[Inline] Inline bot @{0} initialized via userbot side: {1}", zap.Any("arg0", im.BotUsername), zap.Any("arg1", msg))
 
 		if err := client.CreateGorokuFolder(im.BotID); err != nil {
-			log.Printf("[Inline] Failed to add inline bot to Goroku folder: %v\n", err)
+			L().Info("[Inline] Failed to add inline bot to Goroku folder: {0}", zap.Any("arg0", err))
 		} else {
 			if okDb {
 				dbTyped.Set("goroku.inline", "folder_created", true)
@@ -223,14 +237,14 @@ func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 
 			if cid != 0 && cid != bootstrappedGroup {
 				if err := client.InviteBotToChannel(cid); err != nil {
-					log.Printf("[Inline] Failed to invite inline bot to log group: %v\n", err)
+					L().Info("[Inline] Failed to invite inline bot to log group: {0}", zap.Any("arg0", err))
 				} else {
-					log.Printf("[Inline] Successfully invited inline bot to log group")
+					L().Info("Successfully invited inline bot to log group")
 				}
 				if err := client.PromoteBotToAdmin(cid); err != nil {
-					log.Printf("[Inline] Failed to promote inline bot to admin: %v\n", err)
+					L().Info("Failed to promote inline bot to admin", zap.Error(err))
 				} else {
-					log.Printf("[Inline] Successfully promoted inline bot to admin")
+					L().Info("Successfully promoted inline bot to admin")
 					dbTyped.Set("goroku.inline", "bootstrapped_group", cid)
 				}
 			}

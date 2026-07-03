@@ -8,11 +8,15 @@ import (
 	"time"
 
 	"goroku/goroku/cache"
-	"goroku/goroku/inline"
+	"goroku/goroku/inlineiface"
+	"goroku/goroku/logger"
 
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 )
+
+var _ = logger.L
 
 type Message struct {
 	ID           int64
@@ -145,8 +149,6 @@ type CustomTelegramClient struct {
 	TGID                   int64
 	Username               string
 	parseMode              string
-	entityCache            map[string]interface{}
-	permsCache             map[string]interface{}
 	cacheMu                sync.RWMutex
 	GorokuEntityCache      map[interface{}]cache.CacheRecordEntity
 	GorokuPermsCache       map[interface{}]map[interface{}]cache.CacheRecordPerms
@@ -156,10 +158,9 @@ type CustomTelegramClient struct {
 	GorokuMe               *tg.User
 	GorokuDB               *Database
 	Loader                 *Modules
-	GorokuInline           *inline.InlineManager
+	GorokuInline           inlineiface.InlineManager // assigned by goroku package via *inline.InlineManager
 	phoneCodeHash          string
 	qrLoginSignal          <-chan struct{}
-	readyCh                chan struct{}
 	SessionPath            string
 	client                 *telegram.Client
 	rawAPI                 *tg.Client
@@ -171,6 +172,8 @@ type CustomTelegramClient struct {
 	SuspendUntil       time.Time
 	BypassSuspendUntil time.Time
 	FloodWaitLock      bool
+
+	runDone chan struct{}
 }
 
 type RateLimitRecord struct {
@@ -181,8 +184,6 @@ type RateLimitRecord struct {
 func NewCustomTelegramClient(tgID int64) *CustomTelegramClient {
 	return &CustomTelegramClient{
 		TGID:                   tgID,
-		entityCache:            make(map[string]interface{}),
-		permsCache:             make(map[string]interface{}),
 		GorokuEntityCache:      make(map[interface{}]cache.CacheRecordEntity),
 		GorokuPermsCache:       make(map[interface{}]map[interface{}]cache.CacheRecordPerms),
 		GorokuFullChannelCache: make(map[interface{}]cache.CacheRecordFullChannel),
@@ -208,7 +209,33 @@ func (c *CustomTelegramClient) Disconnect() error {
 	if c.cancel != nil {
 		c.cancel()
 	}
+	if c.runDone != nil {
+		select {
+		case <-c.runDone:
+		case <-time.After(5 * time.Second):
+			L().Warn("client run did not finish in time", zap.Int64("tg_id", c.TGID))
+		}
+	}
 	return nil
+}
+
+// GracefulStop stops the client gracefully within the given context timeout.
+func (c *CustomTelegramClient) GracefulStop(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		_ = c.Disconnect()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		L().Info("Client stopped gracefully", zap.Int64("tg_id", c.TGID))
+	case <-ctx.Done():
+		L().Warn("Client stop timeout, forcing shutdown", zap.Int64("tg_id", c.TGID))
+		if c.cancel != nil {
+			c.cancel()
+		}
+	}
 }
 
 // AnimateMessage cycles through frames in a Telegram message.

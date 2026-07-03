@@ -144,14 +144,11 @@ func buildAndOpenPlugin(structName string) (goroku.Module, error) {
 }
 
 func validateHotPluginSource(structName, source string) error {
-	if strings.Contains(source, "goroku: allow-unsafe") {
-		return nil
-	}
 	dangerousImports := []string{"os/exec", "syscall", "unsafe", "plugin"}
 	for _, imp := range dangerousImports {
 		if regexp.MustCompile(`(?m)^\s*import\s+"`+regexp.QuoteMeta(imp)+`"`).MatchString(source) ||
 			regexp.MustCompile(`(?m)^\s*"`+regexp.QuoteMeta(imp)+`"`).MatchString(source) {
-			return fmt.Errorf("module %s imports %s; add '// goroku: allow-unsafe' if you trust this module", structName, imp)
+			return fmt.Errorf("module %s imports %s", structName, imp)
 		}
 	}
 	return nil

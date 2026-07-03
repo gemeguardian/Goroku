@@ -1,12 +1,12 @@
 package goroku
 
 import (
+	"context"
 	cryptoRand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,6 +17,8 @@ import (
 
 	"goroku/goroku/utils"
 	"goroku/goroku/web"
+
+	"go.uber.org/zap"
 )
 
 var (
@@ -113,7 +115,7 @@ func randomSetupToken() string {
 }
 
 func (h *Goroku) ParseArguments() {
-	rootFlag := flag.Bool("root", false, "Allow running as root")
+	_ = flag.Bool("root", false, "Allow running as root (handled by main.go)")
 	portFlag := flag.Int("port", 8080, "Port for web panel")
 	noWebFlag := flag.Bool("no-web", false, "Disable web setup dashboard")
 	noGitFlag := flag.Bool("no-git", false, "Disable git operations")
@@ -127,7 +129,6 @@ func (h *Goroku) ParseArguments() {
 	proxyPassFlag := flag.String("proxy-pass", "", "MTProto proxy password")
 	flag.Parse()
 
-	_ = rootFlag
 	h.Port = *portFlag
 	h.DisableWeb = *noWebFlag
 	h.NoGit = *noGitFlag
@@ -203,7 +204,7 @@ func Main(customModules []Module) {
 
 	zeroSession := filepath.Join(BaseDir, "goroku-0.session")
 	if _, err := os.Stat(zeroSession); err == nil && h.APIID != 0 && h.APIHash != "" {
-		log.Println("Found pending goroku-0.session, resolving real TGID...")
+		L().Info("Found pending goroku-0.session, resolving real TGID...")
 		client := NewCustomTelegramClient(0)
 		client.APIID = h.APIID
 		client.APIHash = h.APIHash
@@ -215,9 +216,9 @@ func Main(customModules []Module) {
 			newPath := filepath.Join(BaseDir, fmt.Sprintf("goroku-%d.session", realID))
 			_ = os.Rename(zeroSession, newPath)
 			utils.SecureFile(newPath)
-			log.Printf("Successfully renamed goroku-0.session to goroku-%d.session\n", realID)
+			L().Info("Renamed goroku-0.session", zap.Int64("real_id", realID))
 		} else {
-			log.Printf("Failed to connect with goroku-0.session: %v\n", err)
+			L().Error("Failed to connect with goroku-0.session", zap.Error(err))
 		}
 	}
 
@@ -294,7 +295,7 @@ func Main(customModules []Module) {
 			}
 			setupURL = setupURL + sep + "setup_token=" + setupToken
 		}
-		log.Printf("🔎 Web mode ready. URL: %s\n", setupURL)
+		L().Info("Web mode ready", zap.String("url", setupURL))
 	}
 
 	sessionPatterns := []string{
@@ -320,19 +321,19 @@ func Main(customModules []Module) {
 		if h.DisableWeb {
 			h.startCliLogin(customModules)
 		} else {
-			log.Println("No active sessions found. Please use the Web dashboard to log in.")
+			L().Info("No active sessions found, please use the Web dashboard to log in")
 		}
 	} else {
 		for _, sessionFile := range activeSessions {
 			tgID, err := getTGIDFromSessionPath(sessionFile)
 			if err != nil {
-				log.Printf("Skip invalid session file %s: %v\n", sessionFile, err)
+				L().Warn("Skip invalid session file", zap.String("file", sessionFile), zap.Error(err))
 				continue
 			}
-			log.Printf("Booting userbot for client ID: %d...\n", tgID)
+			L().Info("Booting userbot", zap.Int64("tg_id", tgID))
 			client, err := h.initClient(tgID, sessionFile, customModules)
 			if err != nil {
-				log.Printf("Failed to init client %d: %v\n", tgID, err)
+				L().Error("Failed to init client", zap.Int64("tg_id", tgID), zap.Error(err))
 				if strings.Contains(err.Error(), "AUTH_KEY_UNREGISTERED") {
 					HandleAuthKeyUnregistered(tgID, sessionFile)
 				}
@@ -350,7 +351,21 @@ func Main(customModules []Module) {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 		sig := <-sigCh
-		log.Printf("Received signal %v, initiating graceful shutdown...\n", sig)
+		L().Info("Received signal, initiating graceful shutdown", zap.String("signal", sig.String()))
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Stop all clients gracefully
+		for _, client := range h.Clients {
+			if client != nil {
+				client.GracefulStop(shutdownCtx)
+			}
+		}
+
+		// Flush logs
+		_ = L().Sync()
+
 		os.Exit(0)
 	}()
 

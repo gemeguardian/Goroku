@@ -10,8 +10,11 @@ import (
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
+
 	"goroku/goroku"
 	"goroku/goroku/inline"
+	"goroku/goroku/inlineiface"
 	"goroku/goroku/utils"
 )
 
@@ -43,7 +46,7 @@ func (m *Quickstart) ClientReady() error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("Quickstart ClientReady panic recovered: %v\n", r)
+				L().Info("Quickstart ClientReady panic recovered: {0}", zap.Any("arg0", r))
 			}
 		}()
 
@@ -140,7 +143,7 @@ func (m *Quickstart) ClientReady() error {
 				false,
 			)
 			if err != nil {
-				log.Printf("Quickstart: failed to create forum topic %s: %v\n", topic.Title, err)
+				L().Info("Quickstart: failed to create forum topic {0}: {1}", zap.Any("arg0", topic.Title), zap.Any("arg1", err))
 			}
 		}
 
@@ -273,7 +276,7 @@ func (m *Quickstart) getWelcomeText() string {
 	return text
 }
 
-func (m *Quickstart) generateWelcomeMarkup(im *inline.InlineManager) tgbotapi.InlineKeyboardMarkup {
+func (m *Quickstart) generateWelcomeMarkup(im inlineiface.InlineManager) tgbotapi.InlineKeyboardMarkup {
 	var buttons [][]inline.Button
 
 	buttons = append(buttons, []inline.Button{

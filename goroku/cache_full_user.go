@@ -13,7 +13,7 @@ func (c *CustomTelegramClient) GetFullUser(entity interface{}, exp int64, force 
 		record, ok := c.GorokuFullUserCache[cacheKey]
 		c.cacheMu.RUnlock()
 		if ok && !record.Expired() {
-			return record.FullUser, nil
+			return record.User, nil
 		}
 	}
 
@@ -33,10 +33,9 @@ func (c *CustomTelegramClient) GetFullUser(entity interface{}, exp int64, force 
 
 	c.cacheMu.Lock()
 	c.GorokuFullUserCache[cacheKey] = cache.CacheRecordFullUser{
-		UserID:   cacheKey,
-		FullUser: fullUser,
-		Exp:      time.Now().Unix() + exp,
-		TS:       time.Now().Unix(),
+		User: fullUser,
+		Exp:  time.Now().Unix() + exp,
+		TS:   time.Now().Unix(),
 	}
 	c.cacheMu.Unlock()
 

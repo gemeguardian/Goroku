@@ -6,6 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func TestDatabaseDeepCopyClonesNestedMapsAndSlices(t *testing.T) {
@@ -167,5 +170,107 @@ func TestDatabaseAutofix(t *testing.T) {
 
 	if _, ok := db.data["some_module"]; ok {
 		t.Fatal("Expected nil module key to be removed by autofix")
+	}
+}
+
+func TestDatabaseNormalizeOwnerDirect(t *testing.T) {
+	db := NewDatabase(1111)
+	db.data["TestOwner"] = map[string]interface{}{"key": "val"}
+	// exact match
+	if got := db.normalizeOwner("TestOwner"); got != "TestOwner" {
+		t.Errorf("normalizeOwner exact match failed: got %q, want %q", got, "TestOwner")
+	}
+	// case-insensitive match from db.data
+	if got := db.normalizeOwner("testowner"); got != "TestOwner" {
+		t.Errorf("normalizeOwner case-insensitive failed: got %q, want %q", got, "TestOwner")
+	}
+	// fallback to original
+	if got := db.normalizeOwner("NonExistent"); got != "NonExistent" {
+		t.Errorf("normalizeOwner fallback failed: got %q, want %q", got, "NonExistent")
+	}
+}
+
+func TestDatabaseDeleteOwner(t *testing.T) {
+	tempDir := t.TempDir()
+	originalBaseDir := BaseDir
+	BaseDir = tempDir
+	defer func() { BaseDir = originalBaseDir }()
+
+	db := NewDatabase(1111)
+	_ = db.Init("")
+	db.Set("mod1", "k", "v")
+	db.Set("mod2", "k", "v")
+
+	if !db.DeleteOwner("mod1") {
+		t.Fatal("DeleteOwner failed")
+	}
+
+	if val := db.Get("mod1", "k", nil); val != nil {
+		t.Fatalf("expected mod1 to be deleted, got %v", val)
+	}
+	if val := db.Get("mod2", "k", nil); val == nil {
+		t.Fatal("expected mod2 to remain")
+	}
+}
+
+func TestDatabaseReset(t *testing.T) {
+	tempDir := t.TempDir()
+	originalBaseDir := BaseDir
+	BaseDir = tempDir
+	defer func() { BaseDir = originalBaseDir }()
+
+	db := NewDatabase(1111)
+	_ = db.Init("")
+	db.Set("mod1", "k", "v")
+
+	newData := map[string]map[string]interface{}{
+		"new_mod": {"nk": "nv"},
+	}
+
+	if !db.Reset(newData) {
+		t.Fatal("Reset failed")
+	}
+
+	if val := db.Get("mod1", "k", nil); val != nil {
+		t.Fatal("expected old data to be cleared")
+	}
+	if val := db.Get("new_mod", "nk", nil); val != "nv" {
+		t.Fatalf("expected new_mod to exist, got %v", val)
+	}
+}
+
+func TestDatabaseGetAll(t *testing.T) {
+	db := NewDatabase(1111)
+	db.data = map[string]map[string]interface{}{
+		"m": {"k": "v"},
+	}
+	all := db.GetAll()
+	all["m"]["k"] = "changed"
+
+	if db.data["m"]["k"] != "v" {
+		t.Fatal("GetAll did not perform a deep copy")
+	}
+}
+
+func TestDatabaseRedisSaveLogic(t *testing.T) {
+	tempDir := t.TempDir()
+	originalBaseDir := BaseDir
+	BaseDir = tempDir
+	defer func() { BaseDir = originalBaseDir }()
+
+	db := NewDatabase(1111)
+	_ = db.Init("")
+	db.redisClient = redis.NewClient(&redis.Options{Addr: "localhost:12345"}) // non-existent redis
+	db.Set("m", "k", "v")
+
+	// Since lastRedisSave is 0, now - lastRedisSave >= 5.
+	// It will attempt to write to Redis, fail, and fall back to local file.
+	// We check that saveInner returned true because file save succeeded.
+	db.lastRedisSave = time.Now().Unix()
+	// Modify key to trigger save
+	db.Set("m", "k2", "v2")
+	// Since lastRedisSave was just set to now, now - lastRedisSave < 5, so it should set redisDirty = true
+	if !db.redisDirty {
+		t.Fatal("expected redisDirty to be true when saved within 5 seconds")
 	}
 }

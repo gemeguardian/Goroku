@@ -2,7 +2,6 @@ package goroku
 
 import (
 	"fmt"
-	"log"
 	"math/rand"
 	"os"
 	"reflect"
@@ -11,6 +10,7 @@ import (
 	"goroku/goroku/utils"
 
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 )
 
 func (h *Goroku) initClient(tgID int64, sessionPath string, customModules []Module) (*CustomTelegramClient, error) {
@@ -44,7 +44,7 @@ func (h *Goroku) initClient(tgID int64, sessionPath string, customModules []Modu
 	h.registerBuiltInModules(loader)
 	for _, mod := range customModules {
 		if err := loader.RegisterModule(cloneModule(mod)); err != nil {
-			log.Printf("Failed to register module %s: %v\n", mod.Name(), err)
+			L().Error("Failed to register module", zap.String("module", mod.Name()), zap.Error(err))
 		}
 	}
 

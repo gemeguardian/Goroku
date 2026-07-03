@@ -2,6 +2,8 @@ package inline
 
 import (
 	"testing"
+
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 func TestFSMState(t *testing.T) {
@@ -42,5 +44,81 @@ func TestFSMState(t *testing.T) {
 	im.SetFSMState(42, "false")
 	if state := im.GetFSMState(42); state != false {
 		t.Errorf("Expected false after setting to 'false', got %v", state)
+	}
+}
+
+type mockModules struct {
+	modules map[string]interface{}
+}
+
+func (m *mockModules) GetModules() map[string]interface{} {
+	return m.modules
+}
+
+type mockPMModule struct {
+	name            string
+	botPMCalled     bool
+	lastReceivedMsg *tgbotapi.Message
+}
+
+func (m *mockPMModule) Name() string {
+	return m.name
+}
+
+func (m *mockPMModule) HandleBotPM(msg *tgbotapi.Message) {
+	m.botPMCalled = true
+	m.lastReceivedMsg = msg
+}
+
+func TestHandleBotPM(t *testing.T) {
+	mockMod := &mockPMModule{name: "InlineStuff"}
+	mods := &mockModules{
+		modules: map[string]interface{}{
+			"inline": mockMod,
+		},
+	}
+
+	im := &InlineManager{
+		allModules: mods,
+	}
+
+	// 1. Should ignore start init
+	msgInit := &tgbotapi.Message{
+		Chat: tgbotapi.Chat{ID: 123, Type: "private"},
+		Text: "/start goroku init",
+	}
+	im.HandleBotPM(msgInit)
+	if mockMod.botPMCalled {
+		t.Error("Expected HandleBotPM not to be called for init message")
+	}
+
+	// 2. Normal PM message
+	msgNormal := &tgbotapi.Message{
+		Chat: tgbotapi.Chat{ID: 123, Type: "private"},
+		Text: "Hello bot",
+	}
+	im.HandleBotPM(msgNormal)
+	if !mockMod.botPMCalled {
+		t.Error("Expected HandleBotPM to be called for normal message")
+	}
+	if mockMod.lastReceivedMsg.Text != "Hello bot" {
+		t.Errorf("Expected message text 'Hello bot', got %s", mockMod.lastReceivedMsg.Text)
+	}
+
+	// 3. /start command on non-InlineStuff module should be skipped
+	mockMod.botPMCalled = false
+	mockOtherMod := &mockPMModule{name: "OtherModule"}
+	mods.modules["other"] = mockOtherMod
+
+	msgStart := &tgbotapi.Message{
+		Chat: tgbotapi.Chat{ID: 123, Type: "private"},
+		Text: "/start",
+	}
+	im.HandleBotPM(msgStart)
+	if mockOtherMod.botPMCalled {
+		t.Error("Expected /start not to be handled by non-InlineStuff module")
+	}
+	if !mockMod.botPMCalled {
+		t.Error("Expected /start to be handled by InlineStuff module")
 	}
 }

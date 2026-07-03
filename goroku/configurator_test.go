@@ -3,6 +3,7 @@ package goroku
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -39,5 +40,41 @@ func TestTTYPrint(t *testing.T) {
 	expectedNoTTY := "Welcome!\n"
 	if gotNoTTY != expectedNoTTY {
 		t.Errorf("TTYPrint(false) failed: expected %q, got %q", expectedNoTTY, gotNoTTY)
+	}
+}
+
+func TestConfigKeyRoundTrip(t *testing.T) {
+	tempDir := t.TempDir()
+	oldConfigPath := ConfigPath
+	ConfigPath = filepath.Join(tempDir, "test_config.json")
+	defer func() { ConfigPath = oldConfigPath }()
+
+	// Get from non-existent file returns nil
+	if got := GetConfigKey("missing"); got != nil {
+		t.Errorf("GetConfigKey(missing) = %v; want nil", got)
+	}
+
+	// Save and get back
+	if !SaveConfigKey("api_id", int64(12345)) {
+		t.Error("SaveConfigKey failed")
+	}
+	if got := GetConfigKey("api_id"); got != float64(12345) {
+		t.Errorf("GetConfigKey(api_id) = %v; want 12345", got)
+	}
+
+	// Save another key
+	if !SaveConfigKey("api_hash", "abc123") {
+		t.Error("SaveConfigKey failed for api_hash")
+	}
+	if got := GetConfigKey("api_hash"); got != "abc123" {
+		t.Errorf("GetConfigKey(api_hash) = %v; want abc123", got)
+	}
+
+	// Overwrite existing key
+	if !SaveConfigKey("api_id", int64(999)) {
+		t.Error("SaveConfigKey overwrite failed")
+	}
+	if got := GetConfigKey("api_id"); got != float64(999) {
+		t.Errorf("GetConfigKey(api_id) after overwrite = %v; want 999", got)
 	}
 }

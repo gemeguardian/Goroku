@@ -1227,7 +1227,7 @@ func (m *GorokuSecurity) InlinesecCmd(msg *goroku.Message) error {
 		return msg.Answer(formatTrans(template, args))
 	}
 
-	prefix := "@" + im.BotUsername + " "
+	prefix := "@" + im.BotUsernameStr() + " "
 	textTemplate := m.getTrans("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
 	textFormatted := formatTrans(textTemplate, prefix, args)
 
@@ -1648,7 +1648,7 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 					prefix = pVal
 				}
 				if isInline {
-					prefix = "@" + call.Manager.BotUsername + " "
+					prefix = "@" + call.Manager.BotUsernameStr() + " "
 				}
 				textTemplate := m.getTrans("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
 				textFormatted := formatTrans(textTemplate, prefix, commandName)
@@ -1894,7 +1894,7 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 					template := m.getTrans("rule_added", "Вы выдали право...")
 					ruleText := ruleParts[1]
 					if ruleParts[0] == "inline" {
-						ruleText = "@" + call.Manager.BotUsername + " " + ruleText
+						ruleText = "@" + call.Manager.BotUsernameStr() + " " + ruleText
 					}
 					addedText := formatTrans(template, m.getTrans(targetType, targetType), targetURL, utils.EscapeHTML(targetName), m.getTrans(ruleParts[0], ruleParts[0]), ruleText, forStr)
 					return call.Edit(addedText, tgbotapi.InlineKeyboardMarkup{})

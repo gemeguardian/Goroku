@@ -113,7 +113,7 @@ func (m *InlineStuff) Watchers() []goroku.WatcherHandler {
 			if im == nil {
 				return nil
 			}
-			if msg.ViaBotID == im.BotID && strings.Contains(msg.Text, "This message will be deleted automatically") {
+			if msg.ViaBotID == im.BotIDVal() && strings.Contains(msg.Text, "This message will be deleted automatically") {
 				_ = msg.Delete()
 			}
 			return nil
@@ -126,7 +126,7 @@ func (m *InlineStuff) Watchers() []goroku.WatcherHandler {
 			if im == nil {
 				return nil
 			}
-			if msg.ViaBotID != im.BotID || !strings.Contains(msg.Text, "Opening gallery...") {
+			if msg.ViaBotID != im.BotIDVal() || !strings.Contains(msg.Text, "Opening gallery...") {
 				return nil
 			}
 

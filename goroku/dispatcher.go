@@ -3,7 +3,6 @@ package goroku
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 )
 
 var (
@@ -220,7 +220,7 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 		go func(w WatcherHandler, m *Message) {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("Watcher panic recovered: %v\n", r)
+					L().Error("Watcher panic recovered", zap.Any("panic", r))
 				}
 			}()
 			_ = w(m)
@@ -524,7 +524,10 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	}
 	handler, exists := cd.modules.Dispatch(actualCmd)
 	if !exists {
-		log.Printf("[Dispatcher] Command %q not found in registry\n", actualCmd)
+		// Only log debug for owners/whitelisted to avoid spam from other chat members
+		if cd.security.Check(msg, "") {
+			L().Debug("Command not found in registry", zap.String("cmd", actualCmd), zap.Int64("sender", msg.SenderID))
+		}
 		return
 	}
 
@@ -643,7 +646,10 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 
 				if !cmdWhitelisted && !userWhitelisted && !chatWhitelisted && !tsecWhitelisted {
 					// Nickname checks are enabled, and this command is not whitelisted in any way, so ignore it
-					log.Printf("[Dispatcher] Nickname check failed for cmd=%q, ignoring\n", actualCmd)
+					// Only log debug for owners/whitelisted to avoid spam
+					if cd.security.Check(msg, "") {
+						L().Debug("Nickname check failed, ignoring", zap.String("cmd", actualCmd), zap.Int64("sender", msg.SenderID))
+					}
 					return
 				}
 			}
@@ -652,25 +658,25 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 
 	// Check if the command's module is disabled
 	if cd.isModuleOrCommandDisabled(actualCmd) {
-		log.Printf("[Dispatcher] Command %q or its module is disabled, ignoring\n", actualCmd)
+		L().Warn("Command or its module is disabled, ignoring", zap.String("cmd", actualCmd))
 		return
 	}
 
 	// Check security level
 	if !cd.security.Check(msg, actualCmd) {
-		log.Printf("[Dispatcher] Security check failed for cmd=%q, ignoring\n", actualCmd)
+		L().Debug("Security check failed, ignoring", zap.String("cmd", actualCmd))
 		return
 	}
 
 	// Check tag filters
 	if !cd.handleTags(msg, actualCmd) {
-		log.Printf("[Dispatcher] Tag filter failed for cmd=%q, ignoring\n", actualCmd)
+		L().Debug("Tag filter failed, ignoring", zap.String("cmd", actualCmd))
 		return
 	}
 
 	// Check rate limit
 	if !cd.handleRatelimit(msg, actualCmd) {
-		log.Printf("[Dispatcher] Rate limit exceeded for cmd: %s in chat: %d\n", actualCmd, msg.ChatID)
+		L().Warn("Rate limit exceeded", zap.String("cmd", actualCmd), zap.Int64("chat", msg.ChatID))
 		return
 	}
 
@@ -681,21 +687,22 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	go func(h CommandHandler, m *Message) {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("Command panic recovered: %v\n", r)
+				L().Error("Command panic recovered", zap.String("cmd", actualCmd), zap.Any("panic", r))
 				_ = m.Answer(fmt.Sprintf("❌ <b>Command crashed! Panic:</b> <code>%v</code>", r))
+				return
 			}
 		}()
-		log.Printf("[Dispatcher] Dispatching command %q to handler...\n", actualCmd)
+		L().Info("Dispatching command", zap.String("cmd", actualCmd))
 		originalText := m.Text
 		err := h(m)
 		if err != nil {
-			log.Printf("[Dispatcher] Command %q failed with error: %v\n", actualCmd, err)
+			L().Error("Command failed", zap.String("cmd", actualCmd), zap.Error(err))
 			_ = m.Answer(fmt.Sprintf("❌ <b>Command execution error:</b> <code>%s</code>", err.Error()))
 		} else {
-			log.Printf("[Dispatcher] Command %q completed successfully. Answered=%t, TextChanged=%t\n", actualCmd, m.Answered, m.Text != originalText)
+			L().Debug("Command completed", zap.String("cmd", actualCmd), zap.Bool("answered", m.Answered))
 			if !m.Answered && m.Text != originalText {
 				if err := m.Answer(m.Text); err != nil {
-					log.Printf("[Dispatcher] Auto-answer for command %q failed: %v\n", actualCmd, err)
+					L().Warn("Auto-answer failed", zap.String("cmd", actualCmd), zap.Error(err))
 				}
 			}
 		}
@@ -908,12 +915,12 @@ func (cd *CommandDispatcher) getBlacklistChats() map[string]bool {
 
 // HandleInlineQuery handles incoming MTProto inline queries for the bot
 func (cd *CommandDispatcher) HandleInlineQuery(query *tg.UpdateBotInlineQuery) {
-	log.Printf("Received inline query: %s from user: %d\n", query.Query, query.UserID)
+	L().Debug("Received inline query", zap.String("query", query.Query), zap.Int64("user", query.UserID))
 	// Placeholder for routing to inline handlers
 }
 
 // HandleCallbackQuery handles incoming MTProto callback queries for the bot
 func (cd *CommandDispatcher) HandleCallbackQuery(query *tg.UpdateBotCallbackQuery) {
-	log.Printf("Received callback query data: %s from user: %d\n", string(query.Data), query.UserID)
+	L().Debug("Received callback query", zap.String("data", string(query.Data)), zap.Int64("user", query.UserID))
 	// Placeholder for routing to callback handlers
 }

@@ -4,45 +4,77 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"log"
 	"os/exec"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
+
+var _ = zap.NewNop
+
+// TunnelProvider describes a single SSH-based reverse-tunnel backend.
+type TunnelProvider struct {
+	Name    string
+	Args    []string // Arguments for ssh; {port} is replaced with the local port.
+	Pattern string   // Regex with one capture group that extracts the public URL.
+}
+
+// DefaultTunnelProviders are the built-in reverse-tunnel services.
+// They can be overridden by callers to avoid hard-coding third-party hosts.
+var DefaultTunnelProviders = []TunnelProvider{
+	{
+		Name: "serveo",
+		Args: []string{
+			"-o", "StrictHostKeyChecking=accept-new",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-R", "80:127.0.0.1:{port}",
+			"serveo.net",
+			"-T", "-n",
+		},
+		Pattern: `https://(\S*serveo\.net\S*)`,
+	},
+	{
+		Name: "localhostrun",
+		Args: []string{
+			"-o", "StrictHostKeyChecking=accept-new",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-R", "80:127.0.0.1:{port}",
+			"nokey@localhost.run",
+			"-T", "-n",
+		},
+		Pattern: `https://(\S*lhr\.life\S*)`,
+	},
+}
 
 type SSHTunnel struct {
 	port              int
 	changeURLCallback func(string)
 	tunnelURL         string
+	urlOnce           sync.Once
 	urlAvailable      chan struct{}
 	process           *exec.Cmd
 	currentCmdIndex   int
-	sshCommands       [][]string
+	providers         []TunnelProvider
 	allCommandsFailed bool
 	mu                sync.Mutex
 	ctx               context.Context
 	cancel            context.CancelFunc
 }
 
+// NewSSHTunnel creates a tunnel that tries the built-in providers in order.
 func NewSSHTunnel(port int, changeURLCallback func(string)) *SSHTunnel {
-	commands := [][]string{
-		{
-			fmt.Sprintf("ssh -o StrictHostKeyChecking=no -R 80:127.0.0.1:%d serveo.net -T -n", port),
-			`https://(\S*serveo\.net\S*)`,
-		},
-		{
-			fmt.Sprintf("ssh -o StrictHostKeyChecking=no -R 80:127.0.0.1:%d nokey@localhost.run", port),
-			`https://(\S*lhr\.life\S*)`,
-		},
-	}
+	return NewSSHTunnelWithProviders(port, changeURLCallback, DefaultTunnelProviders)
+}
 
+// NewSSHTunnelWithProviders allows callers to supply their own tunnel providers.
+func NewSSHTunnelWithProviders(port int, changeURLCallback func(string), providers []TunnelProvider) *SSHTunnel {
 	return &SSHTunnel{
 		port:              port,
 		changeURLCallback: changeURLCallback,
 		urlAvailable:      make(chan struct{}),
-		sshCommands:       commands,
+		providers:         providers,
 	}
 }
 
@@ -50,70 +82,100 @@ func (s *SSHTunnel) Start() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.cancel != nil {
+		return
+	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	go s.runSSHTunnel()
 }
 
 func (s *SSHTunnel) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	proc := s.process
+	cancel := s.cancel
+	s.cancel = nil
+	s.process = nil
+	s.mu.Unlock()
 
-	if s.cancel != nil {
-		s.cancel()
+	if cancel != nil {
+		cancel()
 	}
+	if proc != nil && proc.Process != nil {
+		L().Info("Stopping SSH tunnel process", zap.Int("pid", proc.Process.Pid))
+		_ = proc.Process.Kill()
 
-	if s.process != nil && s.process.Process != nil {
-		log.Println("Stopping SSH tunnel...")
-		s.process.Process.Kill()
-		s.process = nil
+		done := make(chan struct{})
+		go func() {
+			_ = proc.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			L().Warn("SSH tunnel process did not exit within 5s; leaving waiter in background")
+		}
 	}
 }
 
 func (s *SSHTunnel) WaitForURL(timeout time.Duration) string {
 	select {
 	case <-s.urlAvailable:
-		return s.tunnelURL
+		s.mu.Lock()
+		url := s.tunnelURL
+		s.mu.Unlock()
+		return url
 	case <-time.After(timeout):
-		log.Println("Timeout waiting for tunnel URL.")
+		L().Info("Timeout waiting for tunnel URL")
 		return ""
 	}
 }
 
+func (s *SSHTunnel) markURLAvailable() {
+	s.urlOnce.Do(func() { close(s.urlAvailable) })
+}
+
 func (s *SSHTunnel) runSSHTunnel() {
-	for s.currentCmdIndex < len(s.sshCommands) {
+	for s.currentCmdIndex < len(s.providers) {
 		select {
 		case <-s.ctx.Done():
 			return
 		default:
 		}
 
-		cmdInfo := s.sshCommands[s.currentCmdIndex]
-		sshCmdStr := cmdInfo[0]
-		pattern := cmdInfo[1]
+		provider := s.providers[s.currentCmdIndex]
+		rx, err := regexp.Compile(provider.Pattern)
+		if err != nil {
+			L().Error("Invalid tunnel URL regex", zap.String("provider", provider.Name), zap.Error(err))
+			s.currentCmdIndex++
+			continue
+		}
 
-		log.Printf("Attempting SSH command: %s with pattern: %s\n", sshCmdStr, pattern)
+		args := make([]string, len(provider.Args))
+		// Rebuild args safely, replacing the {port} placeholder.
+		for i, a := range provider.Args {
+			args[i] = regexp.MustCompile(`\{port\}`).ReplaceAllString(a, fmt.Sprintf("%d", s.port))
+		}
 
-		parts := strings.Fields(sshCmdStr)
-		cmd := exec.CommandContext(s.ctx, parts[0], parts[1:]...)
+		L().Info("Attempting SSH tunnel", zap.String("provider", provider.Name), zap.Strings("args", args))
+
+		cmd := exec.CommandContext(s.ctx, "ssh", args...)
 		s.mu.Lock()
 		s.process = cmd
 		s.mu.Unlock()
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
-			log.Printf("Failed to get stdout pipe: %v\n", err)
+			L().Error("Failed to get stdout pipe", zap.String("provider", provider.Name), zap.Error(err))
 			s.currentCmdIndex++
 			continue
 		}
 
 		if err := cmd.Start(); err != nil {
-			log.Printf("Failed to start SSH tunnel process: %v\n", err)
+			L().Error("Failed to start SSH tunnel process", zap.String("provider", provider.Name), zap.Error(err))
 			s.currentCmdIndex++
 			continue
 		}
 
-		// Regex matching output
-		rx := regexp.MustCompile(pattern)
 		scanner := bufio.NewScanner(stdout)
 		go func() {
 			for scanner.Scan() {
@@ -126,42 +188,36 @@ func (s *SSHTunnel) runSSHTunnel() {
 						s.changeURLCallback(s.tunnelURL)
 					}
 					s.mu.Unlock()
-
-					// Signal URL available (non-blocking if already closed)
-					select {
-					case <-s.urlAvailable:
-					default:
-						close(s.urlAvailable)
-					}
+					s.markURLAvailable()
 				}
 			}
 		}()
 
-		cmd.Wait()
+		_ = cmd.Wait()
 
 		s.mu.Lock()
 		urlObtained := s.tunnelURL != ""
 		s.mu.Unlock()
 
 		if urlObtained {
-			log.Println("SSH tunnel disconnected, but URL was obtained. Exiting SSH Tunnel attempts.")
+			L().Info("SSH tunnel disconnected, but URL was obtained. Exiting SSH Tunnel attempts.")
 			return
 		}
 
-		log.Println("Reconnecting SSH tunnel after failure...")
+		L().Info("SSH tunnel attempt failed, trying next provider", zap.String("provider", provider.Name))
 		s.currentCmdIndex++
-		time.Sleep(2 * time.Second)
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
 	}
 
 	s.mu.Lock()
 	s.allCommandsFailed = true
 	if s.tunnelURL == "" {
-		log.Println("All SSH commands failed.")
-		select {
-		case <-s.urlAvailable:
-		default:
-			close(s.urlAvailable)
-		}
+		L().Info("All SSH tunnel providers failed")
+		s.markURLAvailable()
 	}
 	s.mu.Unlock()
 }

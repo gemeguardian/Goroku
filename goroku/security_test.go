@@ -153,3 +153,26 @@ func TestSecurityCheckTsecRules(t *testing.T) {
 		t.Fatal("any user in tsec_chat should pass for test_cmd")
 	}
 }
+
+func TestIntFromInterface(t *testing.T) {
+	tests := []struct {
+		input    interface{}
+		fallback int
+		want     int
+	}{
+		{42, 0, 42},
+		{int64(42), 0, 42},
+		{float64(42.9), 0, 42},
+		{"42", 0, 42},
+		{"invalid", 99, 99},
+		{nil, 99, 99},
+		{true, 99, 99},
+	}
+
+	for _, tc := range tests {
+		got := intFromInterface(tc.input, tc.fallback)
+		if got != tc.want {
+			t.Errorf("intFromInterface(%v, %d) = %d; want %d", tc.input, tc.fallback, got, tc.want)
+		}
+	}
+}

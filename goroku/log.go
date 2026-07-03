@@ -16,6 +16,7 @@ import (
 
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 	"gopkg.in/natefinch/lumberjack.v2"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
@@ -143,7 +144,7 @@ func (h *TelegramLogsHandler) flush() {
 			fileBytes := tgbotapi.FileBytes{Name: "goroku-logs.txt", Bytes: []byte(allText)}
 			_, err = SendDocumentWithTopic(botClient, targetBotChatID, fileBytes, "📋 Goroku Logs (too large to send as text)", int(topicID))
 			if err != nil {
-				log.Printf("Failed to send logs file via bot: %v\n", err)
+				L().Info("Failed to send logs file via bot: {0}", zap.Any("arg0", err))
 			}
 			return
 		}
@@ -152,7 +153,7 @@ func (h *TelegramLogsHandler) flush() {
 			msgText := fmt.Sprintf("<code>%s</code>", html.EscapeString(chunk))
 			_, err = SendMessageWithTopic(botClient, targetBotChatID, msgText, int(topicID))
 			if err != nil {
-				log.Printf("Failed to send logs message via bot: %v\n", err)
+				L().Info("Failed to send logs message via bot: {0}", zap.Any("arg0", err))
 			}
 		}
 		return
@@ -186,10 +187,10 @@ func (h *TelegramLogsHandler) flush() {
 				RandomID: rand.Int63(),
 			})
 			if err != nil {
-				log.Printf("Failed to send logs file: %v\n", err)
+				L().Info("Failed to send logs file: {0}", zap.Any("arg0", err))
 			}
 		} else {
-			log.Printf("Failed to upload logs file: %v\n", err)
+			L().Info("Failed to upload logs file: {0}", zap.Any("arg0", err))
 		}
 		return
 	}
@@ -205,7 +206,7 @@ func (h *TelegramLogsHandler) flush() {
 			RandomID: rand.Int63(),
 		})
 		if err != nil {
-			log.Printf("Failed to send logs message: %v\n", err)
+			L().Info("Failed to send logs message: {0}", zap.Any("arg0", err))
 		}
 	}
 }
@@ -301,6 +302,8 @@ func (cw *ColoredStdoutWriter) Write(p []byte) (n int, err error) {
 var TGLogHandler *TelegramLogsHandler
 
 func InitLogging() {
+	InitZapLogging()
+
 	fileWriter := &lumberjack.Logger{
 		Filename:   "goroku.log",
 		MaxSize:    10, // MB

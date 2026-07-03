@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"goroku/goroku"
 	"goroku/goroku/inline"
+	"goroku/goroku/inlineiface"
 	"goroku/goroku/utils"
 	"strings"
 	"time"
@@ -543,7 +544,7 @@ func (m *GorokuSettings) getSettingsText() string {
 	)
 }
 
-func (m *GorokuSettings) getSettingsMarkup(im *inline.InlineManager) [][]inline.Button {
+func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inline.Button {
 	noNick := false
 	if v, ok := m.db.Get("goroku.main", "no_nickname", false).(bool); ok {
 		noNick = v

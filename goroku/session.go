@@ -3,17 +3,16 @@ package goroku
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"goroku/goroku/inline"
 	"goroku/goroku/utils"
 
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 )
 
 func (h *Goroku) finishWebLogin(pending interface{}, customModules []Module) error {
@@ -22,8 +21,6 @@ func (h *Goroku) finishWebLogin(pending interface{}, customModules []Module) err
 		return fmt.Errorf("unexpected pending client type %T", pending)
 	}
 
-	apiID := pendingClient.APIID
-	apiHash := pendingClient.APIHash
 	tgID := pendingClient.TGID
 	if tgID == 0 {
 		me, err := pendingClient.GetMe()
@@ -38,8 +35,13 @@ func (h *Goroku) finishWebLogin(pending interface{}, customModules []Module) err
 		return fmt.Errorf("authorized Telegram user id is unknown")
 	}
 
-	_ = pendingClient.Disconnect()
-	time.Sleep(500 * time.Millisecond)
+	for _, existing := range h.Clients {
+		if existing.TGID == tgID {
+			return fmt.Errorf("client %d is already running", tgID)
+		}
+	}
+
+	_ = pendingClient.Disconnect() // waits for client.Run to finish via runDone
 
 	oldSession := filepath.Join(BaseDir, "goroku-0.session")
 	newSession := filepath.Join(BaseDir, fmt.Sprintf("goroku-%d.session", tgID))
@@ -49,66 +51,22 @@ func (h *Goroku) finishWebLogin(pending interface{}, customModules []Module) err
 				return fmt.Errorf("failed to rename temporary session: %v", err)
 			}
 			utils.SecureFile(newSession)
-			log.Printf("Renamed temporary session to %s\n", filepath.Base(newSession))
+			L().Info("Renamed temporary session", zap.String("file", filepath.Base(newSession)))
 		}
 	}
 
-	for _, existing := range h.Clients {
-		if existing.TGID == tgID {
-			return fmt.Errorf("client %d is already running", tgID)
-		}
+	client, err := h.initClient(tgID, newSession, customModules)
+	if err != nil {
+		return err
 	}
-
-	client := NewCustomTelegramClient(tgID)
-	client.APIID = apiID
-	client.APIHash = apiHash
-	client.SessionPath = newSession
-	if err := client.Connect(); err != nil {
-		return fmt.Errorf("failed to reconnect authorized client: %v", err)
-	}
-
-	db := NewDatabase(tgID)
-	redisURI := os.Getenv("REDIS_URL")
-	if redisURI == "" {
-		if val := GetConfigKey("redis_uri"); val != nil {
-			redisURI = fmt.Sprintf("%v", val)
-		}
-	}
-	db.Init(redisURI)
-	if customBot, ok := GetConfigKey("custom_bot").(string); ok && customBot != "" {
-		db.Set("goroku.inline", "custom_bot", customBot)
-	}
-	client.GorokuDB = db
-	db.client = client
-
-	loader := NewModules(client, db)
-	client.Loader = loader
-
-	inlineMgr := inline.NewInlineManager(client, db, loader)
-	client.GorokuInline = inlineMgr
-
-	h.registerBuiltInModules(loader)
-	for _, mod := range customModules {
-		freshMod := cloneModule(mod)
-		if err := loader.RegisterModule(freshMod); err != nil {
-			log.Printf("Failed to register module %s for web login: %v\n", mod.Name(), err)
-		}
-	}
-
-	disp := NewCommandDispatcher(loader, client, db)
-	loader.SetDispatcher(disp)
-	loader.SendReady()
-	h.sendBadge(client, db)
-
-	h.Clients = append(h.Clients, client)
-	h.DBs = append(h.DBs, db)
-	h.Loaders = append(h.Loaders, loader)
 
 	if h.Web != nil {
+		loader := h.Loaders[len(h.Loaders)-1]
+		db := h.DBs[len(h.DBs)-1]
 		h.Web.AddLoader(client, loader, db)
 	}
 
-	log.Printf("Web login client %d initialized without restart\n", client.TGID)
+	L().Info("Web login client initialized without restart", zap.Int64("tg_id", client.TGID))
 	return nil
 }
 
@@ -135,7 +93,7 @@ func (h *Goroku) startCliLogin(customModules []Module) {
 	client.SessionPath = filepath.Join(BaseDir, "goroku-0.session")
 
 	if err := client.Connect(); err != nil {
-		log.Fatalf("Failed to connect Telegram client: %v\n", err)
+		L().Fatal("Failed to connect Telegram client", zap.Error(err))
 	}
 
 	fmt.Println("\033[0;96mYou can use QR-code to login from another device (your friend's phone, for example).\033[0m")
@@ -149,7 +107,7 @@ func (h *Goroku) startCliLogin(customModules []Module) {
 	fmt.Println("\033[0;96mLoading QR code...\033[0m")
 	url, err := client.QRLogin()
 	if err != nil {
-		log.Fatalf("QR login init failed: %v\n", err)
+		L().Fatal("QR login init failed", zap.Error(err))
 	}
 
 	printQR := func(qrUrl string) {
@@ -173,14 +131,14 @@ func (h *Goroku) startCliLogin(customModules []Module) {
 				PrintBanner("2fa.txt")
 				password := promptInput("\033[0;96mEnter 2FA password: \033[0m")
 				if err := client.SignIn("", "", password); err != nil {
-					log.Fatalf("\033[0;91m2FA Login failed: %v\033[0m\n", err)
+					L().Fatal("2FA Login failed", zap.Error(err))
 				}
 				success = true
 				break
 			}
 			errStr := strings.ToLower(err.Error())
 			if strings.Contains(errStr, "canceled") || strings.Contains(errStr, "closed") || strings.Contains(errStr, "dead") {
-				log.Fatalf("Telegram client connection closed: %v\n", err)
+				L().Fatal("Telegram client connection closed", zap.Error(err))
 			}
 		} else if status == "SUCCESS" {
 			success = true
@@ -200,7 +158,7 @@ func (h *Goroku) startCliLogin(customModules []Module) {
 	}
 
 	if !success {
-		log.Fatalf("QR login timeout. Please try again.\n")
+		L().Fatal("QR login timeout")
 	}
 
 	PrintBanner("success.txt")
@@ -217,27 +175,9 @@ func (h *Goroku) startCliLogin(customModules []Module) {
 		}
 	}
 	if tgID == 0 {
-		log.Fatalf("Login failed: authorized Telegram user ID is 0\n")
+		L().Fatal("Login failed: authorized Telegram user ID is 0")
 	}
 
-	db := NewDatabase(tgID)
-	redisURI := os.Getenv("REDIS_URL")
-	if redisURI == "" {
-		if val := GetConfigKey("redis_uri"); val != nil {
-			redisURI = fmt.Sprintf("%v", val)
-		}
-	}
-	db.Init(redisURI)
-	db.client = client
-	client.GorokuDB = db
-
-	loader := NewModules(client, db)
-	client.Loader = loader
-
-	inlineMgr := inline.NewInlineManager(client, db, loader)
-	client.GorokuInline = inlineMgr
-
-	h.cliSetupBot(client, db)
 	h.cliSaveClientSession(client, customModules)
 }
 
@@ -246,7 +186,7 @@ func (h *Goroku) cliPhoneLogin(client *CustomTelegramClient, customModules []Mod
 
 	err := client.SendCodeRequest(phone)
 	if err != nil {
-		log.Fatalf("Failed to send code: %v\n", err)
+		L().Fatal("Failed to send code", zap.Error(err))
 	}
 
 	fmt.Println("A verification code has been sent to your Telegram app or phone.")
@@ -258,10 +198,10 @@ func (h *Goroku) cliPhoneLogin(client *CustomTelegramClient, customModules []Mod
 			PrintBanner("2fa.txt")
 			password := promptInput("\033[0;96mEnter 2FA password: \033[0m")
 			if err := client.SignIn(phone, code, password); err != nil {
-				log.Fatalf("\033[0;91m2FA Login failed: %v\033[0m\n", err)
+				L().Fatal("2FA Login failed", zap.Error(err))
 			}
 		} else {
-			log.Fatalf("Login failed: %v\n", err)
+			L().Fatal("Login failed", zap.Error(err))
 		}
 	}
 
@@ -279,27 +219,9 @@ func (h *Goroku) cliPhoneLogin(client *CustomTelegramClient, customModules []Mod
 		}
 	}
 	if tgID == 0 {
-		log.Fatalf("Login failed: authorized Telegram user ID is 0\n")
+		L().Fatal("Login failed: authorized Telegram user ID is 0")
 	}
 
-	db := NewDatabase(tgID)
-	redisURI := os.Getenv("REDIS_URL")
-	if redisURI == "" {
-		if val := GetConfigKey("redis_uri"); val != nil {
-			redisURI = fmt.Sprintf("%v", val)
-		}
-	}
-	db.Init(redisURI)
-	db.client = client
-	client.GorokuDB = db
-
-	loader := NewModules(client, db)
-	client.Loader = loader
-
-	inlineMgr := inline.NewInlineManager(client, db, loader)
-	client.GorokuInline = inlineMgr
-
-	h.cliSetupBot(client, db)
 	h.cliSaveClientSession(client, customModules)
 }
 
@@ -343,21 +265,22 @@ func (h *Goroku) cliSetupBot(client *CustomTelegramClient, db *Database) {
 func (h *Goroku) cliSaveClientSession(client *CustomTelegramClient, customModules []Module) {
 	tgID := client.TGID
 	if tgID == 0 {
-		log.Fatalf("Login failed: authorized Telegram user ID is 0\n")
+		L().Fatal("Login failed: authorized Telegram user ID is 0")
 	}
 
-	_ = client.Disconnect()
-	time.Sleep(500 * time.Millisecond)
+	_ = client.Disconnect() // waits for client.Run to finish via runDone
 
 	oldSession := filepath.Join(BaseDir, "goroku-0.session")
 	newSession := filepath.Join(BaseDir, fmt.Sprintf("goroku-%d.session", tgID))
 	_ = os.Rename(oldSession, newSession)
 	utils.SecureFile(newSession)
 
-	log.Printf("Booting userbot for client ID: %d...\n", tgID)
+	L().Info("Booting userbot", zap.Int64("tg_id", tgID))
 	if _, err := h.initClient(tgID, newSession, customModules); err != nil {
-		log.Fatalf("Failed to init client %d: %v\n", tgID, err)
+		L().Fatal("Failed to init client", zap.Int64("tg_id", tgID), zap.Error(err))
 	}
+
+	h.cliSetupBot(h.Clients[len(h.Clients)-1], h.DBs[len(h.DBs)-1])
 }
 
 func promptInput(prompt string) string {

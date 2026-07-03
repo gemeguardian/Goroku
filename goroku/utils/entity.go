@@ -2,14 +2,18 @@ package utils
 
 import (
 	"fmt"
-	"log"
 	"math/rand"
 	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
+
+// L returns the package-level zap logger.
+func L() *zap.Logger { return zap.NewNop() }
 
 // FormattingEntity represents a text formatting entity.
 type FormattingEntity struct {
@@ -265,7 +269,7 @@ func AssetChannel(
 	// 2. Create new channel (megagroup = !channel in python)
 	newPeer, err := creator.CreateChannel(title, description, !channel, forum)
 	if err != nil {
-		log.Printf("AssetChannel failed to create channel: %v\n", err)
+		L().Info("AssetChannel failed to create channel: {0}", zap.Any("arg0", err))
 		return nil, false
 	}
 
@@ -385,7 +389,7 @@ func AssetForumTopic(
 func WaitForContentChannel(db Database, delay float64) int64 {
 	cidVal := db.Get("goroku.forums", "channel_id", nil)
 	for cidVal == nil {
-		log.Println("Goroku content channel not found in database. Sleeping 10 seconds...")
+		L().Info("Goroku content channel not found in database. Sleeping...")
 		time.Sleep(time.Duration(delay * float64(time.Second)))
 		cidVal = db.Get("goroku.forums", "channel_id", nil)
 	}

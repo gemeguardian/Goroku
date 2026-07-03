@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 const (
@@ -66,22 +68,22 @@ func (ls *LocalStorage) getPath(repo, moduleName string) string {
 func (ls *LocalStorage) Save(repo, moduleName, moduleCode string) {
 	size := int64(len(moduleCode))
 	if size > MaxFilesize {
-		log.Printf("Module %s from %s is too large (%d bytes) to save to local cache.\n", moduleName, repo, size)
+		L().Info("Module {0} from {1} is too large ({2} bytes) to save to local cache.", zap.Any("arg0", moduleName), zap.Any("arg1", repo), zap.Any("arg2", size))
 		return
 	}
 
 	if ls.totalSize()+size > MaxTotalsize {
-		log.Printf("Local storage is full, cannot save module %s from %s.\n", moduleName, repo)
+		L().Info("Local storage is full, cannot save module {0} from {1}.", zap.Any("arg0", moduleName), zap.Any("arg1", repo))
 		return
 	}
 
 	filePath := ls.getPath(repo, moduleName)
 	err := os.WriteFile(filePath, []byte(moduleCode), 0644)
 	if err != nil {
-		log.Printf("Failed to write to local storage cache: %v\n", err)
+		L().Info("Failed to write to local storage cache: {0}", zap.Any("arg0", err))
 		return
 	}
-	log.Printf("Saved module %s from %s to local cache.\n", moduleName, repo)
+	L().Info("Saved module {0} from {1} to local cache.", zap.Any("arg0", moduleName), zap.Any("arg1", repo))
 }
 
 func (ls *LocalStorage) Fetch(repo, moduleName string) (string, error) {
@@ -174,7 +176,7 @@ func (rs *RemoteStorage) Fetch(url, auth string) (string, error) {
 	resp, err := httpClient.Do(req)
 
 	if err != nil || resp.StatusCode != http.StatusOK {
-		log.Printf("Can't load module from remote storage. Trying local storage: %v\n", err)
+		L().Info("Can't load module from remote storage. Trying local storage: {0}", zap.Any("arg0", err))
 		if localCode, fetchErr := rs.localStorage.Fetch(repo, moduleName); fetchErr == nil {
 			log.Println("Module source loaded from local storage.")
 			return localCode, nil

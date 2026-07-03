@@ -89,7 +89,10 @@ func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass,
 			return nil, err
 		}
 		if len(res.Users) > 0 {
-			user := res.Users[0].(*tg.User)
+			user, ok := res.Users[0].(*tg.User)
+			if !ok {
+				return nil, fmt.Errorf("unexpected user type %T", res.Users[0])
+			}
 			var peer tg.InputPeerClass
 			if user.Self {
 				peer = &tg.InputPeerSelf{}

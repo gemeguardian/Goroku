@@ -383,37 +383,7 @@ func (m *Test) SendLogs(msg interface{}, lvl int, force bool) error {
 	}
 
 	allLines := goroku.TGLogHandler.Dump()
-	filteredLines := []string{}
-
-	for _, line := range allLines {
-		lineLower := strings.ToLower(line)
-		matches := false
-
-		switch lvl {
-		case 60:
-			if strings.Contains(lineLower, "critical") || strings.Contains(lineLower, "panic") || strings.Contains(lineLower, "fatal") {
-				matches = true
-			}
-		case 40:
-			if strings.Contains(lineLower, "error") || strings.Contains(lineLower, "err") || strings.Contains(lineLower, "critical") || strings.Contains(lineLower, "panic") || strings.Contains(lineLower, "fatal") {
-				matches = true
-			}
-		case 30:
-			if strings.Contains(lineLower, "warning") || strings.Contains(lineLower, "warn") || strings.Contains(lineLower, "error") || strings.Contains(lineLower, "err") || strings.Contains(lineLower, "critical") || strings.Contains(lineLower, "panic") || strings.Contains(lineLower, "fatal") {
-				matches = true
-			}
-		case 20:
-			if strings.Contains(lineLower, "info") || strings.Contains(lineLower, "warning") || strings.Contains(lineLower, "warn") || strings.Contains(lineLower, "error") || strings.Contains(lineLower, "err") || strings.Contains(lineLower, "critical") || strings.Contains(lineLower, "panic") || strings.Contains(lineLower, "fatal") {
-				matches = true
-			}
-		default:
-			matches = true
-		}
-
-		if matches {
-			filteredLines = append(filteredLines, line)
-		}
-	}
+	filteredLines := filterLogsByLevel(allLines, lvl)
 
 	if callObj, ok := msg.(inline.CallbackQuery); ok {
 		_ = closeForm(callObj)
@@ -460,4 +430,33 @@ func (m *Test) SendLogs(msg interface{}, lvl int, force bool) error {
 	nr := &namedReader{r: bytes.NewReader([]byte(censoredLogs)), name: filename}
 	_, err := m.client.SendFile(chatID, nr, caption)
 	return err
+}
+
+// filterLogsByLevel filters log lines by minimum severity level.
+// Level mapping: 60=CRITICAL, 40=ERROR, 30=WARNING, 20=INFO, 10=DEBUG, 0=ALL.
+func filterLogsByLevel(lines []string, lvl int) []string {
+	if lvl == 0 {
+		return lines
+	}
+	filtered := []string{}
+	for _, line := range lines {
+		lineLower := strings.ToLower(line)
+		var matches bool
+		switch lvl {
+		case 60:
+			matches = strings.Contains(lineLower, "critical") || strings.Contains(lineLower, "panic") || strings.Contains(lineLower, "fatal")
+		case 40:
+			matches = strings.Contains(lineLower, "error") || strings.Contains(lineLower, "err") || strings.Contains(lineLower, "critical") || strings.Contains(lineLower, "panic") || strings.Contains(lineLower, "fatal")
+		case 30:
+			matches = strings.Contains(lineLower, "warning") || strings.Contains(lineLower, "warn") || strings.Contains(lineLower, "error") || strings.Contains(lineLower, "err") || strings.Contains(lineLower, "critical") || strings.Contains(lineLower, "panic") || strings.Contains(lineLower, "fatal")
+		case 20:
+			matches = strings.Contains(lineLower, "info") || strings.Contains(lineLower, "warning") || strings.Contains(lineLower, "warn") || strings.Contains(lineLower, "error") || strings.Contains(lineLower, "err") || strings.Contains(lineLower, "critical") || strings.Contains(lineLower, "panic") || strings.Contains(lineLower, "fatal")
+		default:
+			matches = true
+		}
+		if matches {
+			filtered = append(filtered, line)
+		}
+	}
+	return filtered
 }

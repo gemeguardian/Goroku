@@ -1,12 +1,15 @@
 package cache
 
-import "time"
+import (
+	"time"
+
+	"github.com/gotd/td/tg"
+)
 
 type CacheRecordFullUser struct {
-	UserID   interface{}
-	FullUser interface{}
-	Exp      int64
-	TS       int64
+	User *tg.UsersUserFull
+	Exp  int64
+	TS   int64
 }
 
 func (r CacheRecordFullUser) Expired() bool {

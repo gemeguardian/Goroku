@@ -3,13 +3,13 @@ package goroku
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 )
 
 const (
@@ -240,7 +240,7 @@ func (sm *SecurityManager) ApplySgroups(sgroups map[string]SecurityGroup) {
 }
 
 func (sm *SecurityManager) Check(msg *Message, command string) bool {
-	log.Printf("[Security] Check: SenderID=%d, Out=%t, client.TGID=%d, command=%s\n", msg.SenderID, msg.Out, sm.client.TGID, command)
+	L().Info("[Security] Check: SenderID={0}, Out={1}, client.TGID={2}, command={3}", zap.Any("arg0", msg.SenderID), zap.Any("arg1", msg.Out), zap.Any("arg2", sm.client.TGID), zap.Any("arg3", command))
 	// First, if owner/client, bypass security check
 	if msg.SenderID == sm.client.TGID || msg.Out {
 		return true

@@ -16,7 +16,7 @@ func (c *CustomTelegramClient) GetFullChannel(entity interface{}, exp int64, for
 		record, ok := c.GorokuFullChannelCache[cacheKey]
 		c.cacheMu.RUnlock()
 		if ok && !record.Expired() {
-			return record.FullChannel, nil
+			return record.Channel, nil
 		}
 	}
 
@@ -36,10 +36,9 @@ func (c *CustomTelegramClient) GetFullChannel(entity interface{}, exp int64, for
 
 	c.cacheMu.Lock()
 	c.GorokuFullChannelCache[cacheKey] = cache.CacheRecordFullChannel{
-		ChannelID:   cacheKey,
-		FullChannel: fullChannel,
-		Exp:         time.Now().Unix() + exp,
-		TS:          time.Now().Unix(),
+		Channel: fullChannel,
+		Exp:     time.Now().Unix() + exp,
+		TS:      time.Now().Unix(),
 	}
 	c.cacheMu.Unlock()
 
