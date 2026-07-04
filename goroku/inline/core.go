@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"goroku/goroku/chatref"
+
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
@@ -21,9 +23,9 @@ type InlineManager struct {
 	mu                   sync.RWMutex
 	registerMu           sync.Mutex
 	bot                  *tgbotapi.BotAPI
-	client               interface{}
-	db                   interface{}
-	allModules           interface{}
+	client               InlineUserBot
+	db                   Database
+	allModules           InlineModules
 	units                map[string]*Unit
 	activeInlineMessages map[string]string
 	activeMessageIDs     map[string]MessageIDInfo
@@ -41,7 +43,7 @@ type InlineManager struct {
 	markupTTL            time.Duration
 }
 
-func NewInlineManager(client, db, allModules interface{}) *InlineManager {
+func NewInlineManager(client InlineUserBot, db Database, allModules InlineModules) *InlineManager {
 	im := &InlineManager{
 		client:               client,
 		db:                   db,
@@ -125,11 +127,11 @@ func (im *InlineManager) RegisterManager(afterBreak bool, ignoreTokenChecks bool
 	im.BotID = bot.Self.ID
 
 	if dbTyped, ok := im.db.(interface {
-		Get(string, string, interface{}) interface{}
-		Set(string, string, interface{}) bool
+		Get(string, string, any) (any, error)
+		Set(string, string, any) bool
 	}); ok {
 		var lastBotID int64
-		if val := dbTyped.Get("goroku.inline", "last_bot_id", nil); val != nil {
+		if val, _ := dbTyped.Get("goroku.inline", "last_bot_id", nil); val != nil {
 			switch v := val.(type) {
 			case float64:
 				lastBotID = int64(v)
@@ -163,10 +165,10 @@ func (im *InlineManager) RegisterManager(afterBreak bool, ignoreTokenChecks bool
 }
 
 type userBotInlineBootstrap interface {
-	SendMessage(chat interface{}, message string) (interface{}, error)
+	SendMessage(chat chatref.ChatRef, message string) (any, error)
 	CreateGorokuFolder(botID int64) error
-	InviteBotToChannel(channelPeer interface{}) error
-	PromoteBotToAdmin(channelPeer interface{}) error
+	InviteBotToChannel(channelPeer tg.InputPeerClass) error
+	PromoteBotToAdmin(channelPeer tg.InputPeerClass) error
 }
 
 func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
@@ -179,12 +181,12 @@ func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 	var folderCreated bool
 
 	dbTyped, okDb := im.db.(interface {
-		Get(string, string, interface{}) interface{}
-		Set(string, string, interface{}) bool
+		Get(string, string, any) (any, error)
+		Set(string, string, any) bool
 	})
 
 	if okDb {
-		if val := dbTyped.Get("goroku.inline", "bootstrapped_group", nil); val != nil {
+		if val, _ := dbTyped.Get("goroku.inline", "bootstrapped_group", nil); val != nil {
 			switch v := val.(type) {
 			case float64:
 				bootstrappedGroup = int64(v)
@@ -194,7 +196,7 @@ func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 				bootstrappedGroup = int64(v)
 			}
 		}
-		if val := dbTyped.Get("goroku.inline", "folder_created", false); val != nil {
+		if val, _ := dbTyped.Get("goroku.inline", "folder_created", false); val != nil {
 			if b, ok := val.(bool); ok {
 				folderCreated = b
 			}
@@ -202,7 +204,7 @@ func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 	}
 
 	if !folderCreated {
-		msg, err := client.SendMessage(im.BotUsername, "/start goroku init")
+		msg, err := client.SendMessage(chatref.Username(im.BotUsername), "/start goroku init")
 		if err != nil {
 			if okDb && !afterBreak {
 				dbTyped.Set("goroku.inline", "bot_token", nil)
@@ -224,7 +226,7 @@ func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 	}
 
 	if okDb {
-		if val := dbTyped.Get("goroku.forums", "channel_id", nil); val != nil {
+		if val, _ := dbTyped.Get("goroku.forums", "channel_id", nil); val != nil {
 			var cid int64
 			switch v := val.(type) {
 			case float64:
@@ -236,12 +238,13 @@ func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 			}
 
 			if cid != 0 && cid != bootstrappedGroup {
-				if err := client.InviteBotToChannel(cid); err != nil {
+				channelPeer := &tg.InputPeerChannel{ChannelID: cid}
+				if err := client.InviteBotToChannel(channelPeer); err != nil {
 					L().Info("[Inline] Failed to invite inline bot to log group: {0}", zap.Any("arg0", err))
 				} else {
 					L().Info("Successfully invited inline bot to log group")
 				}
-				if err := client.PromoteBotToAdmin(cid); err != nil {
+				if err := client.PromoteBotToAdmin(channelPeer); err != nil {
 					L().Info("Failed to promote inline bot to admin", zap.Error(err))
 				} else {
 					L().Info("Successfully promoted inline bot to admin")
@@ -291,10 +294,12 @@ func (im *InlineManager) PopWebAuthToken(token string) bool {
 func (im *InlineManager) getToken() string {
 	// Read bot token from DB interface
 	if dbTyped, ok := im.db.(interface {
-		Get(string, string, interface{}) interface{}
+		Get(string, string, any) (any, error)
 	}); ok {
-		if tok, ok := dbTyped.Get("goroku.inline", "bot_token", "").(string); ok {
-			return tok
+		if raw, _ := dbTyped.Get("goroku.inline", "bot_token", ""); raw != nil {
+			if tok, ok := raw.(string); ok {
+				return tok
+			}
 		}
 	}
 	return ""
@@ -354,7 +359,7 @@ type TelegramClient interface {
 	SendInlineBotResult(chatID int64, queryID int64, resultID string, replyToMsgID int64) (tg.UpdatesClass, error)
 }
 
-func getSentMessageID(resp interface{}) int64 {
+func getSentMessageID(resp any) int64 {
 	switch v := resp.(type) {
 	case *tg.Updates:
 		for _, update := range v.Updates {

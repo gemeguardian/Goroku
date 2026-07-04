@@ -11,7 +11,7 @@ func (im *InlineManager) QueryGallery(
 	queryID string,
 	items []QueryGalleryItem,
 ) error {
-	var results []interface{}
+	var results []any
 
 	for _, item := range items {
 		id := localRandStr(16)

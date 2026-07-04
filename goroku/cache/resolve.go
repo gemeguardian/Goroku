@@ -8,53 +8,86 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+// EntityCacheKey is a normalized key for entity cache maps.
+// It can represent either a numeric ID (user/chat/channel) or a username.
+type EntityCacheKey struct {
+	ID       int64
+	Username string
+}
+
+// IsUsername reports whether the key is a username lookup.
+func (k EntityCacheKey) IsUsername() bool { return k.Username != "" }
+
+func (k EntityCacheKey) String() string {
+	if k.IsUsername() {
+		return k.Username
+	}
+	return fmt.Sprintf("%d", k.ID)
+}
+
+func (k EntityCacheKey) IsZero() bool { return k.ID == 0 && k.Username == "" }
+
+// TelegramChannelChatID returns the bot API style channel chat ID.
 func TelegramChannelChatID(channelID int64) int64 {
 	return -1000000000000 - channelID
 }
 
-func NormalizeEntityCacheKey(entity interface{}) interface{} {
+// NormalizeEntityCacheKey converts peers, IDs, and usernames into a typed key.
+func NormalizeEntityCacheKey(entity any) EntityCacheKey {
 	switch v := entity.(type) {
 	case string:
 		s := strings.ToLower(strings.TrimPrefix(v, "@"))
 		if strings.HasPrefix(s, "-100") {
 			if id, err := strconv.ParseInt(strings.TrimPrefix(s, "-100"), 10, 64); err == nil {
-				return id
+				return EntityCacheKey{ID: id}
 			}
 		}
-		return s
+		return EntityCacheKey{Username: s}
 	case int:
 		return NormalizeEntityCacheKey(int64(v))
 	case int64:
-		if v < -1000000000000 {
-			return -(v + 1000000000000)
-		}
-		if v < 0 {
-			return -v
-		}
-		return v
+		return EntityCacheKey{ID: normalizeID(v)}
 	case tg.InputPeerClass:
-		switch p := v.(type) {
-		case *tg.InputPeerUser:
-			return p.UserID
-		case *tg.InputPeerChannel:
-			return p.ChannelID
-		case *tg.InputPeerChat:
-			return p.ChatID
-		}
+		return peerCacheKey(v)
+	case EntityCacheKey:
+		return v
 	}
-	return entity
+	return EntityCacheKey{}
 }
 
-func CachePeerAliases(cache map[interface{}]CacheRecordEntity, peer tg.InputPeerClass, record CacheRecordEntity) {
+func normalizeID(v int64) int64 {
+	if v < -1000000000000 {
+		return -(v + 1000000000000)
+	}
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func peerCacheKey(peer tg.InputPeerClass) EntityCacheKey {
 	switch p := peer.(type) {
 	case *tg.InputPeerUser:
-		cache[p.UserID] = record
+		return EntityCacheKey{ID: p.UserID}
 	case *tg.InputPeerChannel:
-		cache[p.ChannelID] = record
-		cache[TelegramChannelChatID(p.ChannelID)] = record
+		return EntityCacheKey{ID: p.ChannelID}
 	case *tg.InputPeerChat:
-		cache[p.ChatID] = record
-		cache[-p.ChatID] = record
+		return EntityCacheKey{ID: p.ChatID}
+	}
+	return EntityCacheKey{}
+}
+
+// CachePeerAliases stores a record under all common aliases for the peer.
+func CachePeerAliases(cache map[EntityCacheKey]CacheRecordEntity, peer tg.InputPeerClass, record CacheRecordEntity) {
+	switch p := peer.(type) {
+	case *tg.InputPeerUser:
+		cache[EntityCacheKey{ID: p.UserID}] = record
+	case *tg.InputPeerChannel:
+		cache[EntityCacheKey{ID: p.ChannelID}] = record
+		cache[EntityCacheKey{ID: TelegramChannelChatID(p.ChannelID)}] = record
+	case *tg.InputPeerChat:
+		cache[EntityCacheKey{ID: p.ChatID}] = record
+		cache[EntityCacheKey{ID: -p.ChatID}] = record
 	}
 }
 

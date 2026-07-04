@@ -9,7 +9,7 @@ import (
 	"github.com/gotd/td/tg"
 )
 
-func (c *CustomTelegramClient) GetPermsCached(entity interface{}, user interface{}, exp int64, force bool) (interface{}, error) {
+func (c *CustomTelegramClient) GetPermsCached(entity any, user any, exp int64, force bool) (any, error) {
 	entityKey := cache.NormalizeEntityCacheKey(entity)
 	userKey := cache.NormalizeEntityCacheKey(user)
 	if !force {
@@ -31,7 +31,7 @@ func (c *CustomTelegramClient) GetPermsCached(entity interface{}, user interface
 	}
 	if user == nil {
 		user = c.TGID
-		userKey = c.TGID
+		userKey = cache.EntityCacheKey{ID: c.TGID}
 	}
 	userPeer, err := c.ResolvePeer(user)
 	if err != nil {
@@ -45,7 +45,7 @@ func (c *CustomTelegramClient) GetPermsCached(entity interface{}, user interface
 
 	c.cacheMu.Lock()
 	if _, ok := c.GorokuPermsCache[entityKey]; !ok {
-		c.GorokuPermsCache[entityKey] = make(map[interface{}]cache.CacheRecordPerms)
+		c.GorokuPermsCache[entityKey] = make(map[cache.EntityCacheKey]cache.CacheRecordPerms)
 	}
 
 	c.GorokuPermsCache[entityKey][userKey] = cache.CacheRecordPerms{
@@ -58,7 +58,7 @@ func (c *CustomTelegramClient) GetPermsCached(entity interface{}, user interface
 	return perms, nil
 }
 
-func (c *CustomTelegramClient) fetchPermissions(peer tg.InputPeerClass, userPeer tg.InputPeerClass) (interface{}, error) {
+func (c *CustomTelegramClient) fetchPermissions(peer tg.InputPeerClass, userPeer tg.InputPeerClass) (any, error) {
 	switch p := peer.(type) {
 	case *tg.InputPeerChannel:
 		res, err := c.rawAPI.ChannelsGetParticipant(c.ctx, &tg.ChannelsGetParticipantRequest{
@@ -93,7 +93,7 @@ func (c *CustomTelegramClient) fetchPermissions(peer tg.InputPeerClass, userPeer
 		}
 		return nil, fmt.Errorf("participant %d not found", userID)
 	case *tg.InputPeerUser, *tg.InputPeerSelf:
-		return map[string]interface{}{"is_private": true}, nil
+		return map[string]any{"is_private": true}, nil
 	default:
 		return nil, fmt.Errorf("unsupported peer type %T", peer)
 	}

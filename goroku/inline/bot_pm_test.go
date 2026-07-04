@@ -48,10 +48,10 @@ func TestFSMState(t *testing.T) {
 }
 
 type mockModules struct {
-	modules map[string]interface{}
+	modules map[string]any
 }
 
-func (m *mockModules) GetModules() map[string]interface{} {
+func (m *mockModules) GetModules() map[string]any {
 	return m.modules
 }
 
@@ -73,7 +73,7 @@ func (m *mockPMModule) HandleBotPM(msg *tgbotapi.Message) {
 func TestHandleBotPM(t *testing.T) {
 	mockMod := &mockPMModule{name: "InlineStuff"}
 	mods := &mockModules{
-		modules: map[string]interface{}{
+		modules: map[string]any{
 			"inline": mockMod,
 		},
 	}

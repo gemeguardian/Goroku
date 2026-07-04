@@ -6,13 +6,13 @@ import (
 
 func TestSecurityCheckDoesNotReloadRightsEveryCall(t *testing.T) {
 	db := NewDatabase(42)
-	db.data["goroku.security"] = map[string]interface{}{
-		"owner":     []interface{}{int64(42)},
-		"all_users": []interface{}{},
+	db.data["goroku.security"] = map[string]any{
+		"owner":     []any{int64(42)},
+		"all_users": []any{},
 	}
-	db.data["goroku.main"] = map[string]interface{}{
-		"command_prefixes": map[string]interface{}{
-			"999": []interface{}{"."},
+	db.data["goroku.main"] = map[string]any{
+		"command_prefixes": map[string]any{
+			"999": []any{"."},
 		},
 	}
 
@@ -20,17 +20,19 @@ func TestSecurityCheckDoesNotReloadRightsEveryCall(t *testing.T) {
 
 	// Simulate prefixes being written after startup. Check() is a hot path and
 	// must not run reloadRights()/cleanup on every message.
-	db.data["goroku.main"]["command_prefixes"] = map[string]interface{}{
-		"999": []interface{}{"."},
+	db.data["goroku.main"]["command_prefixes"] = map[string]any{
+		"999": []any{"."},
 	}
 
 	if !sm.Check(&Message{SenderID: 42, ChatID: 1, Out: true}, "ping") {
 		t.Fatal("owner/outgoing message should pass security check")
 	}
 
-	prefixes, ok := db.Get("goroku.main", "command_prefixes", nil).(map[string]interface{})
+	raw, _ := db.Get("goroku.main", "command_prefixes", nil)
+	prefixes, ok := raw.(map[string]any)
 	if !ok {
-		t.Fatalf("command_prefixes has unexpected type: %T", db.Get("goroku.main", "command_prefixes", nil))
+		prefRaw, _ := db.Get("goroku.main", "command_prefixes", nil)
+		t.Fatalf("command_prefixes has unexpected type: %T", prefRaw)
 	}
 	if _, ok := prefixes["999"]; !ok {
 		t.Fatal("Check() reloaded rights and cleaned command_prefixes on the hot path")
@@ -39,16 +41,16 @@ func TestSecurityCheckDoesNotReloadRightsEveryCall(t *testing.T) {
 
 func TestSecurityCheckWhitelistsOwnerAndBlacklistsUsers(t *testing.T) {
 	db := NewDatabase(42)
-	db.data["goroku.security"] = map[string]interface{}{
-		"owner":         []interface{}{int64(42)},
-		"all_users":     []interface{}{},
+	db.data["goroku.security"] = map[string]any{
+		"owner":         []any{int64(42)},
+		"all_users":     []any{},
 		"bounding_mask": float64(ALL | EVERYONE),
-		"masks": map[string]interface{}{
+		"masks": map[string]any{
 			"everyone_cmd": float64(EVERYONE),
 		},
 	}
-	db.data["goroku.main"] = map[string]interface{}{
-		"blacklist_users": []interface{}{int64(200)}, // Non-owner 200 is blacklisted
+	db.data["goroku.main"] = map[string]any{
+		"blacklist_users": []any{int64(200)}, // Non-owner 200 is blacklisted
 	}
 
 	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
@@ -77,11 +79,11 @@ func TestSecurityCheckWhitelistsOwnerAndBlacklistsUsers(t *testing.T) {
 
 func TestSecurityCheckEveryoneAndPMMasks(t *testing.T) {
 	db := NewDatabase(42)
-	db.data["goroku.security"] = map[string]interface{}{
-		"owner":         []interface{}{int64(42)},
-		"all_users":     []interface{}{},
+	db.data["goroku.security"] = map[string]any{
+		"owner":         []any{int64(42)},
+		"all_users":     []any{},
 		"bounding_mask": float64(ALL | EVERYONE), // Allow overrides to work
-		"masks": map[string]interface{}{
+		"masks": map[string]any{
 			"everyone_cmd": float64(EVERYONE),
 			"pm_only_cmd":  float64(PM),
 		},
@@ -108,20 +110,20 @@ func TestSecurityCheckEveryoneAndPMMasks(t *testing.T) {
 
 func TestSecurityCheckTsecRules(t *testing.T) {
 	db := NewDatabase(42)
-	db.data["goroku.security"] = map[string]interface{}{
-		"owner":         []interface{}{int64(42)},
-		"all_users":     []interface{}{},
+	db.data["goroku.security"] = map[string]any{
+		"owner":         []any{int64(42)},
+		"all_users":     []any{},
 		"bounding_mask": float64(OWNER), // Default OWNER only
-		"tsec_user": []interface{}{
-			map[string]interface{}{
+		"tsec_user": []any{
+			map[string]any{
 				"target":    float64(100),
 				"rule_type": "command",
 				"rule":      "test_cmd",
 				"expires":   float64(0),
 			},
 		},
-		"tsec_chat": []interface{}{
-			map[string]interface{}{
+		"tsec_chat": []any{
+			map[string]any{
 				"target":    float64(-999),
 				"rule_type": "command",
 				"rule":      "test_cmd",
@@ -156,7 +158,7 @@ func TestSecurityCheckTsecRules(t *testing.T) {
 
 func TestIntFromInterface(t *testing.T) {
 	tests := []struct {
-		input    interface{}
+		input    any
 		fallback int
 		want     int
 	}{

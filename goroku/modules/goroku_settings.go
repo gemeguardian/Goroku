@@ -65,12 +65,8 @@ func (m *GorokuSettings) getTrans(key, def string) string {
 	return getTrans(m.translator, m.Name(), key, def)
 }
 
-func (m *GorokuSettings) getWatchers() ([]string, map[string]interface{}) {
-	raw := m.db.Get("goroku.main", "disabled_watchers", map[string]interface{}{})
-	disabled := map[string]interface{}{}
-	if dw, ok := raw.(map[string]interface{}); ok {
-		disabled = dw
-	}
+func (m *GorokuSettings) getWatchers() ([]string, map[string]any) {
+	disabled := m.db.GetAnyMap("goroku.main", "disabled_watchers", nil)
 
 	loader := m.client.Loader
 	if loader == nil {
@@ -140,9 +136,9 @@ func (m *GorokuSettings) WatcherBlCmd(msg *goroku.Message) error {
 	chatID := fmt.Sprintf("%d", msg.ChatID)
 
 	if chats, ok := disabled[realName]; ok {
-		if chatList, ok := chats.([]interface{}); ok {
+		if chatList, ok := chats.([]any); ok {
 			found := false
-			var newList []interface{}
+			var newList []any
 			for _, c := range chatList {
 				if fmt.Sprintf("%v", c) == chatID {
 					found = true
@@ -156,7 +152,7 @@ func (m *GorokuSettings) WatcherBlCmd(msg *goroku.Message) error {
 				} else {
 					disabled[realName] = newList
 				}
-				m.db.Set("goroku.main", "disabled_watchers", disabled)
+				m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled)
 				template := m.getTrans("enabled", "<tg-emoji emoji-id=5424885441100782420>👀</tg-emoji> <b>Смотритель {0} теперь <u>включен</u></b>")
 				return msg.Answer(formatTrans(template, realName) + " <b>in current chat</b>")
 			}
@@ -164,10 +160,10 @@ func (m *GorokuSettings) WatcherBlCmd(msg *goroku.Message) error {
 			disabled[realName] = chatList
 		}
 	} else {
-		disabled[realName] = []interface{}{chatID}
+		disabled[realName] = []any{chatID}
 	}
 
-	m.db.Set("goroku.main", "disabled_watchers", disabled)
+	m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled)
 	template := m.getTrans("disabled", "<tg-emoji emoji-id=5424885441100782420>👀</tg-emoji> <b>Смотритель {0} теперь <u>выключен</u></b>")
 	return msg.Answer(formatTrans(template, realName) + " <b>in current chat</b>")
 }
@@ -213,7 +209,7 @@ func (m *GorokuSettings) WatcherCmdCmd(msg *goroku.Message) error {
 	}
 
 	if chats || pm || out || incoming {
-		var filters []interface{}
+		var filters []any
 		if chats {
 			filters = append(filters, "only_chats")
 		}
@@ -227,21 +223,21 @@ func (m *GorokuSettings) WatcherCmdCmd(msg *goroku.Message) error {
 			filters = append(filters, "in")
 		}
 		disabled[realName] = filters
-		m.db.Set("goroku.main", "disabled_watchers", disabled)
+		m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled)
 		template := m.getTrans("enabled", "<tg-emoji emoji-id=5424885441100782420>👀</tg-emoji> <b>Смотритель {0} теперь <u>включен</u></b>")
 		return msg.Answer(formatTrans(template, realName) + fmt.Sprintf(" (<code>%v</code>)", filters))
 	}
 
 	if wval, ok := disabled[realName]; ok {
-		if wlist, ok := wval.([]interface{}); ok && len(wlist) == 1 && fmt.Sprintf("%v", wlist[0]) == "*" {
+		if wlist, ok := wval.([]any); ok && len(wlist) == 1 && fmt.Sprintf("%v", wlist[0]) == "*" {
 			delete(disabled, realName)
-			m.db.Set("goroku.main", "disabled_watchers", disabled)
+			m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled)
 			template := m.getTrans("enabled", "<tg-emoji emoji-id=5424885441100782420>👀</tg-emoji> <b>Смотритель {0} теперь <u>включен</u></b>")
 			return msg.Answer(formatTrans(template, realName))
 		}
 	}
-	disabled[realName] = []interface{}{"*"}
-	m.db.Set("goroku.main", "disabled_watchers", disabled)
+	disabled[realName] = []any{"*"}
+	m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled)
 	template := m.getTrans("disabled", "<tg-emoji emoji-id=5424885441100782420>👀</tg-emoji> <b>Смотритель {0} теперь <u>выключен</u></b>")
 	return msg.Answer(formatTrans(template, realName))
 }
@@ -254,25 +250,10 @@ func (m *GorokuSettings) NoNickUserCmd(msg *goroku.Message) error {
 	}
 
 	u := reply.SenderID
-	raw := m.db.Get("goroku.main", "nonickusers", []interface{}{})
-	var users []int64
-	if slice, ok := raw.([]interface{}); ok {
-		for _, item := range slice {
-			var id int64
-			switch v := item.(type) {
-			case float64:
-				id = int64(v)
-			case int64:
-				id = v
-			}
-			if id != 0 {
-				users = append(users, id)
-			}
-		}
-	}
+	users := m.db.GetInt64Slice("goroku.main", "nonickusers", nil)
 
 	found := false
-	var newList []interface{}
+	var newList []int64
 	for _, id := range users {
 		if id == u {
 			found = true
@@ -283,11 +264,11 @@ func (m *GorokuSettings) NoNickUserCmd(msg *goroku.Message) error {
 
 	var state string
 	if found {
-		m.db.Set("goroku.main", "nonickusers", newList)
+		m.db.SetInt64Slice("goroku.main", "nonickusers", newList)
 		state = "off"
 	} else {
 		newList = append(newList, u)
-		m.db.Set("goroku.main", "nonickusers", newList)
+		m.db.SetInt64Slice("goroku.main", "nonickusers", newList)
 		state = "on"
 	}
 
@@ -301,17 +282,12 @@ func (m *GorokuSettings) NoNickChatCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("private_not_allowed", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Нельзя использовать в личных сообщениях</b>"))
 	}
 
-	chatIDStr := fmt.Sprintf("%d", msg.ChatID)
-	raw := m.db.Get("goroku.main", "nonickchats", []interface{}{})
-	chats := []interface{}{}
-	if cl, ok := raw.([]interface{}); ok {
-		chats = cl
-	}
+	chats := m.db.GetInt64Slice("goroku.main", "nonickchats", nil)
 
 	found := false
-	var newList []interface{}
+	var newList []int64
 	for _, c := range chats {
-		if fmt.Sprintf("%v", c) == chatIDStr {
+		if c == msg.ChatID {
 			found = true
 		} else {
 			newList = append(newList, c)
@@ -320,11 +296,11 @@ func (m *GorokuSettings) NoNickChatCmd(msg *goroku.Message) error {
 
 	var state string
 	if found {
-		m.db.Set("goroku.main", "nonickchats", newList)
+		m.db.SetInt64Slice("goroku.main", "nonickchats", newList)
 		state = "off"
 	} else {
-		newList = append(chats, chatIDStr)
-		m.db.Set("goroku.main", "nonickchats", newList)
+		newList = append(chats, msg.ChatID)
+		m.db.SetInt64Slice("goroku.main", "nonickchats", newList)
 		state = "on"
 	}
 
@@ -341,25 +317,10 @@ func (m *GorokuSettings) NoNickChatCmd(msg *goroku.Message) error {
 
 // NoNickUsersCmd lists all users with no-nick enabled.
 func (m *GorokuSettings) NoNickUsersCmd(msg *goroku.Message) error {
-	raw := m.db.Get("goroku.main", "nonickusers", []interface{}{})
-	var users []int64
-	if slice, ok := raw.([]interface{}); ok {
-		for _, item := range slice {
-			var id int64
-			switch v := item.(type) {
-			case float64:
-				id = int64(v)
-			case int64:
-				id = v
-			}
-			if id != 0 {
-				users = append(users, id)
-			}
-		}
-	}
+	users := m.db.GetInt64Slice("goroku.main", "nonickusers", nil)
 
 	var lines []string
-	var validUsers []interface{}
+	var validUsers []int64
 	for _, u := range users {
 		entity, err := m.client.GetEntity(u, 0, false)
 		if err != nil {
@@ -374,7 +335,7 @@ func (m *GorokuSettings) NoNickUsersCmd(msg *goroku.Message) error {
 	}
 
 	if len(users) != len(validUsers) {
-		m.db.Set("goroku.main", "nonickusers", validUsers)
+		m.db.SetInt64Slice("goroku.main", "nonickusers", validUsers)
 	}
 
 	if len(lines) == 0 {
@@ -387,30 +348,19 @@ func (m *GorokuSettings) NoNickUsersCmd(msg *goroku.Message) error {
 
 // NoNickChatsCmd lists all chats with no-nick enabled.
 func (m *GorokuSettings) NoNickChatsCmd(msg *goroku.Message) error {
-	raw := m.db.Get("goroku.main", "nonickchats", []interface{}{})
-	var chats []interface{}
-	if cl, ok := raw.([]interface{}); ok {
-		chats = cl
-	}
+	chats := m.db.GetInt64Slice("goroku.main", "nonickchats", nil)
 
 	var lines []string
-	var validChats []interface{}
-	for _, c := range chats {
-		var chatID int64
-		switch v := c.(type) {
-		case float64:
-			chatID = int64(v)
-		case int64:
-			chatID = v
-		case string:
-			fmt.Sscan(v, &chatID)
+	var validChats []int64
+	for _, chatID := range chats {
+		if chatID == 0 {
+			continue
 		}
-
 		entity, err := m.client.GetEntity(chatID, 0, false)
 		if err != nil {
 			continue
 		}
-		validChats = append(validChats, c)
+		validChats = append(validChats, chatID)
 		displayName := getDisplayName(entity)
 		if displayName == "" {
 			displayName = fmt.Sprintf("Chat%d", chatID)
@@ -419,7 +369,7 @@ func (m *GorokuSettings) NoNickChatsCmd(msg *goroku.Message) error {
 	}
 
 	if len(chats) != len(validChats) {
-		m.db.Set("goroku.main", "nonickchats", validChats)
+		m.db.SetInt64Slice("goroku.main", "nonickchats", validChats)
 	}
 
 	if len(lines) == 0 {
@@ -446,34 +396,27 @@ func (m *GorokuSettings) NoNickCmdCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("cmd404", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Команда не найдена</b>"))
 	}
 
-	raw := m.db.Get("goroku.main", "nonickcmds", []interface{}{})
-	cmds := []interface{}{}
-	if cl, ok := raw.([]interface{}); ok {
-		cmds = cl
-	}
+	cmds := m.db.GetStringSlice("goroku.main", "nonickcmds", nil)
 
 	found := false
-	var newList []interface{}
+	var newList []string
 	for _, c := range cmds {
-		if fmt.Sprintf("%v", c) == cmdInput {
+		if c == cmdInput {
 			found = true
 		} else {
 			newList = append(newList, c)
 		}
 	}
 
-	prefix := "."
-	if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok {
-		prefix = val
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
 	var state string
 	if found {
-		m.db.Set("goroku.main", "nonickcmds", newList)
+		m.db.SetStringSlice("goroku.main", "nonickcmds", newList)
 		state = "off"
 	} else {
 		newList = append(cmds, cmdInput)
-		m.db.Set("goroku.main", "nonickcmds", newList)
+		m.db.SetStringSlice("goroku.main", "nonickcmds", newList)
 		state = "on"
 	}
 
@@ -483,19 +426,12 @@ func (m *GorokuSettings) NoNickCmdCmd(msg *goroku.Message) error {
 
 // NoNickCmdsCmd lists all commands whitelisted for nickname enforcement.
 func (m *GorokuSettings) NoNickCmdsCmd(msg *goroku.Message) error {
-	raw := m.db.Get("goroku.main", "nonickcmds", []interface{}{})
-	cmds := []interface{}{}
-	if cl, ok := raw.([]interface{}); ok {
-		cmds = cl
-	}
+	cmds := m.db.GetStringSlice("goroku.main", "nonickcmds", nil)
 	if len(cmds) == 0 {
 		return msg.Answer(m.getTrans("nothing", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Список пуст</b>"))
 	}
 
-	prefix := "."
-	if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok {
-		prefix = val
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
 	var lines []string
 	for _, c := range cmds {
@@ -522,18 +458,9 @@ func (m *GorokuSettings) SettingsCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuSettings) getSettingsText() string {
-	noNick := false
-	if v, ok := m.db.Get("goroku.main", "no_nickname", false).(bool); ok {
-		noNick = v
-	}
-	grep := false
-	if v, ok := m.db.Get("goroku.main", "grep", false).(bool); ok {
-		grep = v
-	}
-	inlineLogs := true
-	if v, ok := m.db.Get("goroku.main", "inlinelogs", true).(bool); ok {
-		inlineLogs = v
-	}
+	noNick := m.db.GetBool("goroku.main", "no_nickname", false)
+	grep := m.db.GetBool("goroku.main", "grep", false)
+	inlineLogs := m.db.GetBool("goroku.main", "inlinelogs", true)
 
 	return fmt.Sprintf(
 		m.getTrans("inline_settings", "⚙️ <b>Goroku Settings</b>")+"\n\n"+
@@ -545,22 +472,10 @@ func (m *GorokuSettings) getSettingsText() string {
 }
 
 func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inline.Button {
-	noNick := false
-	if v, ok := m.db.Get("goroku.main", "no_nickname", false).(bool); ok {
-		noNick = v
-	}
-	grep := false
-	if v, ok := m.db.Get("goroku.main", "grep", false).(bool); ok {
-		grep = v
-	}
-	inlineLogs := true
-	if v, ok := m.db.Get("goroku.main", "inlinelogs", true).(bool); ok {
-		inlineLogs = v
-	}
-	suggestSub := true
-	if v, ok := m.db.Get("goroku.main", "suggest_subscribe", true).(bool); ok {
-		suggestSub = v
-	}
+	noNick := m.db.GetBool("goroku.main", "no_nickname", false)
+	grep := m.db.GetBool("goroku.main", "grep", false)
+	inlineLogs := m.db.GetBool("goroku.main", "inlinelogs", true)
+	suggestSub := m.db.GetBool("goroku.main", "suggest_subscribe", true)
 
 	var btnNoNick inline.Button
 	if noNick {
@@ -568,7 +483,7 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "✅ NoNick",
 			Data: "hset_nonick_off",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.Set("goroku.main", "no_nickname", false)
+				m.db.SetBool("goroku.main", "no_nickname", false)
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -578,11 +493,8 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "🚫 NoNick",
 			Data: "hset_nonick_on",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.Set("goroku.main", "no_nickname", true)
-				prefix := "."
-				if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok {
-					prefix = val
-				}
+				m.db.SetBool("goroku.main", "no_nickname", true)
+				prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 				if prefix == "." {
 					_ = c.Answer(m.getTrans("nonick_warning", "⚠️ WARNING: Enforcing nickname verification with a dot prefix will ignore commands unless you mention the bot or whitelist yourself/chat/commands!"), true)
 				} else {
@@ -599,7 +511,7 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "✅ Grep",
 			Data: "hset_grep_off",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.Set("goroku.main", "grep", false)
+				m.db.SetBool("goroku.main", "grep", false)
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -609,7 +521,7 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "🚫 Grep",
 			Data: "hset_grep_on",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.Set("goroku.main", "grep", true)
+				m.db.SetBool("goroku.main", "grep", true)
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -622,7 +534,7 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "✅ InlineLogs",
 			Data: "hset_inlinelogs_off",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.Set("goroku.main", "inlinelogs", false)
+				m.db.SetBool("goroku.main", "inlinelogs", false)
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -632,7 +544,7 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "🚫 InlineLogs",
 			Data: "hset_inlinelogs_on",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.Set("goroku.main", "inlinelogs", true)
+				m.db.SetBool("goroku.main", "inlinelogs", true)
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -645,7 +557,7 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: m.getTrans("suggest_subscribe", "🔔 Suggest Subscribe"),
 			Data: "hset_suggest_off",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.Set("goroku.main", "suggest_subscribe", false)
+				m.db.SetBool("goroku.main", "suggest_subscribe", false)
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -655,7 +567,7 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: m.getTrans("do_not_suggest_subscribe", "🔕 Do Not Suggest Subscribe"),
 			Data: "hset_suggest_on",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.Set("goroku.main", "suggest_subscribe", true)
+				m.db.SetBool("goroku.main", "suggest_subscribe", true)
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -753,10 +665,7 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 }
 
 func (m *GorokuSettings) RemoveCoreProtectionCmd(msg *goroku.Message) error {
-	isRemoved := false
-	if val, ok := m.db.Get("goroku.main", "remove_core_protection", false).(bool); ok {
-		isRemoved = val
-	}
+	isRemoved := m.db.GetBool("goroku.main", "remove_core_protection", false)
 	if isRemoved {
 		return msg.Answer(m.getTrans("core_protection_already_removed", "⚠️ Core protection already removed"))
 	}
@@ -775,7 +684,7 @@ func (m *GorokuSettings) RemoveCoreProtectionCmd(msg *goroku.Message) error {
 					Text: m.getTrans("core_protection_btn", "🔓 Disable"),
 					Data: "hset_coreprot_remove",
 					Handler: func(c inline.CallbackQuery) error {
-						m.db.Set("goroku.main", "remove_core_protection", true)
+						m.db.SetBool("goroku.main", "remove_core_protection", true)
 						_ = c.Answer(m.getTrans("core_protection_removed", "✅ Core protection removed"), false)
 						_ = closeForm(c)
 						return nil
@@ -793,10 +702,7 @@ func (m *GorokuSettings) RemoveCoreProtectionCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuSettings) EnableCoreProtectionCmd(msg *goroku.Message) error {
-	isRemoved := false
-	if val, ok := m.db.Get("goroku.main", "remove_core_protection", false).(bool); ok {
-		isRemoved = val
-	}
+	isRemoved := m.db.GetBool("goroku.main", "remove_core_protection", false)
 	if !isRemoved {
 		return msg.Answer(m.getTrans("core_protection_already_enabled", "⚠️ Core protection already enabled"))
 	}
@@ -815,7 +721,7 @@ func (m *GorokuSettings) EnableCoreProtectionCmd(msg *goroku.Message) error {
 					Text: m.getTrans("core_protection_e_btn", "🔒 Enable"),
 					Data: "hset_coreprot_enable",
 					Handler: func(c inline.CallbackQuery) error {
-						m.db.Set("goroku.main", "remove_core_protection", false)
+						m.db.SetBool("goroku.main", "remove_core_protection", false)
 						_ = c.Answer(m.getTrans("core_protection_enabled", "✅ Core protection enabled"), false)
 						_ = closeForm(c)
 						return nil
@@ -832,7 +738,7 @@ func (m *GorokuSettings) EnableCoreProtectionCmd(msg *goroku.Message) error {
 	return err
 }
 
-func getDisplayName(entity interface{}) string {
+func getDisplayName(entity any) string {
 	if entity == nil {
 		return ""
 	}

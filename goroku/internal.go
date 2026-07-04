@@ -40,9 +40,9 @@ func Restart() {
 	}
 
 	if os.Getenv("GOROKU_DO_NOT_RESTART") == "" {
-		os.Setenv("GOROKU_DO_NOT_RESTART", "1")
+		_ = os.Setenv("GOROKU_DO_NOT_RESTART", "1")
 	} else {
-		os.Setenv("GOROKU_DO_NOT_RESTART2", "1")
+		_ = os.Setenv("GOROKU_DO_NOT_RESTART2", "1")
 	}
 
 	execPath, err := os.Executable()
@@ -54,7 +54,7 @@ func Restart() {
 	projectDir := filepath.Dir(execPath)
 	if _, err := os.Stat(filepath.Join(projectDir, "main.go")); err == nil {
 		fmt.Println("🔨 Compiling new binary before restart...")
-		buildCmd := exec.Command("go", "build", "-o", filepath.Base(execPath))
+		buildCmd := exec.Command("go", "build", "-o", filepath.Base(execPath)) //nolint:gosec
 		buildCmd.Dir = projectDir
 		buildCmd.Stdout = os.Stdout
 		buildCmd.Stderr = os.Stderr
@@ -79,12 +79,12 @@ func PrintBanner(banner string) {
 	baseDir := filepath.Dir(execPath)
 	bannerPath := filepath.Join(baseDir, "assets", banner)
 
-	content, err := os.ReadFile(bannerPath)
+	content, err := os.ReadFile(bannerPath) //nolint:gosec
 	if err == nil {
 		fmt.Println(string(content))
 	} else {
 		// Try fallback relative path
-		content, err = os.ReadFile(filepath.Join("assets", banner))
+		content, err = os.ReadFile(filepath.Join("assets", banner)) //nolint:gosec
 		if err == nil {
 			fmt.Println(string(content))
 		}
@@ -100,7 +100,7 @@ func CheckCommitAncestor(commit, repoPath string) bool {
 
 func GetBranchName(repoPath string) string {
 	headPath := filepath.Join(repoPath, ".git", "HEAD")
-	content, err := os.ReadFile(headPath)
+	content, err := os.ReadFile(headPath) //nolint:gosec
 	if err == nil {
 		lines := strings.Split(string(content), "\n")
 		if len(lines) > 0 {

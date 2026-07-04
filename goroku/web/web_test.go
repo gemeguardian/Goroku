@@ -12,7 +12,7 @@ import (
 func TestWebRootHandlerAndSetupToken(t *testing.T) {
 	tempDir := t.TempDir()
 	resourcesDir := filepath.Join(tempDir, "web-resources")
-	err := os.Mkdir(resourcesDir, 0755)
+	err := os.Mkdir(resourcesDir, 0750)
 	if err != nil {
 		t.Fatalf("failed to create web-resources: %v", err)
 	}
@@ -24,11 +24,11 @@ func TestWebRootHandlerAndSetupToken(t *testing.T) {
 	{% block after %}<script>console.log("after");</script>{% endblock %}
 	`
 
-	err = os.WriteFile(filepath.Join(resourcesDir, "base.jinja2"), []byte(baseTemplate), 0644)
+	err = os.WriteFile(filepath.Join(resourcesDir, "base.jinja2"), []byte(baseTemplate), 0600)
 	if err != nil {
 		t.Fatalf("failed to write base.jinja2: %v", err)
 	}
-	err = os.WriteFile(filepath.Join(resourcesDir, "root.jinja2"), []byte(rootTemplate), 0644)
+	err = os.WriteFile(filepath.Join(resourcesDir, "root.jinja2"), []byte(rootTemplate), 0600)
 	if err != nil {
 		t.Fatalf("failed to write root.jinja2: %v", err)
 	}

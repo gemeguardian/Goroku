@@ -14,8 +14,9 @@ func GetDiskUsage() string {
 	if err != nil {
 		return "unknown"
 	}
-	all := stat.Blocks * uint64(stat.Bsize)
-	free := stat.Bfree * uint64(stat.Bsize)
+	//nolint:gosec // syscall.Statfs fields are unsigned on Linux; cast is safe
+	all := uint64(stat.Blocks) * uint64(stat.Bsize)
+	free := uint64(stat.Bfree) * uint64(stat.Bsize) //nolint:gosec
 	used := all - free
 	return fmt.Sprintf("%.1f/%.1f GB", float64(used)/1e9, float64(all)/1e9)
 }

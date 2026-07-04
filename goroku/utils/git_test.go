@@ -8,8 +8,8 @@ import (
 
 func TestGitNoGitEnvironment(t *testing.T) {
 	// Force GOROKU_NO_GIT=1 env var
-	os.Setenv("GOROKU_NO_GIT", "1")
-	defer os.Unsetenv("GOROKU_NO_GIT")
+	_ = os.Setenv("GOROKU_NO_GIT", "1")
+	defer func() { _ = os.Unsetenv("GOROKU_NO_GIT") }()
 
 	if !IsNoGit() {
 		t.Error("Expected IsNoGit to be true when GOROKU_NO_GIT=1")
@@ -50,7 +50,7 @@ func TestGitNoGitEnvironment(t *testing.T) {
 
 func TestGitRealRepository(t *testing.T) {
 	// Ensure GOROKU_NO_GIT is not set
-	os.Unsetenv("GOROKU_NO_GIT")
+	_ = os.Unsetenv("GOROKU_NO_GIT")
 
 	// We are running tests inside a real Git repo (/root/eblan/Goroku)
 	// Some commands should succeed and return real outputs

@@ -53,60 +53,60 @@ func TestCacheRecordExpired(t *testing.T) {
 
 func TestNormalizeEntityCacheKey(t *testing.T) {
 	// string normalize
-	if got := NormalizeEntityCacheKey("@username"); got != "username" {
+	if got := NormalizeEntityCacheKey("@username"); got != (EntityCacheKey{Username: "username"}) {
 		t.Errorf("NormalizeEntityCacheKey failed for username: got %v, want %q", got, "username")
 	}
-	if got := NormalizeEntityCacheKey("-10012345"); got != int64(12345) {
+	if got := NormalizeEntityCacheKey("-10012345"); got != (EntityCacheKey{ID: 12345}) {
 		t.Errorf("NormalizeEntityCacheKey failed for -100 ID: got %v, want 12345", got)
 	}
 
 	// int64 normalize
-	if got := NormalizeEntityCacheKey(int64(-1000000000042)); got != int64(42) {
+	if got := NormalizeEntityCacheKey(int64(-1000000000042)); got != (EntityCacheKey{ID: 42}) {
 		t.Errorf("NormalizeEntityCacheKey failed for channel ID: got %v, want 42", got)
 	}
-	if got := NormalizeEntityCacheKey(int64(-50)); got != int64(50) {
+	if got := NormalizeEntityCacheKey(int64(-50)); got != (EntityCacheKey{ID: 50}) {
 		t.Errorf("NormalizeEntityCacheKey failed for group ID: got %v, want 50", got)
 	}
-	if got := NormalizeEntityCacheKey(int64(777)); got != int64(777) {
+	if got := NormalizeEntityCacheKey(int64(777)); got != (EntityCacheKey{ID: 777}) {
 		t.Errorf("NormalizeEntityCacheKey failed for user ID: got %v, want 777", got)
 	}
 
 	// tg.InputPeerClass normalize
 	peerUser := &tg.InputPeerUser{UserID: 111}
-	if got := NormalizeEntityCacheKey(peerUser); got != int64(111) {
+	if got := NormalizeEntityCacheKey(peerUser); got != (EntityCacheKey{ID: 111}) {
 		t.Errorf("NormalizeEntityCacheKey failed for user peer: got %v, want 111", got)
 	}
 
 	peerChan := &tg.InputPeerChannel{ChannelID: 222}
-	if got := NormalizeEntityCacheKey(peerChan); got != int64(222) {
+	if got := NormalizeEntityCacheKey(peerChan); got != (EntityCacheKey{ID: 222}) {
 		t.Errorf("NormalizeEntityCacheKey failed for channel peer: got %v, want 222", got)
 	}
 
 	peerChat := &tg.InputPeerChat{ChatID: 333}
-	if got := NormalizeEntityCacheKey(peerChat); got != int64(333) {
+	if got := NormalizeEntityCacheKey(peerChat); got != (EntityCacheKey{ID: 333}) {
 		t.Errorf("NormalizeEntityCacheKey failed for chat peer: got %v, want 333", got)
 	}
 }
 
 func TestCachePeerAliases(t *testing.T) {
-	c := make(map[interface{}]CacheRecordEntity)
+	c := make(map[EntityCacheKey]CacheRecordEntity)
 	rec := CacheRecordEntity{Entity: &tg.InputPeerSelf{}}
 
 	// User
 	CachePeerAliases(c, &tg.InputPeerUser{UserID: 100}, rec)
-	if c[int64(100)].Entity == nil {
+	if c[EntityCacheKey{ID: 100}].Entity == nil {
 		t.Error("expected user alias in cache")
 	}
 
 	// Channel
 	CachePeerAliases(c, &tg.InputPeerChannel{ChannelID: 200}, rec)
-	if c[int64(200)].Entity == nil || c[int64(-1000000000200)].Entity == nil {
+	if c[EntityCacheKey{ID: 200}].Entity == nil || c[EntityCacheKey{ID: -1000000000200}].Entity == nil {
 		t.Error("expected channel alias in cache")
 	}
 
 	// Chat
 	CachePeerAliases(c, &tg.InputPeerChat{ChatID: 300}, rec)
-	if c[int64(300)].Entity == nil || c[int64(-300)].Entity == nil {
+	if c[EntityCacheKey{ID: 300}].Entity == nil || c[EntityCacheKey{ID: -300}].Entity == nil {
 		t.Error("expected chat alias in cache")
 	}
 }

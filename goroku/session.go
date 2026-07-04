@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"goroku/goroku/utils"
+	"goroku/goroku/webiface"
 
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
 )
 
-func (h *Goroku) finishWebLogin(pending interface{}, customModules []Module) error {
+func (h *Goroku) finishWebLogin(pending webiface.TelegramClient, customModules []Module) error {
 	pendingClient, ok := pending.(*CustomTelegramClient)
 	if !ok || pendingClient == nil {
 		return fmt.Errorf("unexpected pending client type %T", pending)

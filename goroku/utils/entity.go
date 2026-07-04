@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"goroku/goroku/logger"
 )
 
 // L returns the package-level zap logger.
-func L() *zap.Logger { return zap.NewNop() }
+func L() *zap.Logger { return logger.L() }
 
 // FormattingEntity represents a text formatting entity.
 type FormattingEntity struct {
@@ -22,10 +24,11 @@ type FormattingEntity struct {
 	Type   string
 }
 
-// Database interface to break circular dependencies
+// Database interface to break circular dependencies.
 type Database interface {
-	Get(owner, key string, defaultValue interface{}) interface{}
-	Set(owner, key string, value interface{}) bool
+	GetInt64(owner, key string, def int64) int64
+	GetAnyMap(owner, key string, def map[string]any) map[string]any
+	SetAnyMap(owner, key string, value map[string]any) bool
 }
 
 var tagRe = regexp.MustCompile(`(?i)</?([a-zA-Z][a-zA-Z0-9\-]*)(?:\s[^<>]*)?>`)
@@ -49,7 +52,7 @@ var telegramHtmlTags = map[string]bool{
 
 // CacheEntry stores cached channels for AssetChannel
 type CacheEntry struct {
-	Peer interface{}
+	Peer any
 	Exp  int64
 }
 
@@ -59,7 +62,7 @@ func fwProtect() {
 	time.Sleep(1000 * time.Millisecond)
 }
 
-func getEntityFields(entity interface{}) (int64, string, bool) {
+func getEntityFields(entity any) (int64, string, bool) {
 	if entity == nil {
 		return 0, "", false
 	}
@@ -125,7 +128,7 @@ func GetLangFlag(countrycode string) string {
 }
 
 // GetEntityURL returns a link to the user/channel.
-func GetEntityURL(entity interface{}, openmessage bool) string {
+func GetEntityURL(entity any, openmessage bool) string {
 	id, username, isUser := getEntityFields(entity)
 	if isUser {
 		if openmessage {
@@ -194,22 +197,22 @@ func CheckURL(u string) bool {
 }
 
 // GetLink returns a permalink link to the entity.
-func GetLink(entity interface{}) string {
+func GetLink(entity any) string {
 	return GetEntityURL(entity, false)
 }
 
 type ChannelCreator interface {
-	FindChannelByTitle(title string) (interface{}, error)
-	CreateChannel(title, description string, megagroup, forum bool) (interface{}, error)
-	InviteBotToChannel(channelPeer interface{}) error
-	ToggleForum(channelPeer interface{}, enabled bool) error
-	CreateForumTopic(channelPeer interface{}, title, description string, iconEmojiID int64) (int64, error)
-	SearchForumTopic(channelPeer interface{}, title string) (int64, error)
+	FindChannelByTitle(title string) (any, error)
+	CreateChannel(title, description string, megagroup, forum bool) (any, error)
+	InviteBotToChannel(channelPeer any) error
+	ToggleForum(channelPeer any, enabled bool) error
+	CreateForumTopic(channelPeer any, title, description string, iconEmojiID int64) (int64, error)
+	SearchForumTopic(channelPeer any, title string) (int64, error)
 }
 
 // AssetChannel returns or creates a channel.
 func AssetChannel(
-	client interface{},
+	client any,
 	title string,
 	description string,
 	channel bool,
@@ -221,7 +224,7 @@ func AssetChannel(
 	forum bool,
 	hideGeneral bool,
 	folder string,
-) (interface{}, bool) {
+) (any, bool) {
 	if title == "" {
 		return nil, false
 	}
@@ -240,7 +243,7 @@ func AssetChannel(
 	creator, ok := client.(ChannelCreator)
 	if !ok {
 		// Stub fallback representation if not satisfying the interface
-		peer := map[string]interface{}{
+		peer := map[string]any{
 			"ID":       int64(987654321),
 			"Title":    title,
 			"Username": "",
@@ -287,17 +290,17 @@ func AssetChannel(
 
 // AssetForumTopic returns or creates a forum topic.
 func AssetForumTopic(
-	client interface{},
+	client any,
 	db Database,
-	peer interface{},
+	peer any,
 	title string,
 	description string,
 	iconEmojiID int64,
 	inviteBot bool,
-) (interface{}, error) {
+) (any, error) {
 	creator, ok := client.(ChannelCreator)
 	if !ok {
-		topic := map[string]interface{}{
+		topic := map[string]any{
 			"ID":    int64(12345),
 			"Title": title,
 		}
@@ -305,18 +308,15 @@ func AssetForumTopic(
 	}
 
 	// Read cache from db
-	forumsCache := make(map[string]interface{})
-	forumsCacheVal := db.Get("goroku.forums", "forums_cache", nil)
-	if forumsCacheVal != nil {
-		if m, ok := forumsCacheVal.(map[string]interface{}); ok {
-			forumsCache = m
-		}
+	forumsCache := db.GetAnyMap("goroku.forums", "forums_cache", nil)
+	if forumsCache == nil {
+		forumsCache = make(map[string]any)
 	}
 
 	var channelTitle string
 	if hasTitle, ok := peer.(interface{ GetTitle() string }); ok {
 		channelTitle = hasTitle.GetTitle()
-	} else if m, ok := peer.(map[string]interface{}); ok {
+	} else if m, ok := peer.(map[string]any); ok {
 		if t, ok := m["Title"].(string); ok {
 			channelTitle = t
 		}
@@ -330,7 +330,7 @@ func AssetForumTopic(
 
 	var topicID int64
 	if subVal, ok := forumsCache[channelTitle]; ok {
-		if subMap, ok := subVal.(map[string]interface{}); ok {
+		if subMap, ok := subVal.(map[string]any); ok {
 			if idVal, ok := subMap[title]; ok {
 				switch idt := idVal.(type) {
 				case float64:
@@ -349,12 +349,12 @@ func AssetForumTopic(
 		if err == nil {
 			topicID = tID
 			if _, ok := forumsCache[channelTitle]; !ok {
-				forumsCache[channelTitle] = make(map[string]interface{})
+				forumsCache[channelTitle] = make(map[string]any)
 			}
-			if subMap, ok := forumsCache[channelTitle].(map[string]interface{}); ok {
+			if subMap, ok := forumsCache[channelTitle].(map[string]any); ok {
 				subMap[title] = topicID
 			}
-			db.Set("goroku.forums", "forums_cache", forumsCache)
+			db.SetAnyMap("goroku.forums", "forums_cache", forumsCache)
 		}
 	}
 
@@ -366,19 +366,19 @@ func AssetForumTopic(
 		topicID = tID
 
 		if _, ok := forumsCache[channelTitle]; !ok {
-			forumsCache[channelTitle] = make(map[string]interface{})
+			forumsCache[channelTitle] = make(map[string]any)
 		}
-		if subMap, ok := forumsCache[channelTitle].(map[string]interface{}); ok {
+		if subMap, ok := forumsCache[channelTitle].(map[string]any); ok {
 			subMap[title] = topicID
 		}
-		db.Set("goroku.forums", "forums_cache", forumsCache)
+		db.SetAnyMap("goroku.forums", "forums_cache", forumsCache)
 	}
 
 	if inviteBot {
 		_ = creator.InviteBotToChannel(peer)
 	}
 
-	topic := map[string]interface{}{
+	topic := map[string]any{
 		"ID":    topicID,
 		"Title": title,
 	}
@@ -387,38 +387,19 @@ func AssetForumTopic(
 
 // WaitForContentChannel waits until content channel exists in the database.
 func WaitForContentChannel(db Database, delay float64) int64 {
-	cidVal := db.Get("goroku.forums", "channel_id", nil)
-	for cidVal == nil {
+	for {
+		if cid := db.GetInt64("goroku.forums", "channel_id", 0); cid != 0 {
+			return cid
+		}
 		L().Info("Goroku content channel not found in database. Sleeping...")
 		time.Sleep(time.Duration(delay * float64(time.Second)))
-		cidVal = db.Get("goroku.forums", "channel_id", nil)
 	}
-	switch v := cidVal.(type) {
-	case int64:
-		return v
-	case float64:
-		return int64(v)
-	case int:
-		return int64(v)
-	}
-	return 0
 }
 
 // GetTopicID gets topic ID from database forums cache.
-func GetTopicID(db Database, topicName string) interface{} {
-	forumsCacheVal := db.Get("goroku.forums", "forums_cache", nil)
-	if forumsCacheVal == nil {
-		return nil
-	}
-	forumsCache, ok := forumsCacheVal.(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	subCacheVal, ok := forumsCache["goroku-userbot"]
-	if !ok {
-		return nil
-	}
-	subCache, ok := subCacheVal.(map[string]interface{})
+func GetTopicID(db Database, topicName string) any {
+	forumsCache := db.GetAnyMap("goroku.forums", "forums_cache", nil)
+	subCache, ok := forumsCache["goroku-userbot"].(map[string]any)
 	if !ok {
 		return nil
 	}
@@ -426,23 +407,23 @@ func GetTopicID(db Database, topicName string) interface{} {
 }
 
 // SetAvatar stubs setting entity avatar.
-func SetAvatar(client interface{}, peer interface{}, avatar string) bool {
+func SetAvatar(client any, peer any, avatar string) bool {
 	fwProtect()
 	return true
 }
 
 // GetTarget stubs getting a target ID from command.
-func GetTarget(message interface{}, argNo int) interface{} {
+func GetTarget(message any, argNo int) any {
 	return nil
 }
 
 // GetUser stubs fetching a user.
-func GetUser(message interface{}) interface{} {
+func GetUser(message any) any {
 	return nil
 }
 
 // GetChatID returns chat ID.
-func GetChatID(message interface{}) int64 {
+func GetChatID(message any) int64 {
 	if message == nil {
 		return 0
 	}
@@ -482,7 +463,7 @@ func GetChatID(message interface{}) int64 {
 }
 
 // GetEntityID returns entity ID.
-func GetEntityID(entity interface{}) int64 {
+func GetEntityID(entity any) int64 {
 	id, _, _ := getEntityFields(entity)
 	return id
 }
@@ -528,12 +509,12 @@ func RelocateEntities(entities []FormattingEntity, offset int, text string) []Fo
 }
 
 // FindCaller returns calling module/method name.
-func FindCaller() interface{} {
+func FindCaller() any {
 	return nil
 }
 
 // DND mutes the channel.
-func DND(client interface{}, peer interface{}, archive bool) bool {
+func DND(client any, peer any, archive bool) bool {
 	fwProtect()
 	return true
 }
@@ -555,6 +536,6 @@ func AsciiFace() string {
 		"(・ε・`*) …", "ʕっ•ᴥ•ʔっ", "(*˘︶˘*)", "ಥ_ಥ", "･ﾟ･(｡>д<｡)･ﾟ･",
 		"(┬┬＿┬┬)", "(◞‸◟ㆀ)", " ˚‧º·(˚ ˃̣̣̥⌓˂̣̣̥ )‧º·˚",
 	}
-	idx := rand.Intn(len(faces))
+	idx := rand.Intn(len(faces)) //nolint:gosec
 	return EscapeHTML(faces[idx])
 }

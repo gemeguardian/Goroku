@@ -55,8 +55,8 @@ func (m *GorokuInfo) Init(client *goroku.CustomTelegramClient, db *goroku.Databa
 	return nil
 }
 
-func (m *GorokuInfo) ConfigDefaults() map[string]interface{} {
-	return map[string]interface{}{
+func (m *GorokuInfo) ConfigDefaults() map[string]any {
+	return map[string]any{
 		"custom_message": "",
 		"banner_url":     defaultGorokuInfoBanner(),
 		"ping_emoji":     "🪐",
@@ -70,7 +70,7 @@ func defaultGorokuInfoBanner() string {
 	return "https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/goroku_info.png"
 }
 
-func (m *GorokuInfo) ConfigReady(config map[string]interface{}) error {
+func (m *GorokuInfo) ConfigReady(config map[string]any) error {
 	if val, ok := config["custom_message"].(string); ok {
 		m.customMessage = strings.ReplaceAll(val, `\n`, "\n")
 	}
@@ -163,7 +163,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 		if msg.Out {
 			_ = msg.Answer(pingEmoji)
 		} else {
-			res, err := m.client.SendMessageWithOptions(msg.ChatID, pingEmoji)
+			res, err := m.client.SendMessageWithOptions(goroku.ChatRefID(msg.ChatID), pingEmoji)
 			if err == nil {
 				var sentID int64
 				if upd, ok := res.(*tg.Updates); ok {
@@ -270,9 +270,9 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 	}
 
 	// Format update status
-	prefix := "."
-	if pVal, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok {
-		prefix = pVal
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
+	if prefix == "" {
+		prefix = "."
 	}
 
 	var upd string
@@ -376,7 +376,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 			if msg.ReplyToMsgID != 0 {
 				opts = append(opts, goroku.WithReplyTo(int64(msg.ReplyToMsgID)))
 			}
-			_, err := m.client.SendFileWithOptions(msg.ChatID, m.bannerURL, text, opts...)
+			_, err := m.client.SendFileWithOptions(goroku.ChatRefID(msg.ChatID), m.bannerURL, text, opts...)
 			if err == nil {
 				return nil
 			}

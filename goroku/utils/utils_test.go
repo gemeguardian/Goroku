@@ -56,23 +56,23 @@ func TestOtherUtils(t *testing.T) {
 	}
 
 	// Test Merge
-	a := map[string]interface{}{
+	a := map[string]any{
 		"key1": "val1",
-		"nested": map[string]interface{}{
+		"nested": map[string]any{
 			"n1": "v1",
 		},
 	}
-	b := map[string]interface{}{
+	b := map[string]any{
 		"key2": "val2",
-		"nested": map[string]interface{}{
+		"nested": map[string]any{
 			"n2": "v2",
 		},
 	}
 	merged := Merge(a, b, true)
-	expectedMerged := map[string]interface{}{
+	expectedMerged := map[string]any{
 		"key1": "val1",
 		"key2": "val2",
-		"nested": map[string]interface{}{
+		"nested": map[string]any{
 			"n1": "v1",
 			"n2": "v2",
 		},
@@ -82,14 +82,14 @@ func TestOtherUtils(t *testing.T) {
 	}
 
 	// Test Chunks
-	list := []interface{}{1, 2, 3, 4, 5}
+	list := []any{1, 2, 3, 4, 5}
 	chunks := Chunks(list, 2)
 	if len(chunks) != 3 {
 		t.Fatalf("Chunks failed: expected 3 chunks, got %d", len(chunks))
 	}
-	if !reflect.DeepEqual(chunks[0], []interface{}{1, 2}) ||
-		!reflect.DeepEqual(chunks[1], []interface{}{3, 4}) ||
-		!reflect.DeepEqual(chunks[2], []interface{}{5}) {
+	if !reflect.DeepEqual(chunks[0], []any{1, 2}) ||
+		!reflect.DeepEqual(chunks[1], []any{3, 4}) ||
+		!reflect.DeepEqual(chunks[2], []any{5}) {
 		t.Errorf("Chunks failed: unexpected chunk layout %v", chunks)
 	}
 
@@ -135,6 +135,7 @@ func TestOtherUtils(t *testing.T) {
 
 func TestCensorSensitive(t *testing.T) {
 	// Test Bot Token pattern censoring
+	//nolint:gosec // test fixture, not a real token
 	inputToken := "Here is my bot token 123456789:AAF123456789_abcdefghijklmnopqrstuv"
 	censored := CensorSensitive(inputToken)
 	expected := "Here is my bot token [REDACTED]"
@@ -164,8 +165,8 @@ func TestCensorSensitive(t *testing.T) {
 	}
 
 	// Test environment variable censoring
-	os.Setenv("BOT_TOKEN", "super_secret_env_token_value")
-	defer os.Unsetenv("BOT_TOKEN")
+	_ = os.Setenv("BOT_TOKEN", "super_secret_env_token_value")
+	defer func() { _ = os.Unsetenv("BOT_TOKEN") }()
 	inputEnv := "Token is super_secret_env_token_value"
 	censored = CensorSensitive(inputEnv)
 	if censored != "Token is [REDACTED]" {
@@ -177,7 +178,7 @@ func TestSecureFile(t *testing.T) {
 	tempDir := t.TempDir()
 	tempFile := filepath.Join(tempDir, "test.txt")
 
-	err := os.WriteFile(tempFile, []byte("hello"), 0644)
+	err := os.WriteFile(tempFile, []byte("hello"), 0600)
 	if err != nil {
 		t.Fatalf("Failed to write temp file: %v", err)
 	}

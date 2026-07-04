@@ -12,9 +12,9 @@ import (
 
 // Gallery creates a scrollable gallery with next/prev buttons and slideshow support.
 func (im *InlineManager) Gallery(
-	message interface{},
-	nextHandler interface{}, // slice of strings or func(int) string
-	caption interface{}, // string, slice of strings or func(int) string
+	message any,
+	nextHandler any, // slice of strings or func(int) string
+	caption any, // string, slice of strings or func(int) string
 	opts ...FormOpt,
 ) (*InlineMessage, error) {
 	unitID := localRandStr(16)
@@ -149,7 +149,7 @@ func (im *InlineManager) generateGalleryButtons(unitID string, page int, total i
 	}
 }
 
-func (im *InlineManager) registerGalleryCallbacks(unitID string, caption interface{}) {
+func (im *InlineManager) registerGalleryCallbacks(unitID string, caption any) {
 	im.mu.Lock()
 	defer im.mu.Unlock()
 
@@ -173,17 +173,19 @@ func (im *InlineManager) registerGalleryCallbacks(unitID string, caption interfa
 		Handler: func(c CallbackQuery) error {
 			im.mu.Lock()
 			unit, ok := im.units[unitID]
-			im.mu.Unlock()
 			if !ok {
+				im.mu.Unlock()
 				return c.Answer("Gallery expired", true)
 			}
 
 			if unit.Interval == 0 {
 				unit.Interval = 7 * time.Second
+				im.mu.Unlock()
 				_ = c.Answer("Slideshow enabled (7s)", false)
 				go im.runSlideshow(unitID, c, caption)
 			} else {
 				unit.Interval = 0
+				im.mu.Unlock()
 				_ = c.Answer("Slideshow disabled", false)
 			}
 			return nil
@@ -194,11 +196,14 @@ func (im *InlineManager) registerGalleryCallbacks(unitID string, caption interfa
 	// We'll check prefix in events.go when dispatching callback queries!
 }
 
-func (im *InlineManager) runSlideshow(unitID string, c CallbackQuery, caption interface{}) {
+func (im *InlineManager) runSlideshow(unitID string, c CallbackQuery, caption any) {
 	for {
 		im.mu.Lock()
 		unit, ok := im.units[unitID]
-		interval := unit.Interval
+		interval := time.Duration(0)
+		if ok {
+			interval = unit.Interval
+		}
 		im.mu.Unlock()
 
 		if !ok || interval == 0 {
@@ -227,7 +232,7 @@ func (im *InlineManager) runSlideshow(unitID string, c CallbackQuery, caption in
 	}
 }
 
-func (im *InlineManager) updateGalleryPage(unitID string, page int, c CallbackQuery, caption interface{}) error {
+func (im *InlineManager) updateGalleryPage(unitID string, page int, c CallbackQuery, caption any) error {
 	im.mu.Lock()
 	unit, ok := im.units[unitID]
 	im.mu.Unlock()
@@ -349,7 +354,7 @@ func (im *InlineManager) HandleGalleryCallback(c CallbackQuery) bool {
 	_ = c.Answer(fmt.Sprintf("Loading slide %d...", page+1), false)
 
 	// Resolve caption from unit configuration/state
-	var caption interface{} = unit.Text
+	var caption any = unit.Text
 	if len(unit.Pages) > 0 && unit.GalleryFn == nil {
 		caption = unit.Pages
 	}

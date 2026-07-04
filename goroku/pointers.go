@@ -3,26 +3,32 @@ package goroku
 import (
 	"encoding/json"
 	"sync"
+
+	"go.uber.org/zap"
 )
 
-type PointerList struct {
+// PointerList is a generic persisted list backed by the Database.
+type PointerList[T any] struct {
 	mu     sync.RWMutex
 	db     *Database
 	module string
 	key    string
-	values []interface{}
+	values []T
 }
 
-func NewPointerList(db *Database, module, key string, defaultValue []interface{}) *PointerList {
-	raw := db.Get(module, key, defaultValue)
-	var slice []interface{}
+// NewPointerList loads or creates a persisted list for the given type.
+func NewPointerList[T any](db *Database, module, key string, defaultValue []T) *PointerList[T] {
+	raw, _ := db.Get(module, key, defaultValue)
+	var slice []T
 	if rawBytes, err := json.Marshal(raw); err == nil {
-		json.Unmarshal(rawBytes, &slice)
+		if err := json.Unmarshal(rawBytes, &slice); err != nil {
+			L().Warn("PointerList: failed to unmarshal", zap.Error(err))
+		}
 	}
 	if slice == nil {
-		slice = []interface{}{}
+		slice = []T{}
 	}
-	return &PointerList{
+	return &PointerList[T]{
 		db:     db,
 		module: module,
 		key:    key,
@@ -30,27 +36,27 @@ func NewPointerList(db *Database, module, key string, defaultValue []interface{}
 	}
 }
 
-func (p *PointerList) Save() {
+func (p *PointerList[T]) Save() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.db.Set(p.module, p.key, p.values)
 }
 
-func (p *PointerList) Append(val interface{}) {
+func (p *PointerList[T]) Append(val T) {
 	p.mu.Lock()
 	p.values = append(p.values, val)
 	p.mu.Unlock()
 	p.Save()
 }
 
-func (p *PointerList) Extend(vals []interface{}) {
+func (p *PointerList[T]) Extend(vals []T) {
 	p.mu.Lock()
 	p.values = append(p.values, vals...)
 	p.mu.Unlock()
 	p.Save()
 }
 
-func (p *PointerList) Set(index int, val interface{}) {
+func (p *PointerList[T]) Set(index int, val T) {
 	p.mu.Lock()
 	if index >= 0 && index < len(p.values) {
 		p.values[index] = val
@@ -59,29 +65,31 @@ func (p *PointerList) Set(index int, val interface{}) {
 	p.Save()
 }
 
-func (p *PointerList) Get(index int) interface{} {
+// Get returns the value at index and whether it exists.
+func (p *PointerList[T]) Get(index int) (T, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	var zero T
 	if index >= 0 && index < len(p.values) {
-		return p.values[index]
+		return p.values[index], true
 	}
-	return nil
+	return zero, false
 }
 
-func (p *PointerList) Len() int {
+func (p *PointerList[T]) Len() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return len(p.values)
 }
 
-func (p *PointerList) Clear() {
+func (p *PointerList[T]) Clear() {
 	p.mu.Lock()
-	p.values = []interface{}{}
+	p.values = []T{}
 	p.mu.Unlock()
 	p.Save()
 }
 
-func (p *PointerList) Remove(index int) {
+func (p *PointerList[T]) Remove(index int) {
 	p.mu.Lock()
 	if index >= 0 && index < len(p.values) {
 		p.values = append(p.values[:index], p.values[index+1:]...)
@@ -90,32 +98,36 @@ func (p *PointerList) Remove(index int) {
 	p.Save()
 }
 
-func (p *PointerList) ToSlice() []interface{} {
+func (p *PointerList[T]) ToSlice() []T {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	res := make([]interface{}, len(p.values))
+	res := make([]T, len(p.values))
 	copy(res, p.values)
 	return res
 }
 
-type PointerDict struct {
+// PointerDict is a generic persisted string-keyed map backed by the Database.
+type PointerDict[T any] struct {
 	mu     sync.RWMutex
 	db     *Database
 	module string
 	key    string
-	values map[string]interface{}
+	values map[string]T
 }
 
-func NewPointerDict(db *Database, module, key string, defaultValue map[string]interface{}) *PointerDict {
-	raw := db.Get(module, key, defaultValue)
-	dict := make(map[string]interface{})
+// NewPointerDict loads or creates a persisted map for the given value type.
+func NewPointerDict[T any](db *Database, module, key string, defaultValue map[string]T) *PointerDict[T] {
+	raw, _ := db.Get(module, key, defaultValue)
+	dict := make(map[string]T)
 	if rawBytes, err := json.Marshal(raw); err == nil {
-		json.Unmarshal(rawBytes, &dict)
+		if err := json.Unmarshal(rawBytes, &dict); err != nil {
+			L().Warn("PointerDict: failed to unmarshal", zap.Error(err))
+		}
 	}
 	if dict == nil {
-		dict = make(map[string]interface{})
+		dict = make(map[string]T)
 	}
-	return &PointerDict{
+	return &PointerDict[T]{
 		db:     db,
 		module: module,
 		key:    key,
@@ -123,43 +135,45 @@ func NewPointerDict(db *Database, module, key string, defaultValue map[string]in
 	}
 }
 
-func (p *PointerDict) Save() {
+func (p *PointerDict[T]) Save() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.db.Set(p.module, p.key, p.values)
 }
 
-func (p *PointerDict) Set(key string, val interface{}) {
+func (p *PointerDict[T]) Set(key string, val T) {
 	p.mu.Lock()
 	p.values[key] = val
 	p.mu.Unlock()
 	p.Save()
 }
 
-func (p *PointerDict) Get(key string) interface{} {
+// Get returns the value for key and whether it exists.
+func (p *PointerDict[T]) Get(key string) (T, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.values[key]
+	val, ok := p.values[key]
+	return val, ok
 }
 
-func (p *PointerDict) Delete(key string) {
+func (p *PointerDict[T]) Delete(key string) {
 	p.mu.Lock()
 	delete(p.values, key)
 	p.mu.Unlock()
 	p.Save()
 }
 
-func (p *PointerDict) Clear() {
+func (p *PointerDict[T]) Clear() {
 	p.mu.Lock()
-	p.values = make(map[string]interface{})
+	p.values = make(map[string]T)
 	p.mu.Unlock()
 	p.Save()
 }
 
-func (p *PointerDict) ToMap() map[string]interface{} {
+func (p *PointerDict[T]) ToMap() map[string]T {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	res := make(map[string]interface{})
+	res := make(map[string]T, len(p.values))
 	for k, v := range p.values {
 		res[k] = v
 	}

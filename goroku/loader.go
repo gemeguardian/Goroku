@@ -128,10 +128,10 @@ func (m *Modules) RegisterModule(mod Module) error {
 
 func (m *Modules) loadModuleConfig(mod Module) {
 	moduleName := mod.Name()
-	config := make(map[string]interface{})
+	config := make(map[string]any)
 	if withConfig, ok := mod.(ModuleWithConfig); ok {
 		for key, value := range withConfig.ConfigDefaults() {
-			current := m.db.Get(moduleName, key, nil)
+			current, _ := m.db.Get(moduleName, key, nil)
 			if current == nil {
 				m.db.Set(moduleName, key, value)
 				config[key] = value

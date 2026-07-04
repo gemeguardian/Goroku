@@ -13,21 +13,21 @@ import (
 
 func TestDatabaseDeepCopyClonesNestedMapsAndSlices(t *testing.T) {
 	db := &Database{}
-	src := map[string]map[string]interface{}{
+	src := map[string]map[string]any{
 		"owner": {
-			"nested": map[string]interface{}{"key": "original"},
-			"slice":  []interface{}{map[string]interface{}{"item": "original"}},
+			"nested": map[string]any{"key": "original"},
+			"slice":  []any{map[string]any{"item": "original"}},
 		},
 	}
 
 	copy := db.deepCopy(src)
-	copy["owner"]["nested"].(map[string]interface{})["key"] = "changed"
-	copy["owner"]["slice"].([]interface{})[0].(map[string]interface{})["item"] = "changed"
+	copy["owner"]["nested"].(map[string]any)["key"] = "changed"
+	copy["owner"]["slice"].([]any)[0].(map[string]any)["item"] = "changed"
 
-	if got := src["owner"]["nested"].(map[string]interface{})["key"]; got != "original" {
+	if got := src["owner"]["nested"].(map[string]any)["key"]; got != "original" {
 		t.Fatalf("deepCopy shared nested map with source, got %v", got)
 	}
-	if got := src["owner"]["slice"].([]interface{})[0].(map[string]interface{})["item"]; got != "original" {
+	if got := src["owner"]["slice"].([]any)[0].(map[string]any)["item"]; got != "original" {
 		t.Fatalf("deepCopy shared nested slice value with source, got %v", got)
 	}
 }
@@ -49,13 +49,13 @@ func TestDatabaseCRUDOperations(t *testing.T) {
 		t.Fatal("Set failed")
 	}
 
-	val := db.Get("test_module", "key1", "default")
+	val, _ := db.Get("test_module", "key1", "default")
 	if val != "value1" {
 		t.Fatalf("Expected 'value1', got '%v'", val)
 	}
 
 	// Test case-insensitivity of module name
-	valFold := db.Get("TEST_module", "key1", "default")
+	valFold, _ := db.Get("TEST_module", "key1", "default")
 	if valFold != "value1" {
 		t.Fatalf("Expected 'value1' with case-insensitive check, got '%v'", valFold)
 	}
@@ -71,7 +71,7 @@ func TestDatabaseCRUDOperations(t *testing.T) {
 		t.Fatal("Delete failed")
 	}
 
-	valDeleted := db.Get("test_module", "key1", "default")
+	valDeleted, _ := db.Get("test_module", "key1", "default")
 	if valDeleted != "default" {
 		t.Fatalf("Expected default value after delete, got '%v'", valDeleted)
 	}
@@ -101,7 +101,7 @@ func TestDatabaseRevisionsAndRollback(t *testing.T) {
 	// Do NOT reset nextRevCall, so that the second Set does not create a new revision.
 	db.Set("mod", "k1", "second")
 
-	if val := db.Get("mod", "k1", ""); val != "second" {
+	if val, _ := db.Get("mod", "k1", ""); val != "second" {
 		t.Fatalf("Expected second, got %v", val)
 	}
 
@@ -109,7 +109,7 @@ func TestDatabaseRevisionsAndRollback(t *testing.T) {
 		t.Fatal("Rollback failed")
 	}
 
-	if val := db.Get("mod", "k1", ""); val != "initial" {
+	if val, _ := db.Get("mod", "k1", ""); val != "initial" {
 		t.Fatalf("Expected initial after rollback, got %v", val)
 	}
 }
@@ -124,14 +124,14 @@ func TestDatabaseLegacyPrefixConversion(t *testing.T) {
 	dbPath := filepath.Join(tempDir, fmt.Sprintf("config-%d.json", tgID))
 
 	// Write legacy data manually
-	legacyData := map[string]interface{}{
-		"hikka.module": map[string]interface{}{
+	legacyData := map[string]any{
+		"hikka.module": map[string]any{
 			"foo": "bar",
 		},
-		"legacy.test": map[string]interface{}{
+		"legacy.test": map[string]any{
 			"abc": 123,
 		},
-		"heroku.other": map[string]interface{}{
+		"heroku.other": map[string]any{
 			"xyz": true,
 		},
 	}
@@ -151,13 +151,13 @@ func TestDatabaseLegacyPrefixConversion(t *testing.T) {
 	}
 
 	// Verify prefix conversion took place
-	if val := db.Get("goroku.module", "foo", nil); val != "bar" {
+	if val, _ := db.Get("goroku.module", "foo", nil); val != "bar" {
 		t.Fatalf("Expected 'bar' from goroku.module, got '%v'", val)
 	}
-	if val := db.Get("goroku.test", "abc", nil); val != float64(123) {
+	if val, _ := db.Get("goroku.test", "abc", nil); val != float64(123) {
 		t.Fatalf("Expected 123 from goroku.test, got '%v'", val)
 	}
-	if val := db.Get("goroku.other", "xyz", nil); val != true {
+	if val, _ := db.Get("goroku.other", "xyz", nil); val != true {
 		t.Fatalf("Expected true from goroku.other, got '%v'", val)
 	}
 }
@@ -175,7 +175,7 @@ func TestDatabaseAutofix(t *testing.T) {
 
 func TestDatabaseNormalizeOwnerDirect(t *testing.T) {
 	db := NewDatabase(1111)
-	db.data["TestOwner"] = map[string]interface{}{"key": "val"}
+	db.data["TestOwner"] = map[string]any{"key": "val"}
 	// exact match
 	if got := db.normalizeOwner("TestOwner"); got != "TestOwner" {
 		t.Errorf("normalizeOwner exact match failed: got %q, want %q", got, "TestOwner")
@@ -205,10 +205,10 @@ func TestDatabaseDeleteOwner(t *testing.T) {
 		t.Fatal("DeleteOwner failed")
 	}
 
-	if val := db.Get("mod1", "k", nil); val != nil {
+	if val, _ := db.Get("mod1", "k", nil); val != nil {
 		t.Fatalf("expected mod1 to be deleted, got %v", val)
 	}
-	if val := db.Get("mod2", "k", nil); val == nil {
+	if val, _ := db.Get("mod2", "k", nil); val == nil {
 		t.Fatal("expected mod2 to remain")
 	}
 }
@@ -223,7 +223,7 @@ func TestDatabaseReset(t *testing.T) {
 	_ = db.Init("")
 	db.Set("mod1", "k", "v")
 
-	newData := map[string]map[string]interface{}{
+	newData := map[string]map[string]any{
 		"new_mod": {"nk": "nv"},
 	}
 
@@ -231,17 +231,17 @@ func TestDatabaseReset(t *testing.T) {
 		t.Fatal("Reset failed")
 	}
 
-	if val := db.Get("mod1", "k", nil); val != nil {
+	if val, _ := db.Get("mod1", "k", nil); val != nil {
 		t.Fatal("expected old data to be cleared")
 	}
-	if val := db.Get("new_mod", "nk", nil); val != "nv" {
+	if val, _ := db.Get("new_mod", "nk", nil); val != "nv" {
 		t.Fatalf("expected new_mod to exist, got %v", val)
 	}
 }
 
 func TestDatabaseGetAll(t *testing.T) {
 	db := NewDatabase(1111)
-	db.data = map[string]map[string]interface{}{
+	db.data = map[string]map[string]any{
 		"m": {"k": "v"},
 	}
 	all := db.GetAll()

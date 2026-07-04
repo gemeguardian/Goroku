@@ -22,7 +22,7 @@ func (h *Goroku) initClient(tgID int64, sessionPath string, customModules []Modu
 			redisURI = fmt.Sprintf("%v", val)
 		}
 	}
-	db.Init(redisURI)
+	_ = db.Init(redisURI)
 
 	client := NewCustomTelegramClient(tgID)
 	client.APIID = h.APIID
@@ -38,7 +38,7 @@ func (h *Goroku) initClient(tgID int64, sessionPath string, customModules []Modu
 	loader := NewModules(client, db)
 	client.Loader = loader
 
-	inlineMgr := inline.NewInlineManager(client, db, loader)
+	inlineMgr := inline.NewInlineManager(client, db, NewInlineModulesAdapter(loader))
 	client.GorokuInline = inlineMgr
 
 	h.registerBuiltInModules(loader)
@@ -102,7 +102,7 @@ func (h *Goroku) sendBadge(client *CustomTelegramClient, db *Database) {
 		name, platform, emoji, uptime, GetVersionString(),
 	)
 
-	_, _ = client.SendMessage(client.TGID, msg)
+	_, _ = client.SendMessage(ChatRefID(client.TGID), msg)
 }
 
 func (h *Goroku) registerBuiltInModules(loader *Modules) {
@@ -115,7 +115,7 @@ func GenerateAppName() string {
 		"Calor", "Candor", "Carpe", "Celer", "Certo", "Cibus",
 		"Civis", "Clemens", "Coetus", "Cogito", "Conexus",
 	}
-	return fmt.Sprintf("%s %s %s", latin[rand.Intn(len(latin))], latin[rand.Intn(len(latin))], latin[rand.Intn(len(latin))])
+	return fmt.Sprintf("%s %s %s", latin[rand.Intn(len(latin))], latin[rand.Intn(len(latin))], latin[rand.Intn(len(latin))]) //nolint:gosec
 }
 
 func generateRandomSystemVersion() string {
@@ -125,5 +125,5 @@ func generateRandomSystemVersion() string {
 		"openSUSE Leap 15.5", "Manjaro 23.0", "Pop!_OS 22.04",
 		"Linux Mint 21.2", "Kali Linux 2023.3",
 	}
-	return systems[rand.Intn(len(systems))]
+	return systems[rand.Intn(len(systems))] //nolint:gosec
 }

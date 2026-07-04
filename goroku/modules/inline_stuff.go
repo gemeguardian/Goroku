@@ -2,6 +2,7 @@ package modules
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"regexp"
 	"strings"
@@ -167,12 +168,16 @@ func (m *InlineStuff) Watchers() []goroku.WatcherHandler {
 				replyTo = msg.ReplyToMsgID
 			}
 
-			respMsgInterface, err := m.client.SendMessageWithOptions(msg.ChatID, "🪐", withReplyTo(int32(replyTo)))
+			var replyToInt32 int32
+			if replyTo >= math.MinInt32 && replyTo <= math.MaxInt32 {
+				replyToInt32 = int32(replyTo)
+			}
+			respMsgInterface, err := m.client.SendMessageWithOptions(goroku.ChatRefID(msg.ChatID), "🪐", withReplyTo(replyToInt32))
 			if err != nil {
 				return nil
 			}
 
-			var nextHandler interface{}
+			var nextHandler any
 			if unit.GalleryFn != nil {
 				nextHandler = unit.GalleryFn
 			} else {
@@ -227,7 +232,7 @@ func (m *InlineStuff) ChGorokuBotCmd(msg *goroku.Message) error {
 	if !valid {
 		msg.Text = m.getTrans("bot_username_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Specified bot username is invalid. It must end with</b> <code>bot</code> <b>and contain at least 4 symbols</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -236,17 +241,17 @@ func (m *InlineStuff) ChGorokuBotCmd(msg *goroku.Message) error {
 		if !m.checkBot(rawArgs) {
 			msg.Text = m.getTrans("bot_username_occupied", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>This username is already occupied</b>")
 			if msg.Client != nil {
-				_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+				_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 			}
 			return nil
 		}
 	}
 
-	m.db.Set("goroku.inline", "custom_bot", rawArgs)
-	m.db.Set("goroku.inline", "bot_token", nil)
+	m.db.SetString("goroku.inline", "custom_bot", rawArgs)
+	m.db.SetString("goroku.inline", "bot_token", "")
 	msg.Text = m.getTrans("bot_updated", "<tg-emoji emoji-id=6318792204118656433>🎉</tg-emoji> <b>Config successfully saved. Restart userbot to apply changes</b>")
 	if msg.Client != nil {
-		_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 	return nil
 }
@@ -262,27 +267,27 @@ func (m *InlineStuff) ChBotTokenCmd(msg *goroku.Message) error {
 	if token == "" || !re.MatchString(token) {
 		msg.Text = m.getTrans("token_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Specified bot token is invalid. It must contain 8-10 numbers, </b><code>:</code> <b>and 34-36 symbols</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	m.db.Set("goroku.inline", "bot_token", token)
+	m.db.SetString("goroku.inline", "bot_token", token)
 	msg.Text = m.getTrans("bot_updated", "<tg-emoji emoji-id=6318792204118656433>🎉</tg-emoji> <b>Config successfully saved. Restart userbot to apply changes</b>")
 	if msg.Client != nil {
-		_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 	return nil
 }
 
 func (m *InlineStuff) InlineinfoCmd(msg *goroku.Message) error {
 	customBot := "not set"
-	if val, ok := m.db.Get("goroku.inline", "custom_bot", "").(string); ok && val != "" {
+	if val := m.db.GetString("goroku.inline", "custom_bot", ""); val != "" {
 		customBot = "@" + val
 	}
 
 	botToken := "not set"
-	if val, ok := m.db.Get("goroku.inline", "bot_token", "").(string); ok && val != "" {
+	if val := m.db.GetString("goroku.inline", "bot_token", ""); val != "" {
 		parts := strings.SplitN(val, ":", 2)
 		if len(parts) == 2 && len(parts[1]) > 6 {
 			botToken = fmt.Sprintf("%s:%s...%s", parts[0], parts[1][:3], parts[1][len(parts[1])-3:])
@@ -293,7 +298,7 @@ func (m *InlineStuff) InlineinfoCmd(msg *goroku.Message) error {
 
 	msg.Text = fmt.Sprintf("🪐 <b>Inline bot configuration:</b>\n\n• Bot username: <code>%s</code>\n• Bot token: <code>%s</code>", customBot, botToken)
 	if msg.Client != nil {
-		_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 	return nil
 }
@@ -361,10 +366,8 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 			return
 		}
 
-		prefix := "."
-		if pVal, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok {
-			prefix = pVal
-		}
+		prefix := m.db.GetString("goroku.main", "command_prefix", ".")
+
 		ramUsage := fmt.Sprintf("%.2f", utils.GetRAMUsage())
 		cpuUsage := utils.GetCPUUsage()
 		host := utils.GetPlatformName()
@@ -419,7 +422,7 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 
 func genRandStr(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyz1234567890"
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec
 	b := make([]byte, length)
 	for i := range b {
 		b[i] = charset[r.Intn(len(charset))]
@@ -428,12 +431,12 @@ func genRandStr(length int) string {
 }
 
 func getRandMock() string {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec
 	return latinMock[r.Intn(len(latinMock))]
 }
 
 func withReplyTo(replyToMsgID int32) goroku.MsgOption {
-	return func(req interface{}) {
+	return func(req any) {
 		if r, ok := req.(*tg.MessagesSendMessageRequest); ok {
 			replyObj := &tg.InputReplyToMessage{
 				ReplyToMsgID: int(replyToMsgID),

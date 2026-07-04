@@ -158,7 +158,7 @@ func (s *SSHTunnel) runSSHTunnel() {
 
 		L().Info("Attempting SSH tunnel", zap.String("provider", provider.Name), zap.Strings("args", args))
 
-		cmd := exec.CommandContext(s.ctx, "ssh", args...)
+		cmd := exec.CommandContext(s.ctx, "ssh", args...) //nolint:gosec
 		s.mu.Lock()
 		s.process = cmd
 		s.mu.Unlock()

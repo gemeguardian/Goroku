@@ -50,30 +50,19 @@ func (m *Quickstart) ClientReady() error {
 			}
 		}()
 
-		var contentChannel interface{}
+		var contentChannel any
 		var finalCid int64
-		existingChannelIDVal := m.db.Get("goroku.forums", "channel_id", nil)
-		if existingChannelIDVal != nil {
-			var cid int64
-			switch v := existingChannelIDVal.(type) {
-			case float64:
-				cid = int64(v)
-			case int64:
-				cid = v
-			case int:
-				cid = int64(v)
+		cid := m.db.GetInt64("goroku.forums", "channel_id", 0)
+		if cid != 0 {
+			if cid > 0 {
+				cid = goroku.TelegramChannelChatID(cid)
+				m.db.SetInt64("goroku.forums", "channel_id", cid)
+				m.db.Save()
 			}
-			if cid != 0 {
-				if cid > 0 {
-					cid = goroku.TelegramChannelChatID(cid)
-					m.db.Set("goroku.forums", "channel_id", cid)
-					m.db.Save()
-				}
-				peer, err := m.client.ResolvePeer(cid)
-				if err == nil {
-					contentChannel = peer
-					finalCid = cid
-				}
+			peer, err := m.client.ResolvePeer(cid)
+			if err == nil {
+				contentChannel = peer
+				finalCid = cid
 			}
 		}
 
@@ -85,7 +74,7 @@ func (m *Quickstart) ClientReady() error {
 				if ch, ok := peer.(*tg.InputPeerChannel); ok {
 					cid = goroku.TelegramChannelChatID(ch.ChannelID)
 				}
-				m.db.Set("goroku.forums", "channel_id", cid)
+				m.db.SetInt64("goroku.forums", "channel_id", cid)
 				finalCid = cid
 			}
 		}
@@ -111,7 +100,7 @@ func (m *Quickstart) ClientReady() error {
 				if ch, ok := peer.(*tg.InputPeerChannel); ok {
 					cid = goroku.TelegramChannelChatID(ch.ChannelID)
 				}
-				m.db.Set("goroku.forums", "channel_id", cid)
+				m.db.SetInt64("goroku.forums", "channel_id", cid)
 				finalCid = cid
 				_ = isNew
 			}
@@ -150,8 +139,7 @@ func (m *Quickstart) ClientReady() error {
 		_ = finalCid
 
 		// Welcome message with language selector
-		sentMsg, ok := m.db.Get("Quickstart", "no_msg", false).(bool)
-		if !ok || !sentMsg {
+		if !m.db.GetBool("Quickstart", "no_msg", false) {
 			im := m.client.GorokuInline
 			if im != nil {
 				for i := 0; i < 20; i++ {
@@ -161,7 +149,7 @@ func (m *Quickstart) ClientReady() error {
 					time.Sleep(500 * time.Millisecond)
 				}
 				if im.IsComplete() {
-					m.db.Set("Quickstart", "no_msg", true)
+					m.db.SetBool("Quickstart", "no_msg", true)
 					m.db.Save()
 					_ = m.sendMenu(m.client.TGID)
 				}
@@ -210,7 +198,7 @@ func (m *Quickstart) showQuickstart(msg *goroku.Message) error {
 
 	msg.Text = m.getWelcomeText()
 	if msg.Client != nil {
-		_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 	return nil
 }
@@ -306,7 +294,7 @@ func (m *Quickstart) generateWelcomeMarkup(im inlineiface.InlineManager) tgbotap
 			Text: title,
 			Data: "lang_" + l + "_" + genRandStr(4),
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.Set("goroku.translations", "lang", l)
+				m.db.SetString("goroku.translations", "lang", l)
 				m.translator.Init()
 				m.db.Save()
 

@@ -1,13 +1,14 @@
 package goroku
 
 import (
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"goroku/goroku/inline"
 
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
@@ -57,15 +58,8 @@ type CommandDispatcher struct {
 }
 
 func NewCommandDispatcher(modules *Modules, client *CustomTelegramClient, db *Database) *CommandDispatcher {
-	maxUser := 30
-	maxChat := 100
-
-	if val, ok := db.Get("goroku.dispatcher", "ratelimit_max_user", 30).(float64); ok {
-		maxUser = int(val)
-	}
-	if val, ok := db.Get("goroku.dispatcher", "ratelimit_max_chat", 100).(float64); ok {
-		maxChat = int(val)
-	}
+	maxUser := db.GetInt("goroku.dispatcher", "ratelimit_max_user", 30)
+	maxChat := db.GetInt("goroku.dispatcher", "ratelimit_max_chat", 100)
 
 	cd := &CommandDispatcher{
 		modules:              modules,
@@ -93,9 +87,21 @@ func (cd *CommandDispatcher) GetSecurityManager() *SecurityManager {
 	return cd.security
 }
 
+// GetSecurityManager returns the security manager as inline.SecurityChecker.
+func (c *CustomTelegramClient) GetSecurityManager() inline.SecurityChecker {
+	if c.Loader == nil {
+		return nil
+	}
+	return c.Loader.GetDispatcher().GetSecurityManager()
+}
+
 func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 	cd.mu.RLock()
 	defer cd.mu.RUnlock()
+
+	if msg == nil {
+		return
+	}
 
 	// Check blacklists
 	blacklistChats := cd.getBlacklistChats()
@@ -105,19 +111,7 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 	}
 
 	// Check whitelist chats
-	whitelistChatsVal := cd.db.Get("goroku.main", "whitelist_chats", []interface{}{})
-	var whitelistChats []int64
-	if slice, ok := whitelistChatsVal.([]interface{}); ok {
-		for _, item := range slice {
-			switch v := item.(type) {
-			case float64:
-				whitelistChats = append(whitelistChats, int64(v))
-			case string:
-				id, _ := strconv.ParseInt(v, 10, 64)
-				whitelistChats = append(whitelistChats, id)
-			}
-		}
-	}
+	whitelistChats := cd.db.GetInt64Slice("goroku.main", "whitelist_chats", nil)
 
 	if len(whitelistChats) > 0 {
 		found := false
@@ -133,22 +127,10 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 	}
 
 	// Check whitelist modules
-	whitelistModulesVal := cd.db.Get("goroku.main", "whitelist_modules", []interface{}{})
-	var whitelistModules []string
-	if slice, ok := whitelistModulesVal.([]interface{}); ok {
-		for _, item := range slice {
-			if s, ok := item.(string); ok {
-				whitelistModules = append(whitelistModules, s)
-			}
-		}
-	}
+	whitelistModules := cd.db.GetStringSlice("goroku.main", "whitelist_modules", nil)
 
 	// Retrieve disabled watchers
-	disabledWatchersVal := cd.db.Get("goroku.main", "disabled_watchers", map[string]interface{}{})
-	disabledWatchers := map[string]interface{}{}
-	if dw, ok := disabledWatchersVal.(map[string]interface{}); ok {
-		disabledWatchers = dw
-	}
+	disabledWatchers := cd.db.GetAnyMap("goroku.main", "disabled_watchers", nil)
 
 	// Dispatch message watchers
 	for _, watcher := range cd.modules.watchers {
@@ -156,7 +138,7 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 
 		// Check if this module's watchers are disabled
 		if wl, exists := disabledWatchers[modName]; exists {
-			if slice, ok := wl.([]interface{}); ok {
+			if slice, ok := wl.([]any); ok {
 				disabledHere := false
 				for _, item := range slice {
 					valStr := fmt.Sprintf("%v", item)
@@ -438,7 +420,7 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 			if shouldEdit {
 				// Python: message.edit(message.message[len(prefix):])
 				// — edit the same message, stripping one prefix, do NOT send a new message
-				_, _ = cd.client.EditMessage(msg.ChatID, msg.ID, cleaned)
+				_, _ = cd.client.EditMessage(ChatRefID(msg.ChatID), msg.ID, cleaned)
 			}
 		}
 		return
@@ -453,8 +435,9 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	}
 	// Skip forwarded-from-bot messages (via_bot_id equivalent)
 	if msg.IsForwarded {
-		if fwd, ok := msg.FwdFrom.(tg.MessageFwdHeader); ok && fwd.FromID != nil {
-			if _, isChannel := fwd.FromID.(*tg.PeerChannel); isChannel {
+		if msg.FwdFrom.FromID != nil {
+			switch msg.FwdFrom.FromID.(type) {
+			case *tg.PeerChannel:
 				// forwarded from channel — allow, it's normal
 			}
 		}
@@ -468,19 +451,7 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	}
 
 	// Check whitelist chats
-	whitelistChatsVal := cd.db.Get("goroku.main", "whitelist_chats", []interface{}{})
-	var whitelistChats []int64
-	if slice, ok := whitelistChatsVal.([]interface{}); ok {
-		for _, item := range slice {
-			switch v := item.(type) {
-			case float64:
-				whitelistChats = append(whitelistChats, int64(v))
-			case string:
-				id, _ := strconv.ParseInt(v, 10, 64)
-				whitelistChats = append(whitelistChats, id)
-			}
-		}
-	}
+	whitelistChats := cd.db.GetInt64Slice("goroku.main", "whitelist_chats", nil)
 
 	if len(whitelistChats) > 0 {
 		found := false
@@ -550,15 +521,7 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	}
 
 	// Check whitelist modules (chat_id.module_name)
-	whitelistModulesVal := cd.db.Get("goroku.main", "whitelist_modules", []interface{}{})
-	var whitelistModules []string
-	if slice, ok := whitelistModulesVal.([]interface{}); ok {
-		for _, item := range slice {
-			if s, ok := item.(string); ok {
-				whitelistModules = append(whitelistModules, s)
-			}
-		}
-	}
+	whitelistModules := cd.db.GetStringSlice("goroku.main", "whitelist_modules", nil)
 
 	if len(whitelistModules) > 0 && modName != "" {
 		found := false
@@ -584,60 +547,36 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 		}
 
 		if !mentioned {
-			noNicknameVal := cd.db.Get("goroku.main", "no_nickname", false)
-			noNickname := false
-			if v, ok := noNicknameVal.(bool); ok {
-				noNickname = v
-			}
+			noNickname := cd.db.GetBool("goroku.main", "no_nickname", false)
 
 			if !noNickname {
 				// Check nonickcmds
-				nonickcmdsVal := cd.db.Get("goroku.main", "nonickcmds", []interface{}{})
+				nonickcmds := cd.db.GetStringSlice("goroku.main", "nonickcmds", nil)
 				cmdWhitelisted := false
-				if slice, ok := nonickcmdsVal.([]interface{}); ok {
-					for _, item := range slice {
-						if s, ok := item.(string); ok && strings.EqualFold(s, actualCmd) {
-							cmdWhitelisted = true
-							break
-						}
+				for _, item := range nonickcmds {
+					if strings.EqualFold(item, actualCmd) {
+						cmdWhitelisted = true
+						break
 					}
 				}
 
 				// Check nonickusers
-				nonickusersVal := cd.db.Get("goroku.main", "nonickusers", []interface{}{})
+				nonickusers := cd.db.GetInt64Slice("goroku.main", "nonickusers", nil)
 				userWhitelisted := false
-				if slice, ok := nonickusersVal.([]interface{}); ok {
-					for _, item := range slice {
-						var uid int64
-						switch v := item.(type) {
-						case float64:
-							uid = int64(v)
-						case int64:
-							uid = v
-						}
-						if uid == msg.SenderID {
-							userWhitelisted = true
-							break
-						}
+				for _, uid := range nonickusers {
+					if uid == msg.SenderID {
+						userWhitelisted = true
+						break
 					}
 				}
 
 				// Check nonickchats
-				nonickchatsVal := cd.db.Get("goroku.main", "nonickchats", []interface{}{})
+				nonickchats := cd.db.GetInt64Slice("goroku.main", "nonickchats", nil)
 				chatWhitelisted := false
-				if slice, ok := nonickchatsVal.([]interface{}); ok {
-					for _, item := range slice {
-						var cid int64
-						switch v := item.(type) {
-						case float64:
-							cid = int64(v)
-						case int64:
-							cid = v
-						}
-						if cid == msg.ChatID {
-							chatWhitelisted = true
-							break
-						}
+				for _, cid := range nonickchats {
+					if cid == msg.ChatID {
+						chatWhitelisted = true
+						break
 					}
 				}
 
@@ -833,15 +772,7 @@ func (cd *CommandDispatcher) handleGrep(msg *Message) *Message {
 
 func (cd *CommandDispatcher) isModuleOrCommandDisabled(cmdName string) bool {
 	// Check disabled_modules
-	disabledModsVal := cd.db.Get("goroku.main", "disabled_modules", []interface{}{})
-	disabledMods := []string{}
-	if slice, ok := disabledModsVal.([]interface{}); ok {
-		for _, v := range slice {
-			if s, ok := v.(string); ok {
-				disabledMods = append(disabledMods, s)
-			}
-		}
-	}
+	disabledMods := cd.db.GetStringSlice("goroku.main", "disabled_modules", nil)
 
 	// Find which module owns this command
 	for _, mod := range cd.modules.GetModules() {
@@ -854,18 +785,11 @@ func (cd *CommandDispatcher) isModuleOrCommandDisabled(cmdName string) bool {
 				}
 			}
 			// Check disabled_commands
-			disabledCmdsVal := cd.db.Get("goroku.main", "disabled_commands", map[string]interface{}{})
-			if dcMap, ok := disabledCmdsVal.(map[string]interface{}); ok {
-				if cmdList, ok := dcMap[modName]; ok {
-					if bytes, err := json.Marshal(cmdList); err == nil {
-						var cmds []string
-						if json.Unmarshal(bytes, &cmds) == nil {
-							for _, dc := range cmds {
-								if strings.EqualFold(dc, cmdName) {
-									return true
-								}
-							}
-						}
+			disabledCmds := cd.db.GetStringMapStringSlice("goroku.main", "disabled_commands", nil)
+			if cmds, ok := disabledCmds[modName]; ok {
+				for _, dc := range cmds {
+					if strings.EqualFold(dc, cmdName) {
+						return true
 					}
 				}
 			}
@@ -876,22 +800,16 @@ func (cd *CommandDispatcher) isModuleOrCommandDisabled(cmdName string) bool {
 }
 
 func (cd *CommandDispatcher) getPrefix(senderID int64) string {
-	mainPrefixVal := cd.db.Get("goroku.main", "command_prefix", ".")
-	mainPrefix := "."
-	if val, ok := mainPrefixVal.(string); ok {
-		mainPrefix = val
-	}
+	mainPrefix := cd.db.GetString("goroku.main", "command_prefix", ".")
 
 	if senderID == cd.client.TGID {
 		return mainPrefix
 	}
 
-	prefixesVal := cd.db.Get("goroku.main", "command_prefixes", make(map[string]interface{}))
-	if prefixes, ok := prefixesVal.(map[string]interface{}); ok {
-		senderStr := strconv.FormatInt(senderID, 10)
-		if customPrefix, exists := prefixes[senderStr].(string); exists {
-			return customPrefix
-		}
+	prefixes := cd.db.GetStringMap("goroku.main", "command_prefixes", nil)
+	senderStr := strconv.FormatInt(senderID, 10)
+	if customPrefix, exists := prefixes[senderStr]; exists && customPrefix != "" {
+		return customPrefix
 	}
 
 	return mainPrefix
@@ -899,16 +817,9 @@ func (cd *CommandDispatcher) getPrefix(senderID int64) string {
 
 func (cd *CommandDispatcher) getBlacklistChats() map[string]bool {
 	res := make(map[string]bool)
-	val := cd.db.Get("goroku.main", "blacklist_chats", []interface{}{})
-	if slice, ok := val.([]interface{}); ok {
-		for _, item := range slice {
-			switch v := item.(type) {
-			case float64:
-				res[strconv.FormatInt(int64(v), 10)] = true
-			case string:
-				res[v] = true
-			}
-		}
+	chats := cd.db.GetStringSlice("goroku.main", "blacklist_chats", nil)
+	for _, item := range chats {
+		res[item] = true
 	}
 	return res
 }

@@ -110,10 +110,10 @@ func (h *TelegramLogsHandler) flush() {
 	// Retrieve "Logs" topic ID if available from the database cache
 	var topicID int64
 	if h.client.GorokuDB != nil {
-		forumsCacheVal := h.client.GorokuDB.Get("goroku.forums", "forums_cache", nil)
-		if forumsCache, ok := forumsCacheVal.(map[string]interface{}); ok {
+		forumsCacheVal, _ := h.client.GorokuDB.Get("goroku.forums", "forums_cache", nil)
+		if forumsCache, ok := forumsCacheVal.(map[string]any); ok {
 			if subCacheVal, ok := forumsCache["goroku-userbot"]; ok {
-				if subCache, ok := subCacheVal.(map[string]interface{}); ok {
+				if subCache, ok := subCacheVal.(map[string]any); ok {
 					if idVal, ok := subCache["Logs"]; ok {
 						switch idt := idVal.(type) {
 						case float64:
@@ -184,7 +184,7 @@ func (h *TelegramLogsHandler) flush() {
 				},
 				Message:  "📋 Goroku Logs (too large to send as text)",
 				ReplyTo:  replyTo,
-				RandomID: rand.Int63(),
+				RandomID: rand.Int63(), //nolint:gosec
 			})
 			if err != nil {
 				L().Info("Failed to send logs file: {0}", zap.Any("arg0", err))
@@ -203,7 +203,7 @@ func (h *TelegramLogsHandler) flush() {
 			Message:  plainText,
 			Entities: entities,
 			ReplyTo:  replyTo,
-			RandomID: rand.Int63(),
+			RandomID: rand.Int63(), //nolint:gosec
 		})
 		if err != nil {
 			L().Info("Failed to send logs message: {0}", zap.Any("arg0", err))

@@ -25,26 +25,26 @@ func Rand(size int) string {
 }
 
 // InviteInlineBot is a stub representing invite_inline_bot logic
-func InviteInlineBot(client interface{}, peer interface{}) error {
+func InviteInlineBot(client any, peer any) error {
 	// Stub implementation matching Python's invite_inline_bot
 	return nil
 }
 
 // RunSync is a helper representing python's run_sync
-func RunSync(funcObj interface{}, args ...interface{}) interface{} {
+func RunSync(funcObj any, args ...any) any {
 	// In Go, concurrency is native. This is a stub/placeholder helper.
 	return nil
 }
 
 // RunAsync is a helper representing python's run_async
-func RunAsync(loop interface{}, coro interface{}) interface{} {
+func RunAsync(loop any, coro any) any {
 	return nil
 }
 
 // Merge merges map a into map b recursively.
-func Merge(a, b map[string]interface{}, deep bool) map[string]interface{} {
+func Merge(a, b map[string]any, deep bool) map[string]any {
 	if b == nil {
-		b = make(map[string]interface{})
+		b = make(map[string]any)
 	}
 	for key, aVal := range a {
 		bVal, ok := b[key]
@@ -53,8 +53,8 @@ func Merge(a, b map[string]interface{}, deep bool) map[string]interface{} {
 			continue
 		}
 
-		aMap, aIsMap := aVal.(map[string]interface{})
-		bMap, bIsMap := bVal.(map[string]interface{})
+		aMap, aIsMap := aVal.(map[string]any)
+		bMap, bIsMap := bVal.(map[string]any)
 
 		if aIsMap && bIsMap && deep {
 			b[key] = Merge(aMap, bMap, deep)
@@ -66,11 +66,11 @@ func Merge(a, b map[string]interface{}, deep bool) map[string]interface{} {
 }
 
 // Chunks splits a slice into chunks of size n.
-func Chunks(list []interface{}, n int) [][]interface{} {
+func Chunks(list []any, n int) [][]any {
 	if n <= 0 {
-		return [][]interface{}{list}
+		return [][]any{list}
 	}
-	var chunks [][]interface{}
+	var chunks [][]any
 	for i := 0; i < len(list); i += n {
 		end := i + n
 		if end > len(list) {
@@ -82,12 +82,12 @@ func Chunks(list []interface{}, n int) [][]interface{} {
 }
 
 // AtExit registers a function to run at exit.
-func AtExit(funcObj interface{}, useSignal int, args ...interface{}) {
+func AtExit(funcObj any, useSignal int, args ...any) {
 	// Stub/Placeholder for Python's atexit
 }
 
 // CopyTL is a stub for Python's _copy_tl
-func CopyTL(o interface{}, kwargs map[string]interface{}) interface{} {
+func CopyTL(o any, kwargs map[string]any) any {
 	return o
 }
 
@@ -118,7 +118,7 @@ func GetISOTime() string {
 }
 
 // SafeGetattr safely gets a field from a structure. Stub for python reflection.
-func SafeGetattr(obj interface{}, attr string, defaultValue interface{}) interface{} {
+func SafeGetattr(obj any, attr string, defaultValue any) any {
 	return defaultValue
 }
 

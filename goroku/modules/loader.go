@@ -2,7 +2,6 @@ package modules
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -53,17 +52,17 @@ func (m *LoaderModule) Init(client *goroku.CustomTelegramClient, db *goroku.Data
 	return nil
 }
 
-func (m *LoaderModule) ConfigDefaults() map[string]interface{} {
-	return map[string]interface{}{
+func (m *LoaderModule) ConfigDefaults() map[string]any {
+	return map[string]any{
 		"MODULES_REPO":     "https://raw.githubusercontent.com/coddrago/modules/main",
-		"ADDITIONAL_REPOS": []interface{}{},
+		"ADDITIONAL_REPOS": []any{},
 		"share_link":       false,
 		"basic_auth":       "",
 		"command_emoji":    "<tg-emoji emoji-id=5197195523794157505>▫️</tg-emoji>",
 	}
 }
 
-func (m *LoaderModule) ConfigReady(config map[string]interface{}) error {
+func (m *LoaderModule) ConfigReady(config map[string]any) error {
 	if val, ok := config["MODULES_REPO"].(string); ok {
 		m.modulesRepo = val
 	}
@@ -76,7 +75,7 @@ func (m *LoaderModule) ConfigReady(config map[string]interface{}) error {
 	if val, ok := config["command_emoji"].(string); ok {
 		m.commandEmoji = val
 	}
-	if val, ok := config["ADDITIONAL_REPOS"].([]interface{}); ok {
+	if val, ok := config["ADDITIONAL_REPOS"].([]any); ok {
 		m.additionalRepos = []string{}
 		for _, item := range val {
 			if s, ok := item.(string); ok {
@@ -88,13 +87,9 @@ func (m *LoaderModule) ConfigReady(config map[string]interface{}) error {
 }
 
 func (m *LoaderModule) ClientReady() error {
-	loadedMods := make(map[string]string)
-	val := m.db.Get("Loader", "loaded_modules", nil)
-	if val == nil {
+	loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
+	if len(loadedMods) == 0 {
 		return nil
-	}
-	if bytesData, err := json.Marshal(val); err == nil {
-		json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck
 	}
 
 	loader := m.client.Loader
@@ -106,7 +101,7 @@ func (m *LoaderModule) ClientReady() error {
 	goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
 	for modName, source := range loadedMods {
 		path := filepath.Join(goroku.BasePath, "goroku", "modules", modName+".go")
-		bodyBytes, err := os.ReadFile(path)
+		bodyBytes, err := os.ReadFile(path) //nolint:gosec
 		if err != nil {
 			if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
 				bodyBytes, err = m.restoreLoadedModule(modName, source, path)
@@ -139,7 +134,7 @@ func (m *LoaderModule) restoreLoadedModule(modName, url, path string) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("module restore failed with HTTP %d", resp.StatusCode)
 	}
@@ -147,7 +142,7 @@ func (m *LoaderModule) restoreLoadedModule(modName, url, path string) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, body, 0644); err != nil {
+	if err := os.WriteFile(path, body, 0600); err != nil {
 		return nil, err
 	}
 	return body, nil
@@ -214,7 +209,7 @@ func (m *LoaderModule) getRepo(repo string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status code %d", resp.StatusCode)
@@ -319,7 +314,7 @@ func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 
 		msg.Text = m.getTrans("args", "🚫 <b>You must specify arguments</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -330,14 +325,14 @@ func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		msg.Text = m.getTrans("finding_module_in_repos", "🔄 Looking for modules in repositories.")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 
 		foundURL, err := m.findLink(url)
 		if err != nil {
 			msg.Text = m.getTrans("no_module", "🚫 <b>Module not available in repo.</b>")
 			if msg.Client != nil {
-				_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+				_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 			}
 			return nil
 		}
@@ -349,7 +344,7 @@ func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 		if strings.HasSuffix(fileName, ".py") {
 			msg.Text = "❌ <b>Python modules (.py) cannot be loaded in the Go userbot port. Please provide a Go (.go) module instead.</b>"
 			if msg.Client != nil {
-				_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+				_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 			}
 			return nil
 		}
@@ -361,40 +356,34 @@ func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 	if err != nil || resp.StatusCode != http.StatusOK {
 		msg.Text = m.getTrans("no_module", "🚫 <b>Module not available in repo.</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 	bodyBytes, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil {
 		msg.Text = m.getTrans("no_module", "🚫 <b>Module not available in repo.</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
 	fileName := modName + ".go"
 	destPath := filepath.Join(goroku.BasePath, "goroku", "modules", fileName)
-	err = os.WriteFile(destPath, bodyBytes, 0644)
+	err = os.WriteFile(destPath, bodyBytes, 0600)
 	if err != nil {
 		msg.Text = fmt.Sprintf("❌ Failed to save file to filesystem: %v", err)
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	loadedMods := make(map[string]string)
-	val := m.db.Get("Loader", "loaded_modules", nil)
-	if val != nil {
-		if bytesData, err := json.Marshal(val); err == nil {
-			json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck
-		}
-	}
+	loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
 	loadedMods[modName] = url
-	m.db.Set("Loader", "loaded_modules", loadedMods)
+	m.db.SetStringMap("Loader", "loaded_modules", loadedMods)
 	m.db.Save()
 
 	structName := modName
@@ -407,7 +396,7 @@ func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 	if err != nil {
 		msg.Text = fmt.Sprintf("❌ <b>Load failed:</b> %v", err)
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 	}
 
@@ -432,7 +421,7 @@ func (m *LoaderModule) LoadmodCmd(msg *goroku.Message) error {
 	if rawArgs == "" {
 		msg.Text = m.getTrans("provide_module", "⚠️ <b>Provide a module to load</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -454,38 +443,32 @@ func (m *LoaderModule) LoadmodCmd(msg *goroku.Message) error {
 	if !isGo {
 		msg.Text = "❌ <b>Python modules (.py) cannot be loaded in the Go userbot port. Please provide a Go (.go) module instead.</b>"
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
 	fileName := modName + ".go"
 	destPath := filepath.Join(goroku.BasePath, "goroku", "modules", fileName)
-	err := os.WriteFile(destPath, []byte(rawArgs), 0644)
+	err := os.WriteFile(destPath, []byte(rawArgs), 0600)
 	if err != nil {
 		msg.Text = fmt.Sprintf("❌ Failed to save module file: %v", err)
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	loadedMods := make(map[string]string)
-	val := m.db.Get("Loader", "loaded_modules", nil)
-	if val != nil {
-		if bytesData, err := json.Marshal(val); err == nil {
-			json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck
-		}
-	}
+	loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
 	loadedMods[modName] = "local"
-	m.db.Set("Loader", "loaded_modules", loadedMods)
+	m.db.SetStringMap("Loader", "loaded_modules", loadedMods)
 	m.db.Save()
 
 	err = m.registerHotLoad(msg, modName, destPath)
 	if err != nil {
 		msg.Text = fmt.Sprintf("❌ <b>Load failed:</b> %v", err)
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 	}
 
@@ -497,7 +480,7 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 	if rawArgs == "" {
 		msg.Text = m.getTrans("no_class", "<b>What class needs to be unloaded?</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -507,18 +490,12 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 	if loader == nil {
 		msg.Text = "❌ Modules registry not found."
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	loadedMods := make(map[string]string)
-	val := m.db.Get("Loader", "loaded_modules", nil)
-	if val != nil {
-		if bytesData, err := json.Marshal(val); err == nil {
-			json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck
-		}
-	}
+	loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
 
 	// Check if this is a system module (statically registered, not in loaded_modules)
 	var matchedKey string
@@ -543,7 +520,7 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 	if foundName == "" {
 		msg.Text = m.getTrans("404", "🚫 <b>Module not found</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -551,7 +528,7 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 	if isSystem {
 		msg.Text = formatTrans(m.getTrans("system_unload_forbidden", "🚫 <b>Module {} is a system module and cannot be unloaded.</b>"), foundName)
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -560,7 +537,7 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 	if err != nil {
 		msg.Text = formatTrans(m.getTrans("not_unloaded", "🚫 <b>Module not unloaded: {}</b>"), err.Error())
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -570,14 +547,14 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 		_ = os.Remove(destPathGo)
 		delete(loadedMods, matchedKey)
 	}
-	m.db.Set("Loader", "loaded_modules", loadedMods)
+	m.db.SetStringMap("Loader", "loaded_modules", loadedMods)
 	m.db.Save()
 
 	err = m.unregisterHotLoad(msg, foundName)
 	if err != nil {
 		msg.Text = fmt.Sprintf("❌ <b>Unload failed:</b> %v", err)
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 	}
 
@@ -599,21 +576,14 @@ func (m *LoaderModule) ClearmodulesCmd(msg *goroku.Message) error {
 				Handler: func(c inline.CallbackQuery) error {
 					_ = c.Answer("Deleting modules...", false)
 					_ = closeForm(c)
-
-					loadedMods := make(map[string]string)
-					val := m.db.Get("Loader", "loaded_modules", nil)
-					if val != nil {
-						if bytesData, err := json.Marshal(val); err == nil {
-							json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck
-						}
-					}
+					loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
 
 					for modName := range loadedMods {
 						path := filepath.Join(goroku.BasePath, "goroku", "modules", modName+".go")
 						_ = os.Remove(path)
 					}
 
-					m.db.Set("Loader", "loaded_modules", make(map[string]string))
+					m.db.SetStringMap("Loader", "loaded_modules", make(map[string]string))
 					m.db.Save()
 
 					replyMsg := tgbotapi.NewMessage(c.ChatID, m.getTrans("all_modules_deleted", "✅ All modules deleted"))
@@ -641,25 +611,19 @@ func (m *LoaderModule) ClearmodulesCmd(msg *goroku.Message) error {
 }
 
 func (m *LoaderModule) executeClearModules(msg *goroku.Message) error {
-	loadedMods := make(map[string]string)
-	val := m.db.Get("Loader", "loaded_modules", nil)
-	if val != nil {
-		if bytesData, err := json.Marshal(val); err == nil {
-			json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck
-		}
-	}
+	loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
 
 	for modName := range loadedMods {
 		path := filepath.Join(goroku.BasePath, "goroku", "modules", modName+".go")
 		_ = os.Remove(path)
 	}
 
-	m.db.Set("Loader", "loaded_modules", make(map[string]string))
+	m.db.SetStringMap("Loader", "loaded_modules", make(map[string]string))
 	m.db.Save()
 
 	msg.Text = m.getTrans("all_modules_deleted", "✅ All modules deleted")
 	if msg.Client != nil {
-		_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 
 	go func() {
@@ -674,7 +638,7 @@ func (m *LoaderModule) AddrepoCmd(msg *goroku.Message) error {
 	if rawArgs == "" || (!strings.HasPrefix(rawArgs, "http://") && !strings.HasPrefix(rawArgs, "https://")) {
 		msg.Text = m.getTrans("no_repo", "🚫 <b>Invalid repository URL</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -686,11 +650,11 @@ func (m *LoaderModule) AddrepoCmd(msg *goroku.Message) error {
 	if err != nil || resp.StatusCode != http.StatusOK {
 		msg.Text = m.getTrans("no_repo", "🚫 <b>Invalid repository URL</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	exists := false
 	for _, r := range m.additionalRepos {
@@ -703,7 +667,7 @@ func (m *LoaderModule) AddrepoCmd(msg *goroku.Message) error {
 	if exists {
 		msg.Text = formatTrans(m.getTrans("repo_exists", "🚫 <b>Repository {} already exists</b>"), rawArgs)
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -714,7 +678,7 @@ func (m *LoaderModule) AddrepoCmd(msg *goroku.Message) error {
 
 	msg.Text = formatTrans(m.getTrans("repo_added", "✅ <b>Repository {} added</b>"), rawArgs)
 	if msg.Client != nil {
-		_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 	return nil
 }
@@ -724,7 +688,7 @@ func (m *LoaderModule) DelrepoCmd(msg *goroku.Message) error {
 	if rawArgs == "" || (!strings.HasPrefix(rawArgs, "http://") && !strings.HasPrefix(rawArgs, "https://")) {
 		msg.Text = m.getTrans("no_repo", "🚫 <b>Invalid repository URL</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -742,7 +706,7 @@ func (m *LoaderModule) DelrepoCmd(msg *goroku.Message) error {
 	if idx == -1 {
 		msg.Text = m.getTrans("repo_not_exists", "🚫 <b>Repository not found in your list</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -753,7 +717,7 @@ func (m *LoaderModule) DelrepoCmd(msg *goroku.Message) error {
 
 	msg.Text = formatTrans(m.getTrans("repo_deleted", "✅ <b>Repository {} deleted</b>"), rawArgs)
 	if msg.Client != nil {
-		_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 	return nil
 }
@@ -763,7 +727,7 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 	if rawArgs == "" {
 		msg.Text = m.getTrans("args", "🚫 <b>You must specify arguments</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -772,7 +736,7 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 	if loader == nil {
 		msg.Text = "❌ Modules registry not found."
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -782,7 +746,7 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 	var class_name string
 
 	for name, mod := range modulesList {
-		if strings.ToLower(name) == strings.ToLower(rawArgs) || strings.ToLower(mod.Name()) == strings.ToLower(rawArgs) {
+		if strings.EqualFold(name, rawArgs) || strings.EqualFold(mod.Name(), rawArgs) {
 			foundMod = mod
 			class_name = name
 			break
@@ -802,7 +766,7 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 	if foundMod == nil {
 		msg.Text = m.getTrans("404", "🚫 <b>Module not found</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -815,32 +779,23 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 	if err != nil {
 		msg.Text = m.getTrans("404", "🚫 <b>Module not found</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	fileBytes, err := os.ReadFile(path)
+	fileBytes, err := os.ReadFile(path) //nolint:gosec
 	if err != nil {
 		msg.Text = m.getTrans("404", "🚫 <b>Module not found</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	prefix := "."
-	if pVal, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok {
-		prefix = pVal
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
-	loadedMods := make(map[string]string)
-	val := m.db.Get("Loader", "loaded_modules", nil)
-	if val != nil {
-		if bytesData, err := json.Marshal(val); err == nil {
-			json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck
-		}
-	}
+	loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
 
 	url := loadedMods[class_name]
 	if url == "" {
@@ -871,7 +826,7 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 		}
 
 		_ = msg.Delete()
-		_, err = m.client.SendFileWithOptions(msg.ChatID, nr, text, opts...)
+		_, err = m.client.SendFileWithOptions(goroku.ChatRefID(msg.ChatID), nr, text, opts...)
 		return err
 	}
 

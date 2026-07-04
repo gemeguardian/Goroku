@@ -2,6 +2,8 @@ package inline
 
 import (
 	"bytes"
+	"github.com/gotd/td/tg"
+	"goroku/goroku/chatref"
 	"io"
 	"net/http"
 	"strings"
@@ -22,12 +24,21 @@ func (m *mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 type mockDeletableClient struct {
 	deleteCalled bool
-	chat         interface{}
+	chat         any
 	messageID    int64
 	err          error
 }
 
-func (m *mockDeletableClient) DeleteMessage(chat interface{}, messageID int64) error {
+func (m *mockDeletableClient) TGIDValue() int64 { return 0 }
+func (m *mockDeletableClient) SendMessage(chat chatref.ChatRef, message string) (any, error) {
+	return nil, nil
+}
+func (m *mockDeletableClient) CreateGorokuFolder(botID int64) error                   { return nil }
+func (m *mockDeletableClient) InviteBotToChannel(channelPeer tg.InputPeerClass) error { return nil }
+func (m *mockDeletableClient) PromoteBotToAdmin(channelPeer tg.InputPeerClass) error  { return nil }
+func (m *mockDeletableClient) GetSecurityManager() SecurityChecker                    { return nil }
+
+func (m *mockDeletableClient) DeleteMessage(chat any, messageID int64) error {
 	m.deleteCalled = true
 	m.chat = chat
 	m.messageID = messageID
@@ -171,7 +182,7 @@ func TestEditAndDeleteUnit(t *testing.T) {
 		},
 	}
 
-	bot, err := tgbotapi.NewBotAPIWithClient("mock_token", tgbotapi.APIEndpoint, &http.Client{Transport: transport})
+	bot, err := tgbotapi.NewBotAPIWithOptions("mock_token", tgbotapi.WithAPIEndpoint(tgbotapi.APIEndpoint), tgbotapi.WithHTTPClient(&http.Client{Transport: transport}))
 	if err != nil {
 		t.Fatalf("Failed to create mock bot: %v", err)
 	}

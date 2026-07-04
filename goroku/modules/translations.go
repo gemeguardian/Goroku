@@ -125,7 +125,7 @@ func (m *TranslationsModule) SetLangCmd(msg *goroku.Message) error {
 		} else {
 			msg.Text = getTrans(m.translator, m.Name(), "incorrect_language", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Incorrect language specified</b>")
 			if msg.Client != nil {
-				msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+				_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 			}
 			return nil
 		}
@@ -160,13 +160,13 @@ func (m *TranslationsModule) SetLangCmd(msg *goroku.Message) error {
 
 	msg.Text = res
 	if msg.Client != nil {
-		msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 
 	return nil
 }
 
-func (m *TranslationsModule) ChooseLanguage(msg interface{}, isMeme bool) error {
+func (m *TranslationsModule) ChooseLanguage(msg any, isMeme bool) error {
 	im := m.client.GorokuInline
 	if im == nil || !im.IsComplete() {
 		if msgObj, ok := msg.(*goroku.Message); ok {
@@ -247,10 +247,7 @@ func (m *TranslationsModule) ChangeLanguage(call inline.CallbackQuery, lang stri
 }
 
 func (m *TranslationsModule) ListLangsCmd(msg *goroku.Message) error {
-	currentLang := "en"
-	if val, ok := m.db.Get("goroku.translations", "lang", "en").(string); ok {
-		currentLang = val
-	}
+	currentLang := m.db.GetString("goroku.translations", "lang", "en")
 
 	var sb strings.Builder
 	sb.WriteString("🗽 <b>Available Languages:</b>\n\n")
@@ -291,7 +288,7 @@ func (m *TranslationsModule) ListLangsCmd(msg *goroku.Message) error {
 
 	msg.Text = sb.String()
 	if msg.Client != nil {
-		msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 	return nil
 }
@@ -302,15 +299,12 @@ func (m *TranslationsModule) DlLangPackCmd(msg *goroku.Message) error {
 	if args == "" || !utils.CheckURL(args) {
 		msg.Text = getTrans(m.translator, m.Name(), "check_url", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>You need to specify valid url containing a langpack</b>")
 		if msg.Client != nil {
-			msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	var currentLang string
-	if val, ok := m.db.Get("goroku.translations", "lang", "").(string); ok {
-		currentLang = val
-	}
+	currentLang := m.db.GetString("goroku.translations", "lang", "")
 
 	var cleanLangs []string
 	for _, token := range strings.Fields(currentLang) {
@@ -337,7 +331,7 @@ func (m *TranslationsModule) DlLangPackCmd(msg *goroku.Message) error {
 	}
 
 	if msg.Client != nil {
-		msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 
 	return nil

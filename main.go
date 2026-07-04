@@ -47,7 +47,7 @@ func main() {
 			text = strings.TrimSpace(strings.ToLower(text))
 
 			if text == "no_sudo" {
-				os.Setenv("NO_SUDO", "1")
+				_ = os.Setenv("NO_SUDO", "1")
 				fmt.Println("Added NO_SUDO in your environment variables")
 				goroku.Restart()
 				return
@@ -58,8 +58,8 @@ func main() {
 	}
 
 	// Clean up restart variables
-	os.Unsetenv("GOROKU_DO_NOT_RESTART")
-	os.Unsetenv("GOROKU_DO_NOT_RESTART2")
+	_ = os.Unsetenv("GOROKU_DO_NOT_RESTART")
+	_ = os.Unsetenv("GOROKU_DO_NOT_RESTART2")
 
 	// Call main runner of goroku package with the registered static modules
 	goroku.Main([]goroku.Module{

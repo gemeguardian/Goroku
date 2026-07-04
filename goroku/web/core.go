@@ -24,7 +24,7 @@ type WebCore struct {
 	port        int
 	running     bool
 	ready       bool
-	clientData  map[int64][]interface{}
+	clientData  map[int64][]any
 	proxypasser *ProxyPasser
 	url         string
 	mu          sync.Mutex
@@ -35,7 +35,7 @@ var Instance *WebCore
 func NewWebCore(cfg WebConfig) *WebCore {
 	wc := &WebCore{
 		Web:        NewWeb(cfg),
-		clientData: make(map[int64][]interface{}),
+		clientData: make(map[int64][]any),
 	}
 	Instance = wc
 	return wc
@@ -105,7 +105,9 @@ func (wc *WebCore) Start(port int, proxyPass bool) {
 	}
 	wc.port = port
 	if envPort := os.Getenv("PORT"); envPort != "" {
-		fmt.Sscanf(envPort, "%d", &wc.port)
+		if _, err := fmt.Sscanf(envPort, "%d", &wc.port); err != nil {
+			L().Warn("invalid PORT env variable", zap.String("port", envPort), zap.Error(err))
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -120,8 +122,9 @@ func (wc *WebCore) Start(port int, proxyPass bool) {
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(filepath.Join(wc.dataRoot, "web-resources/static")))))
 
 	wc.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", wc.port),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", wc.port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	wc.proxypasser = NewProxyPasser(wc.port, func(url string) {
@@ -151,14 +154,16 @@ func (wc *WebCore) Stop() {
 	defer cancel()
 
 	if wc.server != nil {
-		wc.server.Shutdown(ctx)
+		if err := wc.server.Shutdown(ctx); err != nil {
+			L().Warn("web server shutdown failed", zap.Error(err))
+		}
 	}
 
 	wc.running = false
 	wc.ready = false
 }
 
-func (wc *WebCore) AddLoader(client interface{}, loader interface{}, db interface{}) {
+func (wc *WebCore) AddLoader(client any, loader any, db any) {
 	wc.mu.Lock()
 	defer wc.mu.Unlock()
 
@@ -175,6 +180,6 @@ func (wc *WebCore) AddLoader(client interface{}, loader interface{}, db interfac
 			}
 		}
 	}
-	wc.clientData[id] = []interface{}{loader, client, db}
-	wc.Web.clientData[id] = []interface{}{loader, client, db}
+	wc.clientData[id] = []any{loader, client, db}
+	wc.Web.clientData[id] = []any{loader, client, db}
 }

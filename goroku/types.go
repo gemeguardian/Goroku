@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goroku/goroku/cache"
+	"goroku/goroku/chatref"
 	"goroku/goroku/inlineiface"
 	"goroku/goroku/logger"
 
@@ -26,7 +27,7 @@ type Message struct {
 	RawText      string
 	Entities     []tg.MessageEntityClass
 	Out          bool
-	Media        interface{}
+	Media        tg.MessageMediaClass
 	IsPrivate    bool
 	IsChannel    bool
 	IsGroup      bool
@@ -36,7 +37,7 @@ type Message struct {
 	CutLines     int
 	SplitOutput  bool
 	ReplyToMsgID int64
-	FwdFrom      interface{}
+	FwdFrom      tg.MessageFwdHeader
 	IsForwarded  bool
 	Answered     bool
 	ViaBotID     int64
@@ -120,11 +121,11 @@ type ModuleWithMeta interface {
 }
 
 type ModuleWithConfig interface {
-	ConfigDefaults() map[string]interface{}
+	ConfigDefaults() map[string]any
 }
 
 type ModuleWithConfigReady interface {
-	ConfigReady(config map[string]interface{}) error
+	ConfigReady(config map[string]any) error
 }
 
 type ModuleWithConfigValidators interface {
@@ -150,10 +151,10 @@ type CustomTelegramClient struct {
 	Username               string
 	parseMode              string
 	cacheMu                sync.RWMutex
-	GorokuEntityCache      map[interface{}]cache.CacheRecordEntity
-	GorokuPermsCache       map[interface{}]map[interface{}]cache.CacheRecordPerms
-	GorokuFullChannelCache map[interface{}]cache.CacheRecordFullChannel
-	GorokuFullUserCache    map[interface{}]cache.CacheRecordFullUser
+	GorokuEntityCache      map[cache.EntityCacheKey]cache.CacheRecordEntity
+	GorokuPermsCache       map[cache.EntityCacheKey]map[cache.EntityCacheKey]cache.CacheRecordPerms
+	GorokuFullChannelCache map[cache.EntityCacheKey]cache.CacheRecordFullChannel
+	GorokuFullUserCache    map[cache.EntityCacheKey]cache.CacheRecordFullUser
 	ForbiddenConstructors  []uint32
 	GorokuMe               *tg.User
 	GorokuDB               *Database
@@ -176,6 +177,16 @@ type CustomTelegramClient struct {
 	runDone chan struct{}
 }
 
+// TGIDValue returns the Telegram user ID associated with the client.
+func (c *CustomTelegramClient) TGIDValue() int64 {
+	return c.TGID
+}
+
+// SetTGID sets the Telegram user ID associated with the client.
+func (c *CustomTelegramClient) SetTGID(id int64) {
+	c.TGID = id
+}
+
 type RateLimitRecord struct {
 	Name string
 	TS   time.Time
@@ -184,10 +195,10 @@ type RateLimitRecord struct {
 func NewCustomTelegramClient(tgID int64) *CustomTelegramClient {
 	return &CustomTelegramClient{
 		TGID:                   tgID,
-		GorokuEntityCache:      make(map[interface{}]cache.CacheRecordEntity),
-		GorokuPermsCache:       make(map[interface{}]map[interface{}]cache.CacheRecordPerms),
-		GorokuFullChannelCache: make(map[interface{}]cache.CacheRecordFullChannel),
-		GorokuFullUserCache:    make(map[interface{}]cache.CacheRecordFullUser),
+		GorokuEntityCache:      make(map[cache.EntityCacheKey]cache.CacheRecordEntity),
+		GorokuPermsCache:       make(map[cache.EntityCacheKey]map[cache.EntityCacheKey]cache.CacheRecordPerms),
+		GorokuFullChannelCache: make(map[cache.EntityCacheKey]cache.CacheRecordFullChannel),
+		GorokuFullUserCache:    make(map[cache.EntityCacheKey]cache.CacheRecordFullUser),
 		ForbiddenConstructors:  make([]uint32, 0),
 	}
 }
@@ -198,7 +209,7 @@ var (
 	ErrNotFound             = errors.New("not found")
 )
 
-func (c *CustomTelegramClient) GetMe() (interface{}, error) {
+func (c *CustomTelegramClient) GetMe() (any, error) {
 	if c.rawAPI == nil {
 		return nil, ErrClientNotInitialized
 	}
@@ -276,16 +287,28 @@ func (msg *Message) GetReplyMessage() (*Message, error) {
 	if msg.ReplyToMsgID == 0 {
 		return nil, ErrNoReply
 	}
-	return msg.Client.GetMessage(msg.ChatID, msg.ReplyToMsgID)
+	return msg.Client.GetMessage(ChatRefID(msg.ChatID), msg.ReplyToMsgID)
 }
 
-type MsgOption func(req interface{})
+type MsgOption func(req any)
+
+// ChatRef is a re-export of the chatref package type for convenience.
+type ChatRef = chatref.ChatRef
+
+// ChatRefID builds a reference from a numeric chat/user/channel ID.
+func ChatRefID(id int64) ChatRef { return chatref.ID(id) }
+
+// ChatRefUsername builds a reference from a username (with or without @).
+func ChatRefUsername(username string) ChatRef { return chatref.Username(username) }
+
+// ChatRefPeer builds a reference from an already-resolved Telegram peer.
+func ChatRefPeer(peer tg.InputPeerClass) ChatRef { return chatref.Peer(peer) }
 
 func (m *Message) Reply(text string, opts ...MsgOption) error {
 	if m.Client == nil {
 		return fmt.Errorf("no client attached")
 	}
-	_, err := m.Client.SendMessageWithOptions(m.ChatID, text, opts...)
+	_, err := m.Client.SendMessageWithOptions(ChatRefID(m.ChatID), text, opts...)
 	return err
 }
 
@@ -293,7 +316,7 @@ func (m *Message) Edit(text string, opts ...MsgOption) error {
 	if m.Client == nil {
 		return fmt.Errorf("no client attached")
 	}
-	_, err := m.Client.EditMessage(m.ChatID, m.ID, text, opts...)
+	_, err := m.Client.EditMessage(ChatRefID(m.ChatID), m.ID, text, opts...)
 	return err
 }
 
@@ -301,7 +324,7 @@ func (m *Message) Delete() error {
 	if m.Client == nil || m.Client.rawAPI == nil {
 		return fmt.Errorf("no client attached")
 	}
-	peer, err := m.Client.ResolvePeer(m.ChatID)
+	peer, err := m.Client.ResolvePeerRef(ChatRefID(m.ChatID))
 	if err != nil {
 		return err
 	}

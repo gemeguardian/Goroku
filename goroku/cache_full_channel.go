@@ -9,7 +9,7 @@ import (
 	"github.com/gotd/td/tg"
 )
 
-func (c *CustomTelegramClient) GetFullChannel(entity interface{}, exp int64, force bool) (interface{}, error) {
+func (c *CustomTelegramClient) GetFullChannel(entity any, exp int64, force bool) (any, error) {
 	cacheKey := cache.NormalizeEntityCacheKey(entity)
 	if !force {
 		c.cacheMu.RLock()

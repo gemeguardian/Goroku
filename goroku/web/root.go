@@ -17,7 +17,9 @@ import (
 	"sync"
 	"time"
 
+	"goroku/goroku/chatref"
 	"goroku/goroku/logger"
+	"goroku/goroku/webiface"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tgerr"
@@ -27,28 +29,28 @@ import (
 // L returns the package-level zap logger.
 func L() *zap.Logger { return logger.L() }
 
+// writeString writes s to w and logs failures at debug level. It centralizes
+// response writes so callers can ignore the error without losing observability.
+func writeString(wr http.ResponseWriter, s string) {
+	if _, err := wr.Write([]byte(s)); err != nil {
+		L().Debug("failed to write response", zap.Error(err))
+	}
+}
+
 type TelegramClient interface {
-	Connect() error
-	Disconnect() error
-	SendCodeRequest(phone string) error
-	SignIn(phone, code, password string) error
-	QRLogin() (string, error)
-	QRLoginStatus() (string, error)
-	SendMessage(chat interface{}, message string) (interface{}, error)
-	ResolveUsername(username string) (bool, error)
-	CheckBot(username string) (bool, error)
+	webiface.TelegramClient
 }
 
 type WebConfig struct {
-	ApiToken   interface{}
+	ApiToken   string
 	SetupToken string
 	DataRoot   string
-	Connection interface{}
-	Proxy      interface{}
-	SaveConfig func(key string, value interface{}) bool
+	Connection any // TODO: type when connection type is known
+	Proxy      any // TODO: type when proxy type is known
+	SaveConfig func(key string, value any) bool
 	Restart    func()
-	GetClient  func() interface{}
-	OnLogin    func(client interface{}) error
+	GetClient  func() webiface.TelegramClient
+	OnLogin    func(client webiface.TelegramClient) error
 }
 
 type PendingAuth struct {
@@ -75,32 +77,32 @@ type inlineBotProvider interface {
 
 type Web struct {
 	mu             sync.Mutex
-	signInClients  map[string]interface{}
-	pendingClient  interface{}
-	qrLogin        interface{}
+	signInClients  map[string]webiface.TelegramClient
+	pendingClient  webiface.TelegramClient
+	qrLogin        any
 	qrTaskActive   bool
 	twoFANeeded    bool
 	sessions       map[string]WebSession
 	ratelimit      map[string][]int64
-	apiToken       interface{}
+	apiToken       string
 	setupToken     string
 	dataRoot       string
-	connection     interface{}
-	proxy          interface{}
-	saveConfig     func(key string, value interface{}) bool
+	connection     any // TODO
+	proxy          any // TODO
+	saveConfig     func(key string, value any) bool
 	restart        func()
-	onLogin        func(client interface{}) error
-	clientData     map[int64]interface{}
+	onLogin        func(client webiface.TelegramClient) error
+	clientData     map[int64][]any
 	apiSetChan     chan struct{}
 	clientsSetChan chan struct{}
-	getClient      func() interface{}
+	getClient      func() webiface.TelegramClient
 	pendingAuths   map[string]*PendingAuth
 	pendingAuthsMu sync.Mutex
 }
 
 func NewWeb(cfg WebConfig) *Web {
 	return &Web{
-		signInClients:  make(map[string]interface{}),
+		signInClients:  make(map[string]webiface.TelegramClient),
 		sessions:       make(map[string]WebSession),
 		ratelimit:      make(map[string][]int64),
 		apiToken:       cfg.ApiToken,
@@ -111,7 +113,7 @@ func NewWeb(cfg WebConfig) *Web {
 		saveConfig:     cfg.SaveConfig,
 		restart:        cfg.Restart,
 		onLogin:        cfg.OnLogin,
-		clientData:     make(map[int64]interface{}),
+		clientData:     make(map[int64][]any),
 		apiSetChan:     make(chan struct{}),
 		clientsSetChan: make(chan struct{}),
 		getClient:      cfg.GetClient,
@@ -317,6 +319,10 @@ func replaceConditional(tpl, condition string, keepTrue bool) string {
 	return tpl
 }
 
+func (w *Web) sendMessage(client TelegramClient, chatID int64, text string) (any, error) {
+	return client.SendMessage(chatref.ID(chatID), text)
+}
+
 func (w *Web) RootHandler(wr http.ResponseWriter, r *http.Request) {
 	w.rememberSetupToken(wr, r)
 	baseBytes, err := os.ReadFile("web-resources/base.jinja2")
@@ -374,7 +380,7 @@ func (w *Web) RootHandler(wr http.ResponseWriter, r *http.Request) {
 	htmlContent = replaceConditional(htmlContent, "skip_creds and not lavhost", skipCreds && !lavhost)
 
 	wr.Header().Set("Content-Type", "text/html; charset=utf-8")
-	wr.Write([]byte(htmlContent))
+	writeString(wr, htmlContent)
 }
 
 func (w *Web) SetTGApiHandler(wr http.ResponseWriter, r *http.Request) {
@@ -412,7 +418,7 @@ func (w *Web) SetTGApiHandler(wr http.ResponseWriter, r *http.Request) {
 	w.mu.Unlock()
 	L().Info("Telegram API credentials saved", zap.Int64("api_id", apiID))
 
-	wr.Write([]byte("ok"))
+	writeString(wr, "ok")
 }
 
 func (w *Web) SendTGCodeHandler(wr http.ResponseWriter, r *http.Request) {
@@ -479,14 +485,14 @@ func (w *Web) SendTGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wr.Write([]byte("ok"))
+	writeString(wr, "ok")
 }
 
 func (w *Web) CheckSessionHandler(wr http.ResponseWriter, r *http.Request) {
 	if w.checkSession(r) {
-		wr.Write([]byte("1"))
+		writeString(wr, "1")
 	} else {
-		wr.Write([]byte("0"))
+		writeString(wr, "0")
 	}
 }
 
@@ -499,7 +505,7 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 		if cookie, err := r.Cookie(sessionCookieName); err == nil {
 			if sess := w.sessionForToken(cookie.Value); sess != nil {
 				w.setSessionCookies(wr, r, sess.Token)
-				wr.Write([]byte(cookie.Value))
+				writeString(wr, cookie.Value)
 				return
 			}
 		}
@@ -515,7 +521,7 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 			return
 		}
 		session := w.createSession(wr, r)
-		wr.Write([]byte(session))
+		writeString(wr, session)
 		return
 	}
 
@@ -548,8 +554,8 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 	var inlineBot *tgbotapi.BotAPI
 	var inlineProvider inlineBotProvider
 	for _, data := range w.clientData {
-		if slice, ok := data.([]interface{}); ok && len(slice) > 1 {
-			if c, ok := slice[1].(TelegramClient); ok {
+		if len(data) > 1 {
+			if c, ok := data[1].(TelegramClient); ok {
 				client = c
 				inlineProvider = getInlineProvider(c)
 				if inlineProvider != nil {
@@ -573,7 +579,7 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 			_, _ = inlineBot.Send(cfg)
 		} else {
 			fallback := fmt.Sprintf("%s\n\nTo approve, send the following command:\n<code>.approve_web %s</code>", msg, token)
-			_, _ = client.SendMessage("me", fallback)
+			_, _ = client.SendMessage(chatref.Username("me"), fallback)
 		}
 	} else {
 		http.Error(wr, "Telegram client not ready", http.StatusInternalServerError)
@@ -592,7 +598,7 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 
 			session := w.createSession(wr, r)
 
-			wr.Write([]byte(session))
+			writeString(wr, session)
 			return
 		case <-ticker.C:
 			if inlineProvider != nil && inlineProvider.PopWebAuthToken(token) {
@@ -602,7 +608,7 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 
 				session := w.createSession(wr, r)
 
-				wr.Write([]byte(session))
+				writeString(wr, session)
 				return
 			}
 		case <-timeout:
@@ -685,7 +691,7 @@ func (w *Web) checkEndpointRateLimit(endpoint, ips string, maxAttempts int, wind
 	return true
 }
 
-func getClientTGID(client interface{}) int64 {
+func getClientTGID(client any) int64 {
 	v := reflect.ValueOf(client)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
@@ -700,7 +706,7 @@ func getClientTGID(client interface{}) int64 {
 	return 0
 }
 
-func getInlineProvider(client interface{}) inlineBotProvider {
+func getInlineProvider(client any) inlineBotProvider {
 	v := reflect.ValueOf(client)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
@@ -794,7 +800,7 @@ func (w *Web) TGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wr.Write([]byte("SUCCESS"))
+	writeString(wr, "SUCCESS")
 }
 
 func (w *Web) FinishLoginHandler(wr http.ResponseWriter, r *http.Request) {
@@ -813,12 +819,12 @@ func (w *Web) FinishLoginHandler(wr http.ResponseWriter, r *http.Request) {
 		return
 	}
 	L().Info("finish_login completed")
-	wr.Write([]byte("ok"))
+	writeString(wr, "ok")
 	return
 
 }
 
-func (w *Web) finishPendingLogin(client interface{}) error {
+func (w *Web) finishPendingLogin(client TelegramClient) error {
 	if w.onLogin != nil {
 		L().Info("finish_login started, registering pending Telegram client")
 		if err := w.onLogin(client); err != nil {
@@ -868,7 +874,7 @@ func (w *Web) CustomBotHandler(wr http.ResponseWriter, r *http.Request) {
 		if err == nil && exists {
 			owned, err := client.CheckBot(username)
 			if err != nil || !owned {
-				wr.Write([]byte("OCCUPIED"))
+				writeString(wr, "OCCUPIED")
 				return
 			}
 		}
@@ -878,7 +884,7 @@ func (w *Web) CustomBotHandler(wr http.ResponseWriter, r *http.Request) {
 		w.saveConfig("custom_bot", username)
 	}
 	L().Info("custom inline bot saved: {0}", zap.Any("arg0", username))
-	wr.Write([]byte("OK"))
+	writeString(wr, "OK")
 }
 
 func (w *Web) InitQRLoginHandler(wr http.ResponseWriter, r *http.Request) {
@@ -888,7 +894,7 @@ func (w *Web) InitQRLoginHandler(wr http.ResponseWriter, r *http.Request) {
 		http.Error(wr, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	wr.Write([]byte(url))
+	writeString(wr, url)
 }
 
 func (w *Web) initQRLogin(r *http.Request) (string, error) {
@@ -1012,16 +1018,16 @@ func (w *Web) GetQRURLHandler(wr http.ResponseWriter, r *http.Request) {
 
 	if qrStr, ok := qr.(string); ok && qrStr != "" {
 		wr.WriteHeader(http.StatusCreated) // 201 Created
-		wr.Write([]byte(qrStr))
+		writeString(wr, qrStr)
 		return
 	}
 	if qrDone, ok := qr.(bool); ok && qrDone {
 		if w.twoFANeeded {
 			wr.WriteHeader(http.StatusForbidden)
-			wr.Write([]byte("2FA"))
+			writeString(wr, "2FA")
 			return
 		}
-		wr.Write([]byte("SUCCESS"))
+		writeString(wr, "SUCCESS")
 		return
 	}
 
@@ -1033,7 +1039,7 @@ func (w *Web) GetQRURLHandler(wr http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wr.WriteHeader(http.StatusCreated)
-	wr.Write([]byte(url))
+	writeString(wr, url)
 }
 
 func (w *Web) QR2FAHandler(wr http.ResponseWriter, r *http.Request) {
@@ -1072,7 +1078,7 @@ func (w *Web) QR2FAHandler(wr http.ResponseWriter, r *http.Request) {
 		http.Error(wr, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	wr.Write([]byte("SUCCESS"))
+	writeString(wr, "SUCCESS")
 }
 
 func (w *Web) LogoutHandler(wr http.ResponseWriter, r *http.Request) {
@@ -1086,11 +1092,11 @@ func (w *Web) LogoutHandler(wr http.ResponseWriter, r *http.Request) {
 		w.mu.Unlock()
 	}
 	w.clearSessionCookies(wr, r)
-	wr.Write([]byte("OK"))
+	writeString(wr, "OK")
 }
 
 func (w *Web) CanAddHandler(wr http.ResponseWriter, r *http.Request) {
-	wr.Write([]byte("Yes"))
+	writeString(wr, "Yes")
 }
 
 func (w *Web) SetupRoutes(mux *http.ServeMux) {
@@ -1116,7 +1122,7 @@ func maskPhone(phone string) string {
 	return strings.Repeat("*", len(phone)-4) + phone[len(phone)-4:]
 }
 
-func hasAPIToken(token interface{}) bool {
+func hasAPIToken(token any) bool {
 	if token == nil {
 		return false
 	}

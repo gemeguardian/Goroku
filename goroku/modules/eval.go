@@ -108,8 +108,10 @@ func (m *Eval) censor(text string) string {
 			{"loader", "token", ""},
 			{"goroku.loader", "token", ""},
 		} {
-			if val, ok := m.db.Get(item[0], item[1], item[2]).(string); ok {
-				extras = append(extras, val)
+			if raw, err := m.db.Get(item[0], item[1], item[2]); err == nil {
+				if val, ok := raw.(string); ok {
+					extras = append(extras, val)
+				}
 			}
 		}
 	}
@@ -212,10 +214,10 @@ type PythonEvalResult struct {
 
 func (m *Eval) runPythonEval(msg *goroku.Message, code string) (*PythonEvalResult, error) {
 	reply, _ := msg.GetReplyMessage()
-	ctxData := map[string]interface{}{
+	ctxData := map[string]any{
 		"message": messageToPythonMap(msg),
 		"reply":   messageToPythonMap(reply),
-		"client": map[string]interface{}{
+		"client": map[string]any{
 			"tg_id":    m.client.TGID,
 			"username": m.client.Username,
 		},
@@ -401,7 +403,7 @@ print(json.dumps(_res_data))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "python3", "-c", py)
+	cmd := exec.CommandContext(ctx, "python3", "-c", py) //nolint:gosec
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -477,11 +479,11 @@ func (m *Eval) EvalPyCmd(msg *goroku.Message) error {
 	return msg.Answer(outStr)
 }
 
-func messageToPythonMap(msg *goroku.Message) map[string]interface{} {
+func messageToPythonMap(msg *goroku.Message) map[string]any {
 	if msg == nil {
 		return nil
 	}
-	return map[string]interface{}{
+	return map[string]any{
 		"id":              msg.ID,
 		"ID":              msg.ID,
 		"chat_id":         msg.ChatID,
@@ -584,14 +586,14 @@ func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, s
 }
 
 func (m *Eval) runYaegiRunner(value reflect.Value, stdout, stderr *bytes.Buffer) (string, error, bool) {
-	runner, ok := value.Interface().(func() interface{})
+	runner, ok := value.Interface().(func() any)
 	if !ok {
 		if !value.IsValid() || value.Kind() != reflect.Func {
 			return "", fmt.Errorf("invalid yaegi runner signature"), false
 		}
 		done := make(chan struct{})
 		var result reflect.Value
-		var panicValue interface{}
+		var panicValue any
 		go func() {
 			defer func() {
 				panicValue = recover()
@@ -614,8 +616,8 @@ func (m *Eval) runYaegiRunner(value reflect.Value, stdout, stderr *bytes.Buffer)
 		return resultText, nil, false
 	}
 	done := make(chan struct{})
-	var result interface{}
-	var panicValue interface{}
+	var result any
+	var panicValue any
 	go func() {
 		defer func() {
 			panicValue = recover()
@@ -634,12 +636,33 @@ func (m *Eval) runYaegiRunner(value reflect.Value, stdout, stderr *bytes.Buffer)
 
 	resultText := ""
 	if result != nil {
-		resultText = fmt.Sprintf("%v", result)
+		resultText = formatEvalResult(result)
 	}
 	return resultText, nil, false
 }
 
-func isMultiValuePanic(v interface{}) bool {
+func formatEvalResult(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if b, ok := v.([]byte); ok {
+		return string(b)
+	}
+	if err, ok := v.(error); ok {
+		return err.Error()
+	}
+	// Try indented JSON for structs/maps/slices.
+	if data, err := json.MarshalIndent(v, "", "  "); err == nil {
+		return string(data)
+	}
+	// Fallback to verbose Go representation.
+	return fmt.Sprintf("%+v", v)
+}
+
+func isMultiValuePanic(v any) bool {
 	s, ok := v.(string)
 	if !ok {
 		return false
@@ -660,7 +683,7 @@ import (
     "gorokuctx"
 )
 
-func __run__() interface{} {
+func __run__() any {
     msg := gorokuctx.Msg
     client := gorokuctx.Client
     db := gorokuctx.DB
@@ -732,7 +755,7 @@ func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
 		noCompilerTrans := m.getTrans("no_compiler", "<tg-emoji emoji-id={}>💻</tg-emoji> <b>{} compiler is not installed on the system.</b>")
 		msg.Text = formatTrans(noCompilerTrans, emojiID, compilerName)
 		if msg.Client != nil {
-			msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+			msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 		}
 		return nil
 	}
@@ -745,10 +768,10 @@ func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
 		msg.Text = fmt.Sprintf("❌ Error creating temp dir: %s", err.Error())
 		return nil
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	srcFile := filepath.Join(tmpDir, "code."+lang)
-	err = os.WriteFile(srcFile, []byte(code), 0644)
+	err = os.WriteFile(srcFile, []byte(code), 0600)
 	if err != nil {
 		msg.Text = fmt.Sprintf("❌ Error writing code: %s", err.Error())
 		return nil
@@ -759,7 +782,7 @@ func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmdCompile := exec.CommandContext(ctx, compiler, "-o", binFile, srcFile)
+	cmdCompile := exec.CommandContext(ctx, compiler, "-o", binFile, srcFile) //nolint:gosec
 	var compileOut bytes.Buffer
 	cmdCompile.Stdout = &compileOut
 	cmdCompile.Stderr = &compileOut
@@ -774,7 +797,7 @@ func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
 		errTrans := m.getTrans("err", "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Error:</b>\n<pre><code class=\"language-{}\">{}</code></pre>")
 		msg.Text = formatTrans(errTrans, emojiID, lang, utils.EscapeHTML(code), "error", m.censor(errMsg))
 		if msg.Client != nil {
-			msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+			msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 		}
 		return nil
 	}
@@ -782,7 +805,7 @@ func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
 	ctxRun, cancelRun := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelRun()
 
-	cmdRun := exec.CommandContext(ctxRun, binFile)
+	cmdRun := exec.CommandContext(ctxRun, binFile) //nolint:gosec
 	var runOut bytes.Buffer
 	cmdRun.Stdout = &runOut
 	cmdRun.Stderr = &runOut
@@ -826,7 +849,7 @@ func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
 	)
 
 	if msg.Client != nil {
-		msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 	}
 	return nil
 }
@@ -850,7 +873,7 @@ func (m *Eval) ENodeCmd(msg *goroku.Message) error {
 		noCompilerTrans := m.getTrans("no_compiler", "<tg-emoji emoji-id={}>💻</tg-emoji> <b>{} compiler is not installed on the system.</b>")
 		msg.Text = formatTrans(noCompilerTrans, "4985643941807260310", "Node.js")
 		if msg.Client != nil {
-			msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+			msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 		}
 		return nil
 	}
@@ -860,10 +883,10 @@ func (m *Eval) ENodeCmd(msg *goroku.Message) error {
 		msg.Text = fmt.Sprintf("❌ Error creating temp dir: %s", err.Error())
 		return nil
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	srcFile := filepath.Join(tmpDir, "code.js")
-	err = os.WriteFile(srcFile, []byte(code), 0644)
+	err = os.WriteFile(srcFile, []byte(code), 0600)
 	if err != nil {
 		msg.Text = fmt.Sprintf("❌ Error writing code: %s", err.Error())
 		return nil
@@ -872,7 +895,7 @@ func (m *Eval) ENodeCmd(msg *goroku.Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "node", srcFile)
+	cmd := exec.CommandContext(ctx, "node", srcFile) //nolint:gosec
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -916,7 +939,7 @@ func (m *Eval) ENodeCmd(msg *goroku.Message) error {
 	)
 
 	if msg.Client != nil {
-		msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 	}
 	return nil
 }
@@ -1047,7 +1070,7 @@ func (m *Eval) EBFCmd(msg *goroku.Message) error {
 	)
 
 	if msg.Client != nil {
-		msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 	}
 	return nil
 }
@@ -1071,7 +1094,7 @@ func (m *Eval) EPHPCmd(msg *goroku.Message) error {
 		noCompilerTrans := m.getTrans("no_compiler", "<tg-emoji emoji-id={}>💻</tg-emoji> <b>{} interpreter is not installed on the system.</b>")
 		msg.Text = formatTrans(noCompilerTrans, "4983593786413155017", "PHP")
 		if msg.Client != nil {
-			msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+			msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 		}
 		return nil
 	}
@@ -1081,10 +1104,10 @@ func (m *Eval) EPHPCmd(msg *goroku.Message) error {
 		msg.Text = fmt.Sprintf("❌ Error creating temp dir: %s", err.Error())
 		return nil
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	srcFile := filepath.Join(tmpDir, "code.php")
-	err = os.WriteFile(srcFile, []byte(code), 0644)
+	err = os.WriteFile(srcFile, []byte(code), 0600)
 	if err != nil {
 		msg.Text = fmt.Sprintf("❌ Error writing code: %s", err.Error())
 		return nil
@@ -1093,7 +1116,7 @@ func (m *Eval) EPHPCmd(msg *goroku.Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "php", srcFile)
+	cmd := exec.CommandContext(ctx, "php", srcFile) //nolint:gosec
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -1137,7 +1160,7 @@ func (m *Eval) EPHPCmd(msg *goroku.Message) error {
 	)
 
 	if msg.Client != nil {
-		msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 	}
 	return nil
 }
@@ -1161,7 +1184,7 @@ func (m *Eval) ERubyCmd(msg *goroku.Message) error {
 		noCompilerTrans := m.getTrans("no_compiler", "<tg-emoji emoji-id={}>💻</tg-emoji> <b>{} interpreter is not installed on the system.</b>")
 		msg.Text = formatTrans(noCompilerTrans, "4985760855112024628", "Ruby")
 		if msg.Client != nil {
-			msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+			msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 		}
 		return nil
 	}
@@ -1171,10 +1194,10 @@ func (m *Eval) ERubyCmd(msg *goroku.Message) error {
 		msg.Text = fmt.Sprintf("❌ Error creating temp dir: %s", err.Error())
 		return nil
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	srcFile := filepath.Join(tmpDir, "code.rb")
-	err = os.WriteFile(srcFile, []byte(code), 0644)
+	err = os.WriteFile(srcFile, []byte(code), 0600)
 	if err != nil {
 		msg.Text = fmt.Sprintf("❌ Error writing code: %s", err.Error())
 		return nil
@@ -1183,7 +1206,7 @@ func (m *Eval) ERubyCmd(msg *goroku.Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ruby", srcFile)
+	cmd := exec.CommandContext(ctx, "ruby", srcFile) //nolint:gosec
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -1227,7 +1250,7 @@ func (m *Eval) ERubyCmd(msg *goroku.Message) error {
 	)
 
 	if msg.Client != nil {
-		msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 	}
 	return nil
 }
@@ -1251,7 +1274,7 @@ func (m *Eval) ERustCmd(msg *goroku.Message) error {
 		noCompilerTrans := m.getTrans("no_compiler", "<tg-emoji emoji-id={}>💻</tg-emoji> <b>{} compiler is not installed on the system.</b>")
 		msg.Text = formatTrans(noCompilerTrans, "4994944646242108269", "Rust")
 		if msg.Client != nil {
-			msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+			msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 		}
 		return nil
 	}
@@ -1264,10 +1287,10 @@ func (m *Eval) ERustCmd(msg *goroku.Message) error {
 		msg.Text = fmt.Sprintf("❌ Error creating temp dir: %s", err.Error())
 		return nil
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	srcFile := filepath.Join(tmpDir, "code.rs")
-	err = os.WriteFile(srcFile, []byte(code), 0644)
+	err = os.WriteFile(srcFile, []byte(code), 0600)
 	if err != nil {
 		msg.Text = fmt.Sprintf("❌ Error writing code: %s", err.Error())
 		return nil
@@ -1278,7 +1301,7 @@ func (m *Eval) ERustCmd(msg *goroku.Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmdCompile := exec.CommandContext(ctx, "rustc", "-o", binFile, srcFile)
+	cmdCompile := exec.CommandContext(ctx, "rustc", "-o", binFile, srcFile) //nolint:gosec
 	var compileOut bytes.Buffer
 	cmdCompile.Stdout = &compileOut
 	cmdCompile.Stderr = &compileOut
@@ -1293,7 +1316,7 @@ func (m *Eval) ERustCmd(msg *goroku.Message) error {
 		errTrans := m.getTrans("err", "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Error:</b>\n<pre><code class=\"language-{}\">{}</code></pre>")
 		msg.Text = formatTrans(errTrans, "4994944646242108269", "rust", utils.EscapeHTML(code), "error", m.censor(errMsg))
 		if msg.Client != nil {
-			msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+			msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 		}
 		return nil
 	}
@@ -1301,7 +1324,7 @@ func (m *Eval) ERustCmd(msg *goroku.Message) error {
 	ctxRun, cancelRun := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelRun()
 
-	cmdRun := exec.CommandContext(ctxRun, binFile)
+	cmdRun := exec.CommandContext(ctxRun, binFile) //nolint:gosec
 	var runOut bytes.Buffer
 	cmdRun.Stdout = &runOut
 	cmdRun.Stderr = &runOut
@@ -1345,7 +1368,7 @@ func (m *Eval) ERustCmd(msg *goroku.Message) error {
 	)
 
 	if msg.Client != nil {
-		msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text) //nolint:errcheck
+		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
 	}
 	return nil
 }

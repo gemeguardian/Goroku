@@ -52,24 +52,24 @@ func (m *APIProtection) ClientReady() error { return nil }
 func (m *APIProtection) OnUnload() error    { return nil }
 func (m *APIProtection) OnDlmod() error     { return nil }
 
-func (m *APIProtection) ConfigDefaults() map[string]interface{} {
-	return map[string]interface{}{
+func (m *APIProtection) ConfigDefaults() map[string]any {
+	return map[string]any{
 		"time_sample":       15,
 		"threshold":         100,
 		"local_floodwait":   30,
-		"forbidden_methods": []interface{}{"joinChannel", "importChatInvite"},
+		"forbidden_methods": []any{"joinChannel", "importChatInvite"},
 	}
 }
 
-func (m *APIProtection) ConfigReady(config map[string]interface{}) error {
+func (m *APIProtection) ConfigReady(config map[string]any) error {
 	m.updateForbiddenMethods(config)
 	return nil
 }
 
-func (m *APIProtection) updateForbiddenMethods(config map[string]interface{}) {
+func (m *APIProtection) updateForbiddenMethods(config map[string]any) {
 	var forbidden []string
 	if raw, ok := config["forbidden_methods"]; ok {
-		if arr, ok := raw.([]interface{}); ok {
+		if arr, ok := raw.([]any); ok {
 			for _, item := range arr {
 				if str, ok := item.(string); ok {
 					forbidden = append(forbidden, str)
@@ -79,8 +79,8 @@ func (m *APIProtection) updateForbiddenMethods(config map[string]interface{}) {
 			forbidden = arr
 		}
 	} else {
-		rawVal := m.db.Get("APILimiter", "forbidden_methods", []interface{}{"joinChannel", "importChatInvite"})
-		if arr, ok := rawVal.([]interface{}); ok {
+		rawVal, _ := m.db.Get("APILimiter", "forbidden_methods", []any{"joinChannel", "importChatInvite"})
+		if arr, ok := rawVal.([]any); ok {
 			for _, item := range arr {
 				if str, ok := item.(string); ok {
 					forbidden = append(forbidden, str)
@@ -133,7 +133,7 @@ func (m *APIProtection) Watchers() []goroku.WatcherHandler {
 }
 
 func (m *APIProtection) AntifloodCmd(msg *goroku.Message) error {
-	rawVal := m.db.Get("APILimiter", "disable_protection", true)
+	rawVal, _ := m.db.Get("APILimiter", "disable_protection", true)
 	disable, ok := rawVal.(bool)
 	if !ok {
 		disable = true
@@ -152,7 +152,7 @@ func (m *APIProtection) AntifloodCmd(msg *goroku.Message) error {
 	}
 	msg.Text = m.getTrans(statusKey, statusDef)
 	if msg.Client != nil {
-		_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 	return nil
 }
@@ -176,7 +176,7 @@ func (m *APIProtection) APIFWProtectionCmd(msg *goroku.Message) error {
 						Text: m.getTrans("btn_yes", "✅ Yes"),
 						Data: "api_fw_yes",
 						Handler: func(c inline.CallbackQuery) error {
-							rawVal := m.db.Get("APILimiter", "disable_protection", true)
+							rawVal, _ := m.db.Get("APILimiter", "disable_protection", true)
 							disable, _ := rawVal.(bool)
 							newDisable := !disable
 							m.db.Set("APILimiter", "disable_protection", newDisable)
@@ -212,7 +212,7 @@ func (m *APIProtection) SetfloodCmd(msg *goroku.Message) error {
 	if args == "" {
 		msg.Text = m.getTrans("args_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Invalid arguments</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -220,7 +220,7 @@ func (m *APIProtection) SetfloodCmd(msg *goroku.Message) error {
 	if err != nil || seconds < 0 {
 		msg.Text = m.getTrans("args_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Invalid arguments</b>")
 		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
@@ -232,7 +232,7 @@ func (m *APIProtection) SetfloodCmd(msg *goroku.Message) error {
 	template := m.getTrans("suspended_for", "<tg-emoji emoji-id=5458450833857322148>👌</tg-emoji> <b>API Flood Protection is disabled for {} seconds</b>")
 	msg.Text = formatTrans(template, strconv.Itoa(seconds))
 	if msg.Client != nil {
-		_, _ = msg.Client.EditMessage(msg.ChatID, msg.ID, msg.Text)
+		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
 	return nil
 }

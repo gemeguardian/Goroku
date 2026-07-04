@@ -77,7 +77,7 @@ func findModuleSource(structName string) (string, error) {
 
 	typeRe := regexp.MustCompile(`(?m)^\s*type\s+` + regexp.QuoteMeta(structName) + `\s+struct\b`)
 	for _, file := range files {
-		content, err := os.ReadFile(file)
+		content, err := os.ReadFile(file) //nolint:gosec
 		if err != nil {
 			continue
 		}

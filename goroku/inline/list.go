@@ -11,7 +11,7 @@ import (
 
 // List creates and sends a paginated list menu.
 func (im *InlineManager) List(
-	message interface{},
+	message any,
 	stringsList []string,
 	opts ...FormOpt,
 ) (*InlineMessage, error) {

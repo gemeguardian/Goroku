@@ -1,7 +1,6 @@
 package goroku
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -37,9 +36,9 @@ type SecuredModule interface {
 }
 
 type SecurityGroup struct {
-	Name        string                   `json:"name"`
-	Users       []int64                  `json:"users"`
-	Permissions []map[string]interface{} `json:"permissions"`
+	Name        string           `json:"name"`
+	Users       []int64          `json:"users"`
+	Permissions []map[string]any `json:"permissions"`
 }
 
 type SecurityRule struct {
@@ -57,10 +56,10 @@ type SecurityManager struct {
 	db                   *Database
 	anyAdmin             bool
 	defaultMask          int
-	tsecChat             *PointerList
-	tsecUser             *PointerList
-	owner                *PointerList
-	allUsers             *PointerList
+	tsecChat             *PointerList[SecurityRule]
+	tsecUser             *PointerList[SecurityRule]
+	owner                *PointerList[int64]
+	allUsers             *PointerList[int64]
 	sgroups              map[string]SecurityGroup
 	rightsReloadInterval time.Duration
 	stopCh               chan struct{}
@@ -74,25 +73,18 @@ type adminCacheEntry struct {
 }
 
 func NewSecurityManager(client *CustomTelegramClient, db *Database) *SecurityManager {
-	anyAdmin := false
-	if val, ok := db.Get("goroku.security", "any_admin", false).(bool); ok {
-		anyAdmin = val
-	}
-
-	defaultMask := OWNER
-	if val, ok := db.Get("goroku.security", "default", OWNER).(float64); ok {
-		defaultMask = int(val)
-	}
+	anyAdmin := db.GetBool("goroku.security", "any_admin", false)
+	defaultMask := db.GetInt("goroku.security", "default", OWNER)
 
 	sm := &SecurityManager{
 		client:               client,
 		db:                   db,
 		anyAdmin:             anyAdmin,
 		defaultMask:          defaultMask,
-		tsecChat:             NewPointerList(db, "goroku.security", "tsec_chat", []interface{}{}),
-		tsecUser:             NewPointerList(db, "goroku.security", "tsec_user", []interface{}{}),
-		owner:                NewPointerList(db, "goroku.security", "owner", []interface{}{}),
-		allUsers:             NewPointerList(db, "goroku.security", "all_users", []interface{}{}),
+		tsecChat:             NewPointerList[SecurityRule](db, "goroku.security", "tsec_chat", nil),
+		tsecUser:             NewPointerList[SecurityRule](db, "goroku.security", "tsec_user", nil),
+		owner:                NewPointerList[int64](db, "goroku.security", "owner", nil),
+		allUsers:             NewPointerList[int64](db, "goroku.security", "all_users", nil),
 		sgroups:              make(map[string]SecurityGroup),
 		adminCache:           make(map[string]adminCacheEntry),
 		rightsReloadInterval: time.Minute,
@@ -144,15 +136,7 @@ func (sm *SecurityManager) reloadRights() {
 func (sm *SecurityManager) reloadRightsLocked() {
 	// Ensure client owner ID is in the list of owners
 	hasOwner := false
-	ownerSlice := sm.owner.ToSlice()
-	for _, idVal := range ownerSlice {
-		var id int64
-		switch v := idVal.(type) {
-		case float64:
-			id = int64(v)
-		case int64:
-			id = v
-		}
+	for _, id := range sm.owner.ToSlice() {
 		if id == sm.client.TGID {
 			hasOwner = true
 			break
@@ -186,16 +170,7 @@ func (sm *SecurityManager) reloadRightsLocked() {
 	for _, rule := range sm.GetUserRules() {
 		tsecUsers = append(tsecUsers, rule.Target)
 	}
-	ownerSliceRaw := sm.owner.ToSlice()
-	var ownerUsers []int64
-	for _, idVal := range ownerSliceRaw {
-		switch v := idVal.(type) {
-		case float64:
-			ownerUsers = append(ownerUsers, int64(v))
-		case int64:
-			ownerUsers = append(ownerUsers, v)
-		}
-	}
+	ownerUsers := sm.owner.ToSlice()
 
 	allUsersSet := make(map[int64]struct{})
 	for _, id := range sgroupUsers {
@@ -207,29 +182,25 @@ func (sm *SecurityManager) reloadRightsLocked() {
 	for _, id := range ownerUsers {
 		allUsersSet[id] = struct{}{}
 	}
-	var allUsersList []interface{}
+	var allUsersList []int64
 	for id := range allUsersSet {
 		allUsersList = append(allUsersList, id)
 	}
 	sm.allUsers.Clear()
-	for _, id := range allUsersList {
-		sm.allUsers.Append(id)
-	}
+	sm.allUsers.Extend(allUsersList)
 
 	// Cleanup command_prefixes for users no longer in all_users (mirrors Python security.py:209-215)
-	prefixesRaw := sm.db.Get("goroku.main", "command_prefixes", map[string]interface{}{})
-	if prefixMap, ok := prefixesRaw.(map[string]interface{}); ok {
-		for idStr := range prefixMap {
-			id, err := strconv.ParseInt(idStr, 10, 64)
-			if err != nil {
-				continue
-			}
-			if _, ok := allUsersSet[id]; !ok {
-				delete(prefixMap, idStr)
-			}
+	prefixes := sm.db.GetStringMap("goroku.main", "command_prefixes", nil)
+	for idStr := range prefixes {
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			continue
 		}
-		sm.db.Set("goroku.main", "command_prefixes", prefixesRaw)
+		if _, ok := allUsersSet[id]; !ok {
+			delete(prefixes, idStr)
+		}
 	}
+	sm.db.SetStringMap("goroku.main", "command_prefixes", prefixes)
 }
 
 func (sm *SecurityManager) ApplySgroups(sgroups map[string]SecurityGroup) {
@@ -247,33 +218,16 @@ func (sm *SecurityManager) Check(msg *Message, command string) bool {
 	}
 
 	// Read whitelist owner IDs
-	for _, ownerVal := range sm.owner.ToSlice() {
-		var id int64
-		switch v := ownerVal.(type) {
-		case float64:
-			id = int64(v)
-		case int64:
-			id = v
-		}
+	for _, id := range sm.owner.ToSlice() {
 		if msg.SenderID == id {
 			return true
 		}
 	}
 
 	// Read blacklist user IDs
-	blacklistVal := sm.db.Get("goroku.main", "blacklist_users", []interface{}{})
-	if blacklistSlice, ok := blacklistVal.([]interface{}); ok {
-		for _, bVal := range blacklistSlice {
-			var bid int64
-			switch v := bVal.(type) {
-			case float64:
-				bid = int64(v)
-			case int64:
-				bid = v
-			}
-			if msg.SenderID == bid {
-				return false
-			}
+	for _, bid := range sm.db.GetInt64Slice("goroku.main", "blacklist_users", nil) {
+		if msg.SenderID == bid {
+			return false
 		}
 	}
 
@@ -523,18 +477,14 @@ func (sm *SecurityManager) getFlagsForCommand(command string) int {
 }
 
 func (sm *SecurityManager) getBoundingMask() int {
-	return intFromInterface(sm.db.Get("goroku.security", "bounding_mask", DEFAULT_PERMISSIONS), DEFAULT_PERMISSIONS)
+	return sm.db.GetInt("goroku.security", "bounding_mask", DEFAULT_PERMISSIONS)
 }
 
 func (sm *SecurityManager) getMaskOverride(key string) (int, bool) {
 	for _, owner := range []string{"goroku.security", "goroku/goroku/security"} {
-		raw := sm.db.Get(owner, "masks", map[string]interface{}{})
-		masks, ok := raw.(map[string]interface{})
-		if !ok {
-			continue
-		}
+		masks := sm.db.GetStringMap(owner, "masks", nil)
 		for _, lookup := range []string{key, strings.ToLower(key)} {
-			if val, exists := masks[lookup]; exists {
+			if val, exists := masks[lookup]; exists && val != "" {
 				return intFromInterface(val, sm.defaultMask), true
 			}
 		}
@@ -542,7 +492,7 @@ func (sm *SecurityManager) getMaskOverride(key string) (int, bool) {
 	return 0, false
 }
 
-func intFromInterface(v interface{}, fallback int) int {
+func intFromInterface(v any, fallback int) int {
 	switch x := v.(type) {
 	case int:
 		return x
@@ -617,7 +567,7 @@ func (sm *SecurityManager) RemoveRules(targetType string, targetID int64) bool {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	var list *PointerList
+	var list *PointerList[SecurityRule]
 	if targetType == "user" {
 		list = sm.tsecUser
 	} else if targetType == "chat" {
@@ -626,18 +576,18 @@ func (sm *SecurityManager) RemoveRules(targetType string, targetID int64) bool {
 		return false
 	}
 
-	any := false
+	found := false
 	slice := list.ToSlice()
 	for i := len(slice) - 1; i >= 0; i-- {
-		if rule, ok := toSecurityRule(slice[i]); ok && rule.Target == targetID {
+		if slice[i].Target == targetID {
 			list.Remove(i)
-			any = true
+			found = true
 		}
 	}
-	if any {
+	if found {
 		sm.reloadRightsLocked()
 	}
-	return any
+	return found
 }
 
 // RemoveRule removes a specific security rule for a given target ID and rule name.
@@ -645,7 +595,7 @@ func (sm *SecurityManager) RemoveRule(targetType string, targetID int64, ruleNam
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	var list *PointerList
+	var list *PointerList[SecurityRule]
 	if targetType == "user" {
 		list = sm.tsecUser
 	} else if targetType == "chat" {
@@ -654,56 +604,26 @@ func (sm *SecurityManager) RemoveRule(targetType string, targetID int64, ruleNam
 		return false
 	}
 
-	any := false
+	found := false
 	slice := list.ToSlice()
 	for i := len(slice) - 1; i >= 0; i-- {
-		if rule, ok := toSecurityRule(slice[i]); ok && rule.Target == targetID && rule.Rule == ruleName {
+		if slice[i].Target == targetID && slice[i].Rule == ruleName {
 			list.Remove(i)
-			any = true
+			found = true
 		}
 	}
-	if any {
+	if found {
 		sm.reloadRightsLocked()
 	}
-	return any
-}
-
-func toSecurityRule(item interface{}) (SecurityRule, bool) {
-	var rule SecurityRule
-	if bytes, err := json.Marshal(item); err == nil {
-		if err := json.Unmarshal(bytes, &rule); err == nil {
-			return rule, true
-		}
-	}
-	return SecurityRule{}, false
+	return found
 }
 
 func (sm *SecurityManager) GetUserRules() []SecurityRule {
-	slice := sm.tsecUser.ToSlice()
-	var res []SecurityRule
-	for _, item := range slice {
-		if bytes, err := json.Marshal(item); err == nil {
-			var rule SecurityRule
-			if err := json.Unmarshal(bytes, &rule); err == nil {
-				res = append(res, rule)
-			}
-		}
-	}
-	return res
+	return sm.tsecUser.ToSlice()
 }
 
 func (sm *SecurityManager) GetChatRules() []SecurityRule {
-	slice := sm.tsecChat.ToSlice()
-	var res []SecurityRule
-	for _, item := range slice {
-		if bytes, err := json.Marshal(item); err == nil {
-			var rule SecurityRule
-			if err := json.Unmarshal(bytes, &rule); err == nil {
-				res = append(res, rule)
-			}
-		}
-	}
-	return res
+	return sm.tsecChat.ToSlice()
 }
 
 func (sm *SecurityManager) CheckTsec(userID int64, command string) bool {
@@ -760,14 +680,7 @@ func (sm *SecurityManager) IsOwner(userID int64) bool {
 	if userID == sm.client.TGID {
 		return true
 	}
-	for _, ownerVal := range sm.owner.ToSlice() {
-		var id int64
-		switch v := ownerVal.(type) {
-		case float64:
-			id = int64(v)
-		case int64:
-			id = v
-		}
+	for _, id := range sm.owner.ToSlice() {
 		if userID == id {
 			return true
 		}
@@ -775,7 +688,7 @@ func (sm *SecurityManager) IsOwner(userID int64) bool {
 	return false
 }
 
-func (sm *SecurityManager) GetOwnerList() *PointerList {
+func (sm *SecurityManager) GetOwnerList() *PointerList[int64] {
 	return sm.owner
 }
 
@@ -785,14 +698,7 @@ func (sm *SecurityManager) IsUserInAllUsers(userID int64) bool {
 	}
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	for _, idVal := range sm.allUsers.ToSlice() {
-		var id int64
-		switch v := idVal.(type) {
-		case float64:
-			id = int64(v)
-		case int64:
-			id = v
-		}
+	for _, id := range sm.allUsers.ToSlice() {
 		if id == userID {
 			return true
 		}
@@ -806,19 +712,9 @@ func (sm *SecurityManager) CheckModuleAccess(userID int64, moduleName string) bo
 	}
 
 	// Read blacklist user IDs
-	blacklistVal := sm.db.Get("goroku.main", "blacklist_users", []interface{}{})
-	if blacklistSlice, ok := blacklistVal.([]interface{}); ok {
-		for _, bVal := range blacklistSlice {
-			var bid int64
-			switch v := bVal.(type) {
-			case float64:
-				bid = int64(v)
-			case int64:
-				bid = v
-			}
-			if userID == bid {
-				return false
-			}
+	for _, bid := range sm.db.GetInt64Slice("goroku.main", "blacklist_users", nil) {
+		if userID == bid {
+			return false
 		}
 	}
 

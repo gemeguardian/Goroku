@@ -17,6 +17,7 @@ import (
 
 	"goroku/goroku/utils"
 	"goroku/goroku/web"
+	"goroku/goroku/webiface"
 
 	"go.uber.org/zap"
 )
@@ -75,26 +76,28 @@ func NewGoroku() *Goroku {
 	}
 }
 
-func GetConfigKey(key string) interface{} {
-	content, err := os.ReadFile(ConfigPath)
+func GetConfigKey(key string) any {
+	content, err := os.ReadFile(ConfigPath) //nolint:gosec
 	if err != nil {
 		return nil
 	}
-	var data map[string]interface{}
+	var data map[string]any
 	if err := json.Unmarshal(content, &data); err != nil {
 		return nil
 	}
 	return data[key]
 }
 
-func SaveConfigKey(key string, value interface{}) bool {
-	var data map[string]interface{}
-	content, err := os.ReadFile(ConfigPath)
+func SaveConfigKey(key string, value any) bool {
+	var data map[string]any
+	content, err := os.ReadFile(ConfigPath) //nolint:gosec
 	if err == nil {
-		json.Unmarshal(content, &data)
+		if err := json.Unmarshal(content, &data); err != nil {
+			L().Warn("failed to unmarshal config", zap.Error(err))
+		}
 	}
 	if data == nil {
-		data = make(map[string]interface{})
+		data = make(map[string]any)
 	}
 	data[key] = value
 	bytes, err := json.MarshalIndent(data, "", "    ")
@@ -147,7 +150,7 @@ func (h *Goroku) ParseArguments() {
 	}
 
 	if h.NoGit {
-		os.Setenv("GOROKU_NO_GIT", "1")
+		_ = os.Setenv("GOROKU_NO_GIT", "1")
 	}
 }
 
@@ -211,7 +214,7 @@ func Main(customModules []Module) {
 		client.SessionPath = zeroSession
 		if err := client.Connect(); err == nil {
 			realID := client.TGID
-			client.Disconnect()
+			_ = client.Disconnect()
 			time.Sleep(500 * time.Millisecond)
 			newPath := filepath.Join(BaseDir, fmt.Sprintf("goroku-%d.session", realID))
 			_ = os.Rename(zeroSession, newPath)
@@ -226,9 +229,9 @@ func Main(customModules []Module) {
 		setupToken := strings.TrimSpace(os.Getenv("GOROKU_SETUP_TOKEN"))
 		if setupToken == "" {
 			setupToken = randomSetupToken()
-			os.Setenv("GOROKU_SETUP_TOKEN", setupToken)
+			_ = os.Setenv("GOROKU_SETUP_TOKEN", setupToken)
 		}
-		apiToken := interface{}(nil)
+		apiToken := ""
 		if h.APIID != 0 && h.APIHash != "" {
 			apiToken = h.APIHash
 		}
@@ -238,10 +241,10 @@ func Main(customModules []Module) {
 			DataRoot:   BaseDir,
 			SaveConfig: SaveConfigKey,
 			Restart:    Restart,
-			OnLogin: func(client interface{}) error {
+			OnLogin: func(client webiface.TelegramClient) error {
 				return h.finishWebLogin(client, customModules)
 			},
-			GetClient: func() interface{} {
+			GetClient: func() webiface.TelegramClient {
 				apiID := h.APIID
 				apiHash := h.APIHash
 

@@ -2,6 +2,8 @@ package inline
 
 import (
 	"bytes"
+	"github.com/gotd/td/tg"
+	"goroku/goroku/chatref"
 	"io"
 	"net/http"
 	"net/url"
@@ -13,8 +15,17 @@ import (
 )
 
 type mockOwnerClient struct {
-	TGID int64
+	ownerID int64
 }
+
+func (m *mockOwnerClient) TGIDValue() int64 { return m.ownerID }
+func (m *mockOwnerClient) SendMessage(chat chatref.ChatRef, message string) (any, error) {
+	return nil, nil
+}
+func (m *mockOwnerClient) CreateGorokuFolder(botID int64) error                   { return nil }
+func (m *mockOwnerClient) InviteBotToChannel(channelPeer tg.InputPeerClass) error { return nil }
+func (m *mockOwnerClient) PromoteBotToAdmin(channelPeer tg.InputPeerClass) error  { return nil }
+func (m *mockOwnerClient) GetSecurityManager() SecurityChecker                    { return nil }
 
 func TestEventsHandleUpdateInlineQuery(t *testing.T) {
 	var lastMethod string
@@ -39,14 +50,14 @@ func TestEventsHandleUpdateInlineQuery(t *testing.T) {
 		},
 	}
 
-	bot, err := tgbotapi.NewBotAPIWithClient("mock_token", tgbotapi.APIEndpoint, &http.Client{Transport: transport})
+	bot, err := tgbotapi.NewBotAPIWithOptions("mock_token", tgbotapi.WithAPIEndpoint(tgbotapi.APIEndpoint), tgbotapi.WithHTTPClient(&http.Client{Transport: transport}))
 	if err != nil {
 		t.Fatalf("Failed to create mock bot: %v", err)
 	}
 
 	im := &InlineManager{
 		bot:                  bot,
-		client:               &mockOwnerClient{TGID: 42},
+		client:               &mockOwnerClient{ownerID: 42},
 		units:                make(map[string]*Unit),
 		customMap:            make(map[string]Button),
 		buttonUnits:          make(map[string]string),
@@ -128,14 +139,14 @@ func TestEventsHandleUpdateCallbackQuery(t *testing.T) {
 		},
 	}
 
-	bot, err := tgbotapi.NewBotAPIWithClient("mock_token", tgbotapi.APIEndpoint, &http.Client{Transport: transport})
+	bot, err := tgbotapi.NewBotAPIWithOptions("mock_token", tgbotapi.WithAPIEndpoint(tgbotapi.APIEndpoint), tgbotapi.WithHTTPClient(&http.Client{Transport: transport}))
 	if err != nil {
 		t.Fatalf("Failed to create mock bot: %v", err)
 	}
 
 	im := &InlineManager{
 		bot:                  bot,
-		client:               &mockOwnerClient{TGID: 42},
+		client:               &mockOwnerClient{ownerID: 42},
 		units:                make(map[string]*Unit),
 		customMap:            make(map[string]Button),
 		buttonUnits:          make(map[string]string),
@@ -221,14 +232,14 @@ func TestEventsHandleUpdateChosenInlineResult(t *testing.T) {
 		},
 	}
 
-	bot, err := tgbotapi.NewBotAPIWithClient("mock_token", tgbotapi.APIEndpoint, &http.Client{Transport: transport})
+	bot, err := tgbotapi.NewBotAPIWithOptions("mock_token", tgbotapi.WithAPIEndpoint(tgbotapi.APIEndpoint), tgbotapi.WithHTTPClient(&http.Client{Transport: transport}))
 	if err != nil {
 		t.Fatalf("Failed to create mock bot: %v", err)
 	}
 
 	im := &InlineManager{
 		bot:                  bot,
-		client:               &mockOwnerClient{TGID: 42},
+		client:               &mockOwnerClient{ownerID: 42},
 		units:                make(map[string]*Unit),
 		customMap:            make(map[string]Button),
 		buttonUnits:          make(map[string]string),

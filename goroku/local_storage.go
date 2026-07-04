@@ -54,7 +54,7 @@ func (ls *LocalStorage) totalSize() int64 {
 
 func (ls *LocalStorage) ensureDirs() {
 	if _, err := os.Stat(ls.path); os.IsNotExist(err) {
-		os.MkdirAll(ls.path, 0755)
+		_ = os.MkdirAll(ls.path, 0750)
 	}
 }
 
@@ -78,7 +78,7 @@ func (ls *LocalStorage) Save(repo, moduleName, moduleCode string) {
 	}
 
 	filePath := ls.getPath(repo, moduleName)
-	err := os.WriteFile(filePath, []byte(moduleCode), 0644)
+	err := os.WriteFile(filePath, []byte(moduleCode), 0600)
 	if err != nil {
 		L().Info("Failed to write to local storage cache: {0}", zap.Any("arg0", err))
 		return
@@ -88,7 +88,7 @@ func (ls *LocalStorage) Save(repo, moduleName, moduleCode string) {
 
 func (ls *LocalStorage) Fetch(repo, moduleName string) (string, error) {
 	filePath := ls.getPath(repo, moduleName)
-	content, err := os.ReadFile(filePath)
+	content, err := os.ReadFile(filePath) //nolint:gosec
 	if err != nil {
 		return "", err
 	}
@@ -186,7 +186,7 @@ func (rs *RemoteStorage) Fetch(url, auth string) (string, error) {
 		}
 		return "", fmt.Errorf("remote server returned status: %s", resp.Status)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {

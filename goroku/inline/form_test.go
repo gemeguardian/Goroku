@@ -1,6 +1,7 @@
 package inline
 
 import (
+	"goroku/goroku/chatref"
 	"testing"
 	"time"
 
@@ -26,20 +27,21 @@ func (m *mockTelegramClient) InlineQuery(botUsername string, query string, chatI
 		},
 	}, nil
 }
-
 func (m *mockTelegramClient) SendInlineBotResult(chatID int64, queryID int64, resultID string, replyToMsgID int64) (tg.UpdatesClass, error) {
 	m.sendResultCalled = true
 	if m.sendResultFunc != nil {
 		return m.sendResultFunc(chatID, queryID, resultID, replyToMsgID)
 	}
-	return &tg.Updates{
-		Updates: []tg.UpdateClass{
-			&tg.UpdateNewMessage{
-				Message: &tg.Message{ID: 789},
-			},
-		},
-	}, nil
+	return &tg.Updates{}, nil
 }
+func (m *mockTelegramClient) TGIDValue() int64 { return 0 }
+func (m *mockTelegramClient) SendMessage(chat chatref.ChatRef, message string) (any, error) {
+	return nil, nil
+}
+func (m *mockTelegramClient) CreateGorokuFolder(botID int64) error                   { return nil }
+func (m *mockTelegramClient) InviteBotToChannel(channelPeer tg.InputPeerClass) error { return nil }
+func (m *mockTelegramClient) PromoteBotToAdmin(channelPeer tg.InputPeerClass) error  { return nil }
+func (m *mockTelegramClient) GetSecurityManager() SecurityChecker                    { return nil }
 
 type mockDeletableSourceMessage struct {
 	deleted bool
@@ -125,12 +127,24 @@ func TestFormSuccessful(t *testing.T) {
 	}
 
 	// 3. Error: client does not implement TelegramClient
-	im.client = "not_a_telegram_client"
+	im.client = &badTelegramClient{}
 	_, err = im.Form("Error Form", int64(123), nil)
 	if err == nil {
 		t.Error("Expected error because client does not implement TelegramClient")
 	}
 }
+
+// badTelegramClient implements InlineUserBot but not TelegramClient.
+type badTelegramClient struct{}
+
+func (b *badTelegramClient) TGIDValue() int64 { return 0 }
+func (b *badTelegramClient) SendMessage(chat chatref.ChatRef, message string) (any, error) {
+	return nil, nil
+}
+func (b *badTelegramClient) CreateGorokuFolder(botID int64) error                   { return nil }
+func (b *badTelegramClient) InviteBotToChannel(channelPeer tg.InputPeerClass) error { return nil }
+func (b *badTelegramClient) PromoteBotToAdmin(channelPeer tg.InputPeerClass) error  { return nil }
+func (b *badTelegramClient) GetSecurityManager() SecurityChecker                    { return nil }
 
 func TestCreateForm(t *testing.T) {
 	client := &mockTelegramClient{}
@@ -173,7 +187,7 @@ func TestCreateForm(t *testing.T) {
 	}
 
 	// 4. CreateForm failure path (e.g. client error)
-	im.client = "invalid"
+	im.client = &badTelegramClient{}
 	resErr := im.CreateForm("Hello Fail", int64(456))
 	if resErr != nil {
 		t.Errorf("Expected nil on form creation error, got %v", resErr)

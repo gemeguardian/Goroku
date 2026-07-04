@@ -7,15 +7,15 @@ import (
 
 func TestInit(t *testing.T) {
 	// Default (info) level.
-	os.Unsetenv("GOROKU_DEBUG")
+	_ = os.Unsetenv("GOROKU_DEBUG")
 	Init()
 	if L() == nil {
 		t.Fatal("Logger should not be nil after Init")
 	}
 
 	// Debug level.
-	os.Setenv("GOROKU_DEBUG", "1")
-	defer os.Unsetenv("GOROKU_DEBUG")
+	_ = os.Setenv("GOROKU_DEBUG", "1")
+	defer func() { _ = os.Unsetenv("GOROKU_DEBUG") }()
 	Init()
 	if L() == nil {
 		t.Fatal("Logger should not be nil after Init with GOROKU_DEBUG=1")

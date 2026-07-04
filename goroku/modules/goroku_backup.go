@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,10 +20,11 @@ import (
 
 	"goroku/goroku"
 	"goroku/goroku/inline"
+	"goroku/goroku/logger"
 	"goroku/goroku/utils"
 )
 
-func L() *zap.Logger { return zap.NewNop() }
+func L() *zap.Logger { return logger.L() }
 
 // GorokuBackup handles database and module backups.
 type GorokuBackup struct {
@@ -61,7 +63,7 @@ func (m *GorokuBackup) Init(client *goroku.CustomTelegramClient, db *goroku.Data
 	m.stopBackup = make(chan struct{})
 
 	// Load persisted backup period
-	rawPeriod := m.db.Get("GorokuBackup", "period", nil)
+	rawPeriod, _ := m.db.Get("GorokuBackup", "period", nil)
 	switch v := rawPeriod.(type) {
 	case float64:
 		if v > 0 {
@@ -74,9 +76,8 @@ func (m *GorokuBackup) Init(client *goroku.CustomTelegramClient, db *goroku.Data
 	}
 
 	// Load persisted last-backup timestamp
-	rawLast := m.db.Get("GorokuBackup", "last_backup", nil)
-	if ts, ok := rawLast.(float64); ok && ts > 0 {
-		m.lastBackup = time.Unix(int64(ts), 0)
+	if ts := m.db.GetInt64("GorokuBackup", "last_backup", 0); ts > 0 {
+		m.lastBackup = time.Unix(ts, 0)
 	}
 
 	return nil
@@ -90,7 +91,7 @@ func (m *GorokuBackup) getTrans(key, def string) string {
 
 // ClientReady starts the periodic backup goroutine and shows period setups if not set.
 func (m *GorokuBackup) ClientReady() error {
-	periodVal := m.db.Get("GorokuBackup", "period", nil)
+	periodVal, _ := m.db.Get("GorokuBackup", "period", nil)
 	if periodVal == nil {
 		im := m.client.GorokuInline
 		if im != nil {
@@ -168,10 +169,7 @@ func (m *GorokuBackup) makeBackupPeriodButton(text string, hours int) inline.But
 }
 
 func (m *GorokuBackup) handleSetBackupPeriodCallback(call inline.CallbackQuery, hours int) error {
-	prefix := "."
-	if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok && val != "" {
-		prefix = val
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
 	if hours == 0 {
 		m.db.Set("GorokuBackup", "period", "disabled")
@@ -187,7 +185,7 @@ func (m *GorokuBackup) handleSetBackupPeriodCallback(call inline.CallbackQuery, 
 
 	periodSecs := hours * 3600
 	m.db.Set("GorokuBackup", "period", float64(periodSecs))
-	m.db.Set("GorokuBackup", "last_backup", float64(time.Now().Unix()))
+	m.db.SetInt64("GorokuBackup", "last_backup", time.Now().Unix())
 	m.backupPeriod = time.Duration(periodSecs) * time.Second
 	m.lastBackup = time.Now()
 
@@ -243,22 +241,28 @@ func (m *GorokuBackup) getBackupTopicID() int32 {
 	}
 	switch v := val.(type) {
 	case int:
+		if v < math.MinInt32 || v > math.MaxInt32 {
+			return 0
+		}
 		return int32(v)
 	case int32:
 		return v
 	case int64:
+		if v < math.MinInt32 || v > math.MaxInt32 {
+			return 0
+		}
 		return int32(v)
 	case float64:
+		if v < math.MinInt32 || v > math.MaxInt32 {
+			return 0
+		}
 		return int32(v)
 	}
 	return 0
 }
 
 func (m *GorokuBackup) handleConvertCallback(call inline.CallbackQuery, ans string, fileContent string) error {
-	prefix := "."
-	if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok && val != "" {
-		prefix = val
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
 	if ans == "y" {
 		convertingText := m.getTrans("converting_db", "🔄 Converting...")
@@ -274,7 +278,7 @@ func (m *GorokuBackup) handleConvertCallback(call inline.CallbackQuery, ans stri
 
 		nr := &namedReader{r: bytes.NewReader([]byte(converted)), name: filename}
 
-		_, err := m.client.SendFile(call.ChatID, nr, caption)
+		_, err := m.client.SendFile(goroku.ChatRefID(call.ChatID), nr, caption)
 		if err != nil {
 			L().Warn("Convert send file error", zap.Error(err))
 		}
@@ -311,10 +315,7 @@ func (m *GorokuBackup) BackupDBCmd(msg *goroku.Message) error {
 	}
 
 	filename := fmt.Sprintf("db-backup-%s.json", time.Now().Format("02-01-2006-15-04"))
-	prefix := "."
-	if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok && val != "" {
-		prefix = val
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 	captionTrans := m.getTrans("backup_caption", "")
 	caption := strings.ReplaceAll(captionTrans, "{prefix}", utils.EscapeHTML(prefix))
 
@@ -324,15 +325,14 @@ func (m *GorokuBackup) BackupDBCmd(msg *goroku.Message) error {
 	topicID := m.getBackupTopicID()
 
 	if topicID == 0 {
-		_, err = m.client.SendFile(msg.ChatID, nr, caption)
+		_, err = m.client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
 		if err != nil {
 			return msg.Answer(fmt.Sprintf("❌ Failed to send backup: %v", err))
 		}
 		return nil
 	}
 
-	res, err := m.client.SendFileWithOptions(
-		int64(-1000000000000-contentChannelID),
+	res, err := m.client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
 		nr,
 		caption,
 		goroku.WithReplyTo(int64(topicID)),
@@ -395,12 +395,13 @@ func (m *GorokuBackup) RestoreDBCmd(msg *goroku.Message) error {
 		}
 	}
 
-	var backupData map[string]map[string]interface{}
+	var backupData map[string]map[string]any
 	err = json.Unmarshal(buf.Bytes(), &backupData)
 	if err != nil {
 		prefix := "."
-		if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok && val != "" {
-			prefix = val
+		raw, _ := m.db.Get("goroku.main", "command_prefix", ".")
+		if p, ok := raw.(string); ok {
+			prefix = p
 		}
 		probZipTrans := m.getTrans("probably_zip", "")
 		probZipMsg := strings.ReplaceAll(probZipTrans, "{}", prefix)
@@ -426,16 +427,13 @@ func (m *GorokuBackup) RestoreDBCmd(msg *goroku.Message) error {
 
 // BackupModsCmd sends a zip archive of the modules.
 func (m *GorokuBackup) BackupModsCmd(msg *goroku.Message) error {
-	prefix := "."
-	if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok && val != "" {
-		prefix = val
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
 	loadedMods := make(map[string]string)
-	val := m.db.Get("Loader", "loaded_modules", nil)
+	val, _ := m.db.Get("Loader", "loaded_modules", nil)
 	if val != nil {
 		if bytesData, err := json.Marshal(val); err == nil {
-			json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck
+			json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck,gosec
 		}
 	}
 
@@ -453,7 +451,7 @@ func (m *GorokuBackup) BackupModsCmd(msg *goroku.Message) error {
 		fileName := modName + ".go"
 		path := filepath.Join(modsDir, fileName)
 		if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
-			content, readErr := os.ReadFile(path)
+			content, readErr := os.ReadFile(path) //nolint:gosec
 			if readErr == nil {
 				_ = addFileToZip(zw, fileName, content)
 			}
@@ -475,15 +473,14 @@ func (m *GorokuBackup) BackupModsCmd(msg *goroku.Message) error {
 	topicID := m.getBackupTopicID()
 
 	if topicID == 0 {
-		_, err = m.client.SendFile(msg.ChatID, nr, caption)
+		_, err = m.client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
 		if err != nil {
 			return msg.Answer(fmt.Sprintf("❌ Failed to send backup: %v", err))
 		}
 		return nil
 	}
 
-	res, err := m.client.SendFileWithOptions(
-		int64(-1000000000000-contentChannelID),
+	res, err := m.client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
 		nr,
 		caption,
 		goroku.WithReplyTo(int64(topicID)),
@@ -521,7 +518,7 @@ func (m *GorokuBackup) RestoreModsCmd(msg *goroku.Message) error {
 		var dbMods map[string]string
 		err = json.Unmarshal(buf.Bytes(), &dbMods)
 		if err == nil {
-			m.db.Set("Loader", "loaded_modules", dbMods)
+			m.db.SetStringMap("Loader", "loaded_modules", dbMods)
 			modsRestoredTrans := m.getTrans("mods_restored", "Modules restored, restarting")
 			_ = msg.Answer(modsRestoredTrans)
 			go func() {
@@ -544,11 +541,11 @@ func (m *GorokuBackup) RestoreModsCmd(msg *goroku.Message) error {
 			mrc, err := file.Open()
 			if err == nil {
 				mBytes, err := io.ReadAll(mrc)
-				mrc.Close()
+				_ = mrc.Close()
 				if err == nil {
 					var dbMods map[string]string
 					if err := json.Unmarshal(mBytes, &dbMods); err == nil {
-						m.db.Set("Loader", "loaded_modules", dbMods)
+						m.db.SetStringMap("Loader", "loaded_modules", dbMods)
 					}
 				}
 			}
@@ -556,10 +553,10 @@ func (m *GorokuBackup) RestoreModsCmd(msg *goroku.Message) error {
 			mrc, err := file.Open()
 			if err == nil {
 				mBytes, err := io.ReadAll(mrc)
-				mrc.Close()
+				_ = mrc.Close()
 				if err == nil {
 					outPath := filepath.Join(modsDir, filepath.Base(file.Name))
-					_ = os.WriteFile(outPath, mBytes, 0644)
+					_ = os.WriteFile(outPath, mBytes, 0600)
 				}
 			}
 		}
@@ -595,12 +592,12 @@ func (m *GorokuBackup) restoreAllFromZip(data []byte) error {
 				return err
 			}
 			dbBytes, err := io.ReadAll(rc)
-			rc.Close()
+			_ = rc.Close()
 			if err != nil {
 				return err
 			}
 
-			var backupData map[string]map[string]interface{}
+			var backupData map[string]map[string]any
 			err = json.Unmarshal(dbBytes, &backupData)
 			if err != nil {
 				return err
@@ -617,7 +614,7 @@ func (m *GorokuBackup) restoreAllFromZip(data []byte) error {
 				return err
 			}
 			modsZipBytes, err := io.ReadAll(rc)
-			rc.Close()
+			_ = rc.Close()
 			if err != nil {
 				return err
 			}
@@ -632,11 +629,11 @@ func (m *GorokuBackup) restoreAllFromZip(data []byte) error {
 						mrc, err := mzFile.Open()
 						if err == nil {
 							mBytes, err := io.ReadAll(mrc)
-							mrc.Close()
+							_ = mrc.Close()
 							if err == nil {
 								var dbMods map[string]string
 								if err := json.Unmarshal(mBytes, &dbMods); err == nil {
-									m.db.Set("Loader", "loaded_modules", dbMods)
+									m.db.SetStringMap("Loader", "loaded_modules", dbMods)
 								}
 							}
 						}
@@ -644,10 +641,10 @@ func (m *GorokuBackup) restoreAllFromZip(data []byte) error {
 						mrc, err := mzFile.Open()
 						if err == nil {
 							mBytes, err := io.ReadAll(mrc)
-							mrc.Close()
+							_ = mrc.Close()
 							if err == nil {
 								outPath := filepath.Join(modsDir, filepath.Base(mzFile.Name))
-								_ = os.WriteFile(outPath, mBytes, 0644)
+								_ = os.WriteFile(outPath, mBytes, 0600)
 							}
 						}
 					}
@@ -697,10 +694,7 @@ func (m *GorokuBackup) RestoreAllCmd(msg *goroku.Message) error {
 
 // BackupAllCmd sends a zip archive containing db.json + mods/*.go files.
 func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
-	prefix := "."
-	if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok && val != "" {
-		prefix = val
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
 	archiveBytes, err := m.buildArchive()
 	if err != nil {
@@ -718,12 +712,11 @@ func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
 	topicID := m.getBackupTopicID()
 
 	// 1. Send file via userbot to the forum topic (or PM if topicID == 0)
-	var res interface{}
+	var res any
 	if topicID == 0 {
-		res, err = m.client.SendFile(msg.ChatID, nr, caption)
+		res, err = m.client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
 	} else {
-		res, err = m.client.SendFileWithOptions(
-			int64(-1000000000000-contentChannelID),
+		res, err = m.client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
 			nr,
 			caption,
 			goroku.WithReplyTo(int64(topicID)),
@@ -767,7 +760,7 @@ func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
 		link := fmt.Sprintf("https://t.me/c/%d/%d/%d", cleanChannelIDForLink(contentChannelID), topicID, msgID)
 		formTextFormatted := formatTrans(formText, link)
 
-		var formTarget interface{} = dummy
+		var formTarget any = dummy
 		if topicID == 0 {
 			formTarget = msg
 		}
@@ -810,7 +803,7 @@ func (m *GorokuBackup) handleRestoreFromMessageCallback(call inline.CallbackQuer
 }
 
 func (m *GorokuBackup) handleRestoreExecuteFromMessageCallback(call inline.CallbackQuery, targetMsgID int64) error {
-	msg, err := m.client.GetMessage(call.ChatID, targetMsgID)
+	msg, err := m.client.GetMessage(goroku.ChatRefID(call.ChatID), targetMsgID)
 	if err != nil || msg == nil || msg.Media == nil {
 		alertText := m.getTrans("reply_to_file", "Reply with .json or .zip file")
 		_ = call.Answer(alertText, true)
@@ -845,14 +838,11 @@ func (m *GorokuBackup) handleRestoreExecuteFromMessageCallback(call inline.Callb
 
 // SetBackupPeriodCmd parses an integer number of hours and stores it.
 func (m *GorokuBackup) SetBackupPeriodCmd(msg *goroku.Message) error {
-	raw := strings.TrimSpace(utils.GetArgsRaw(msg.Text))
+	arg := strings.TrimSpace(utils.GetArgsRaw(msg.Text))
 
-	prefix := "."
-	if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok && val != "" {
-		prefix = val
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
-	hours, err := strconv.Atoi(raw)
+	hours, err := strconv.Atoi(arg)
 	if err != nil || hours < 0 || hours >= 200 {
 		invalidTrans := m.getTrans("invalid_args", "🚫 <b>Please specify the correct frequency in hours, or `0` to disable</b>")
 		return msg.Answer(invalidTrans)
@@ -869,7 +859,7 @@ func (m *GorokuBackup) SetBackupPeriodCmd(msg *goroku.Message) error {
 
 	periodSecs := hours * 3600
 	m.db.Set("GorokuBackup", "period", float64(periodSecs))
-	m.db.Set("GorokuBackup", "last_backup", float64(time.Now().Unix()))
+	m.db.SetInt64("GorokuBackup", "last_backup", time.Now().Unix())
 	m.backupPeriod = time.Duration(periodSecs) * time.Second
 	m.lastBackup = time.Now()
 
@@ -889,7 +879,7 @@ func (m *GorokuBackup) backupLoop() {
 				return
 			case <-time.After(10 * time.Second):
 				// Reload from DB
-				rawPeriod := m.db.Get("GorokuBackup", "period", nil)
+				rawPeriod, _ := m.db.Get("GorokuBackup", "period", nil)
 				switch v := rawPeriod.(type) {
 				case float64:
 					if v > 0 {
@@ -927,7 +917,7 @@ func (m *GorokuBackup) backupLoop() {
 				continue
 			}
 			m.lastBackup = time.Now()
-			m.db.Set("GorokuBackup", "last_backup", float64(m.lastBackup.Unix()))
+			m.db.SetInt64("GorokuBackup", "last_backup", m.lastBackup.Unix())
 		}
 	}
 }
@@ -940,10 +930,7 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 
 	filename := fmt.Sprintf("backup-%s.backup", time.Now().Format("02-01-2006-15-04"))
 
-	prefix := "."
-	if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok && val != "" {
-		prefix = val
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 	infoTrans := m.getTrans("backupall_info", "")
 	caption := strings.ReplaceAll(infoTrans, "{prefix}", utils.EscapeHTML(prefix))
 
@@ -953,12 +940,11 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 	topicID := m.getBackupTopicID()
 
 	// Send document via userbot
-	var res interface{}
+	var res any
 	if topicID == 0 {
-		res, err = m.client.SendFile(m.client.TGID, nr, caption)
+		res, err = m.client.SendFile(goroku.ChatRefID(m.client.TGID), nr, caption)
 	} else {
-		res, err = m.client.SendFileWithOptions(
-			int64(-1000000000000-contentChannelID),
+		res, err = m.client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
 			nr,
 			caption,
 			goroku.WithReplyTo(int64(topicID)),
@@ -1036,10 +1022,10 @@ func (m *GorokuBackup) buildArchive() ([]byte, error) {
 	mzw := zip.NewWriter(&modsBuf)
 
 	loadedMods := make(map[string]string)
-	val := m.db.Get("Loader", "loaded_modules", nil)
+	val, _ := m.db.Get("Loader", "loaded_modules", nil)
 	if val != nil {
 		if bytesData, err := json.Marshal(val); err == nil {
-			json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck
+			json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck,gosec
 		}
 	}
 
@@ -1053,7 +1039,7 @@ func (m *GorokuBackup) buildArchive() ([]byte, error) {
 		fileName := modName + ".go"
 		path := filepath.Join(modsDir, fileName)
 		if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
-			content, readErr := os.ReadFile(path)
+			content, readErr := os.ReadFile(path) //nolint:gosec
 			if readErr == nil {
 				_ = addFileToZip(mzw, fileName, content)
 			}

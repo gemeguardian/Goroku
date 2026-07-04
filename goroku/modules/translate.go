@@ -48,14 +48,14 @@ func (m *Translate) ClientReady() error { return nil }
 func (m *Translate) OnUnload() error    { return nil }
 func (m *Translate) OnDlmod() error     { return nil }
 
-func (m *Translate) ConfigDefaults() map[string]interface{} {
-	return map[string]interface{}{
+func (m *Translate) ConfigDefaults() map[string]any {
+	return map[string]any{
 		"only_text": false,
 		"provider":  "telegram",
 	}
 }
 
-func (m *Translate) ConfigReady(config map[string]interface{}) error {
+func (m *Translate) ConfigReady(config map[string]any) error {
 	if val, ok := config["only_text"].(bool); ok {
 		m.onlyText = val
 	}
@@ -284,10 +284,10 @@ func (m *Translate) TranslateCmd(msg *goroku.Message) error {
 	if m.provider == "telegram" {
 		if replyMsgID != 0 && !hasText {
 			L().Debug("calling telegram provider by message lang={0} msgID={1}", zap.Any("arg0", lang), zap.Any("arg1", replyMsgID))
-			trText, translateErr = m.client.Translate(msg.ChatID, replyMsgID, lang)
+			trText, translateErr = m.client.Translate(goroku.ChatRefID(msg.ChatID), replyMsgID, lang)
 		} else {
 			L().Debug("calling telegram provider lang={0} html={1}", zap.Any("arg0", lang), zap.Any("arg1", translateInput))
-			trText, translateErr = m.client.TranslateText(msg.ChatID, translateInput, nil, lang)
+			trText, translateErr = m.client.TranslateText(goroku.ChatRefID(msg.ChatID), translateInput, nil, lang)
 		}
 	} else {
 		L().Debug("calling google provider lang={0} html={1}", zap.Any("arg0", lang), zap.Any("arg1", translateInput))
@@ -317,27 +317,27 @@ func (m *Translate) TranslateCmd(msg *goroku.Message) error {
 
 func translateGoogle(text string, lang string) (string, error) {
 	apiURL := fmt.Sprintf("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=%s&dt=t&q=%s", lang, url.QueryEscape(text))
-	resp, err := http.Get(apiURL)
+	resp, err := http.Get(apiURL) //nolint:gosec
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
 
-	var parsed []interface{}
+	var parsed []any
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", err
 	}
 
 	if len(parsed) > 0 {
-		if first, ok := parsed[0].([]interface{}); ok && len(first) > 0 {
+		if first, ok := parsed[0].([]any); ok && len(first) > 0 {
 			var translationParts []string
 			for _, item := range first {
-				if itemArr, ok := item.([]interface{}); ok && len(itemArr) > 0 {
+				if itemArr, ok := item.([]any); ok && len(itemArr) > 0 {
 					if transStr, ok := itemArr[0].(string); ok {
 						translationParts = append(translationParts, transStr)
 					}

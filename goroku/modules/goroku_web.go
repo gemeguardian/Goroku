@@ -108,10 +108,7 @@ func (m *GorokuWeb) WebpanelCmd(msg *goroku.Message) error {
 		privacyLeakNowarn := m.getTrans("privacy_leak_nowarn", "⚠️ <b>WARNING! Sending link to the public chat will compromise your session!</b>\n\nYour user ID is <code>{}</code>. If you are sure you want to get the link here, press button below.")
 		privacyLeak := m.getTrans("privacy_leak", "⚠️ <b>WARNING! Sending link to the public chat will compromise your session!</b>\n\nYour user ID is <code>{}</code>. If you are sure you want to get the link here, send <code>{}weburl force_insecure</code>.")
 
-		prefix := "."
-		if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok {
-			prefix = val
-		}
+		prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
 		if hasInline {
 			text := formatTrans(privacyLeakNowarn, fmt.Sprintf("%d", m.client.TGID))
@@ -141,7 +138,7 @@ func (m *GorokuWeb) WebpanelCmd(msg *goroku.Message) error {
 	return m.showWebpanelTunnel(msg, false)
 }
 
-func (m *GorokuWeb) showWebpanelTunnel(call interface{}, isCallback bool) error {
+func (m *GorokuWeb) showWebpanelTunnel(call any, isCallback bool) error {
 	im := m.client.GorokuInline
 	hasInline := im != nil && im.IsComplete()
 
@@ -277,11 +274,7 @@ func (m *GorokuWeb) AddaccCmd(msg *goroku.Message) error {
 		return m.InlineLogin(msg, targetUser, false)
 	}
 
-	prefixVal := m.db.Get("goroku.main", "command_prefix", ".")
-	prefix := "."
-	if p, ok := prefixVal.(string); ok {
-		prefix = p
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
 	im := m.client.GorokuInline
 	if im == nil || !im.IsComplete() {
@@ -321,7 +314,7 @@ func (m *GorokuWeb) InlineLoginCallback(call inline.CallbackQuery, targetUser *t
 	return m.InlineLogin(call, targetUser, false)
 }
 
-func (m *GorokuWeb) InlineLogin(call interface{}, targetUser *tg.User, afterFail bool) error {
+func (m *GorokuWeb) InlineLogin(call any, targetUser *tg.User, afterFail bool) error {
 	im := m.client.GorokuInline
 	if im == nil {
 		return fmt.Errorf("inline manager not ready")
@@ -384,7 +377,7 @@ func (m *GorokuWeb) InlinePhoneHandler(c inline.CallbackQuery, data string, targ
 
 	err = tempClient.SendCodeRequest(phone)
 	if err != nil {
-		tempClient.Disconnect()
+		_ = tempClient.Disconnect()
 		errMsg := err.Error()
 		if strings.Contains(strings.ToLower(errMsg), "flood") {
 			floodTemplate := getTrans(m.translator, m.Name(), "floodwait_error", "Too many attempts. Try again in {} seconds.")
@@ -518,7 +511,7 @@ func (m *GorokuWeb) Inline2FAHandler(c inline.CallbackQuery, password string, te
 
 func (m *GorokuWeb) SuccessLogin(c inline.CallbackQuery, tempClient *goroku.CustomTelegramClient) error {
 	tgID := tempClient.TGID
-	tempClient.Disconnect()
+	_ = tempClient.Disconnect()
 
 	if tgID != 0 {
 		baseDir := utils.GetBaseDir()

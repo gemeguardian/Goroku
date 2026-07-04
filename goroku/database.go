@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,8 +38,8 @@ type Database struct {
 	redisClient *redis.Client
 	dbFile      string
 	tgID        int64
-	data        map[string]map[string]interface{}
-	revisions   []map[string]map[string]interface{}
+	data        map[string]map[string]any
+	revisions   []map[string]map[string]any
 	nextRevCall int64
 	client      *CustomTelegramClient
 	// Redis batching: mirrors Python's asyncio.sleep(5) before redis save
@@ -49,8 +50,8 @@ type Database struct {
 func NewDatabase(tgID int64) *Database {
 	return &Database{
 		tgID:      tgID,
-		data:      make(map[string]map[string]interface{}),
-		revisions: make([]map[string]map[string]interface{}, 0),
+		data:      make(map[string]map[string]any),
+		revisions: make([]map[string]map[string]any, 0),
 	}
 }
 
@@ -111,7 +112,7 @@ func (db *Database) read() {
 
 		val, err := db.redisClient.Get(ctx, fmt.Sprintf("%d", db.tgID)).Result()
 		if err == nil {
-			var parsed map[string]map[string]interface{}
+			var parsed map[string]map[string]any
 			if err := json.Unmarshal([]byte(val), &parsed); err == nil {
 				db.data = parsed
 				return
@@ -126,11 +127,11 @@ func (db *Database) read() {
 		if !os.IsNotExist(err) {
 			L().Info("Error reading database file: {0}", zap.Any("arg0", err))
 		}
-		db.data = make(map[string]map[string]interface{})
+		db.data = make(map[string]map[string]any)
 		return
 	}
 
-	var parsed map[string]map[string]interface{}
+	var parsed map[string]map[string]any
 	// Convert legacy names if present in the string (similar to python's regex replacement)
 	dbStr := string(content)
 	dbStr = strings.ReplaceAll(dbStr, "hikka.", "goroku.")
@@ -141,7 +142,7 @@ func (db *Database) read() {
 		db.data = parsed
 	} else {
 		L().Info("Database read failed! Creating new one... Error: {0}", zap.Any("arg0", err))
-		db.data = make(map[string]map[string]interface{})
+		db.data = make(map[string]map[string]any)
 	}
 }
 
@@ -266,26 +267,238 @@ func (db *Database) normalizeOwner(owner string) string {
 	return owner
 }
 
-func (db *Database) Get(owner, key string, defaultValue interface{}) interface{} {
+func (db *Database) Get(owner, key string, defaultValue any) (any, error) {
 	owner = db.normalizeOwner(owner)
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	if mod, ok := db.data[owner]; ok {
 		if val, ok := mod[key]; ok {
-			return val
+			return val, nil
 		}
 	}
-	return defaultValue
+	return defaultValue, nil
 }
 
-func (db *Database) Dump() map[string]map[string]interface{} {
+// GetValue returns the stored value or default without an error.
+// Deprecated: use Get() when error handling matters.
+func (db *Database) GetValue(owner, key string, defaultValue any) any {
+	val, _ := db.Get(owner, key, defaultValue)
+	return val
+}
+
+// GetString returns the stored string value or the default.
+func (db *Database) GetString(owner, key, def string) string {
+	val, _ := db.Get(owner, key, def)
+	if s, ok := val.(string); ok {
+		return s
+	}
+	return def
+}
+
+// GetInt64 returns the stored integer value or the default.
+// It normalises JSON float64 / json.Number values back to int64.
+func (db *Database) GetInt64(owner, key string, def int64) int64 {
+	val, _ := db.Get(owner, key, def)
+	return asInt64(val, def)
+}
+
+// GetInt returns the stored int or the default.
+func (db *Database) GetInt(owner, key string, def int) int {
+	val, _ := db.Get(owner, key, def)
+	return int(asInt64(val, int64(def)))
+}
+
+// GetBool returns the stored boolean value or the default.
+func (db *Database) GetBool(owner, key string, def bool) bool {
+	val, _ := db.Get(owner, key, def)
+	if b, ok := val.(bool); ok {
+		return b
+	}
+	return def
+}
+
+// GetStringSlice returns the stored []string or the default.
+// It converts []any produced by JSON unmarshalling.
+func (db *Database) GetStringSlice(owner, key string, def []string) []string {
+	val, _ := db.Get(owner, key, def)
+	switch v := val.(type) {
+	case []string:
+		return v
+	case []any:
+		res := make([]string, 0, len(v))
+		for _, item := range v {
+			res = append(res, fmt.Sprintf("%v", item))
+		}
+		return res
+	}
+	return def
+}
+
+// GetInt64Slice returns the stored []int64 or the default.
+// It normalises JSON float64 / json.Number values back to int64.
+func (db *Database) GetInt64Slice(owner, key string, def []int64) []int64 {
+	val, _ := db.Get(owner, key, def)
+	switch v := val.(type) {
+	case []int64:
+		return v
+	case []int:
+		res := make([]int64, len(v))
+		for i, item := range v {
+			res[i] = int64(item)
+		}
+		return res
+	case []any:
+		res := make([]int64, 0, len(v))
+		for _, item := range v {
+			if id := asInt64(item, 0); id != 0 {
+				res = append(res, id)
+			}
+		}
+		return res
+	}
+	return def
+}
+
+// GetStringMap returns the stored map[string]string or the default.
+func (db *Database) GetStringMap(owner, key string, def map[string]string) map[string]string {
+	val, _ := db.Get(owner, key, def)
+	switch v := val.(type) {
+	case map[string]string:
+		return v
+	case map[string]any:
+		res := make(map[string]string, len(v))
+		for k, item := range v {
+			res[k] = fmt.Sprintf("%v", item)
+		}
+		return res
+	}
+	return def
+}
+
+// SetStringSlice stores a []string value.
+func (db *Database) SetStringSlice(owner, key string, value []string) bool {
+	return db.Set(owner, key, value)
+}
+
+// SetInt64Slice stores a []int64 value.
+func (db *Database) SetInt64Slice(owner, key string, value []int64) bool {
+	return db.Set(owner, key, value)
+}
+
+// SetStringMap stores a map[string]string value.
+func (db *Database) SetStringMap(owner, key string, value map[string]string) bool {
+	return db.Set(owner, key, value)
+}
+
+// SetString stores a string value.
+func (db *Database) SetString(owner, key string, value string) bool {
+	return db.Set(owner, key, value)
+}
+
+// SetInt64 stores an int64 value.
+func (db *Database) SetInt64(owner, key string, value int64) bool {
+	return db.Set(owner, key, value)
+}
+
+// SetBool stores a bool value.
+func (db *Database) SetBool(owner, key string, value bool) bool {
+	return db.Set(owner, key, value)
+}
+
+// SetInt stores an int value.
+func (db *Database) SetInt(owner, key string, value int) bool {
+	return db.Set(owner, key, value)
+}
+
+// SetAnyMap stores a map[string]any value.
+func (db *Database) SetAnyMap(owner, key string, value map[string]any) bool {
+	return db.Set(owner, key, value)
+}
+
+func asInt64(v any, def int64) int64 {
+	switch x := v.(type) {
+	case int:
+		return int64(x)
+	case int64:
+		return x
+	case float64:
+		return int64(x)
+	case string:
+		if id, err := strconv.ParseInt(x, 10, 64); err == nil {
+			return id
+		}
+	case json.Number:
+		if id, err := x.Int64(); err == nil {
+			return id
+		}
+	}
+	return def
+}
+
+// GetAnyMap returns the stored map[string]any or the default.
+func (db *Database) GetAnyMap(owner, key string, def map[string]any) map[string]any {
+	val, _ := db.Get(owner, key, def)
+	if m, ok := val.(map[string]any); ok {
+		return m
+	}
+	return def
+}
+
+// GetStringMapStringSlice returns the stored map[string][]string or the default.
+// It converts values produced by JSON unmarshalling.
+func (db *Database) GetStringMapStringSlice(owner, key string, def map[string][]string) map[string][]string {
+	val, _ := db.Get(owner, key, def)
+	switch v := val.(type) {
+	case map[string][]string:
+		return v
+	case map[string]any:
+		res := make(map[string][]string, len(v))
+		for k, item := range v {
+			var list []string
+			if raw, err := json.Marshal(item); err == nil {
+				_ = json.Unmarshal(raw, &list)
+			}
+			res[k] = list
+		}
+		return res
+	}
+	return def
+}
+
+// SetStringMapStringSlice stores a map[string][]string value.
+func (db *Database) SetStringMapStringSlice(owner, key string, value map[string][]string) bool {
+	return db.Set(owner, key, value)
+}
+
+// GetStringMapInt returns the stored map[string]int or the default.
+func (db *Database) GetStringMapInt(owner, key string, def map[string]int) map[string]int {
+	val, _ := db.Get(owner, key, def)
+	switch v := val.(type) {
+	case map[string]int:
+		return v
+	case map[string]any:
+		res := make(map[string]int, len(v))
+		for k, item := range v {
+			res[k] = int(asInt64(item, 0))
+		}
+		return res
+	}
+	return def
+}
+
+// SetStringMapInt stores a map[string]int value.
+func (db *Database) SetStringMapInt(owner, key string, value map[string]int) bool {
+	return db.Set(owner, key, value)
+}
+
+func (db *Database) Dump() map[string]map[string]any {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	return db.deepCopy(db.data)
 }
 
-func (db *Database) Set(owner, key string, value interface{}) bool {
+func (db *Database) Set(owner, key string, value any) bool {
 	owner = db.normalizeOwner(owner)
 	// Stack trace check for write permissions
 	if dbProtectedOwners[owner] {
@@ -305,7 +518,7 @@ func (db *Database) Set(owner, key string, value interface{}) bool {
 
 	db.mu.Lock()
 	if _, ok := db.data[owner]; !ok {
-		db.data[owner] = make(map[string]interface{})
+		db.data[owner] = make(map[string]any)
 	}
 	db.data[owner][key] = value
 	db.mu.Unlock()
@@ -333,7 +546,7 @@ func (db *Database) Delete(owner, key string) bool {
 }
 
 // Reset clears the database and replaces all content with the given data.
-func (db *Database) Reset(data map[string]map[string]interface{}) bool {
+func (db *Database) Reset(data map[string]map[string]any) bool {
 	db.mu.Lock()
 	db.data = data
 	db.mu.Unlock()
@@ -359,19 +572,19 @@ func (db *Database) getWriteCaller() string {
 // Pointer returns a PointerList, PointerDict, or scalar value depending on the
 // type of the current (or default) value stored under owner/key.
 // This mirrors Python's Database.pointer() helper.
-func (db *Database) Pointer(owner, key string, defaultValue interface{}) interface{} {
+func (db *Database) Pointer(owner, key string, defaultValue any) any {
 	owner = db.normalizeOwner(owner)
-	value := db.Get(owner, key, defaultValue)
+	value, _ := db.Get(owner, key, defaultValue)
 	switch value.(type) {
-	case []interface{}:
-		var def []interface{}
-		if d, ok := defaultValue.([]interface{}); ok {
+	case []any:
+		var def []any
+		if d, ok := defaultValue.([]any); ok {
 			def = d
 		}
 		return NewPointerList(db, owner, key, def)
-	case map[string]interface{}:
-		var def map[string]interface{}
-		if d, ok := defaultValue.(map[string]interface{}); ok {
+	case map[string]any:
+		var def map[string]any
+		if d, ok := defaultValue.(map[string]any); ok {
 			def = d
 		}
 		return NewPointerDict(db, owner, key, def)
@@ -381,7 +594,7 @@ func (db *Database) Pointer(owner, key string, defaultValue interface{}) interfa
 }
 
 // Update bulk-sets multiple owner/key/value entries, respecting write protection.
-func (db *Database) Update(items map[string]map[string]interface{}) bool {
+func (db *Database) Update(items map[string]map[string]any) bool {
 	for owner, keys := range items {
 		normOwner := db.normalizeOwner(owner)
 		if dbProtectedOwners[normOwner] {
@@ -393,7 +606,7 @@ func (db *Database) Update(items map[string]map[string]interface{}) bool {
 		}
 		db.mu.Lock()
 		if _, ok := db.data[normOwner]; !ok {
-			db.data[normOwner] = make(map[string]interface{})
+			db.data[normOwner] = make(map[string]any)
 		}
 		for k, v := range keys {
 			db.data[normOwner][k] = v
@@ -413,34 +626,42 @@ func (db *Database) DeleteOwner(owner string) bool {
 }
 
 // GetAll returns a deep copy of the entire database for serialisation purposes.
-func (db *Database) GetAll() map[string]map[string]interface{} {
+func (db *Database) GetAll() map[string]map[string]any {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	return db.deepCopy(db.data)
 }
 
-func (db *Database) deepCopy(src map[string]map[string]interface{}) map[string]map[string]interface{} {
-	dst := make(map[string]map[string]interface{}, len(src))
+func (db *Database) deepCopy(src map[string]map[string]any) map[string]map[string]any {
+	dst := make(map[string]map[string]any, len(src))
 	for k, v := range src {
-		inner, _ := deepCopyValue(v).(map[string]interface{})
+		inner, _ := deepCopyValue(v).(map[string]any)
 		if inner == nil {
-			inner = make(map[string]interface{})
+			inner = make(map[string]any)
 		}
 		dst[k] = inner
 	}
 	return dst
 }
 
-func deepCopyValue(src interface{}) interface{} {
+// ValueStore is the constraint for values that can be stored in the database.
+// Only JSON-serializable primitives are allowed.
+type ValueStore interface {
+	~string | ~int | ~int64 | ~float64 | ~bool |
+		[]string | []int | []int64 | []float64 | []bool |
+		map[string]string | map[string]int | map[string]int64 | map[string]any
+}
+
+func deepCopyValue(src any) any {
 	switch v := src.(type) {
-	case map[string]interface{}:
-		m := make(map[string]interface{}, len(v))
+	case map[string]any:
+		m := make(map[string]any, len(v))
 		for key, value := range v {
 			m[key] = deepCopyValue(value)
 		}
 		return m
-	case []interface{}:
-		s := make([]interface{}, len(v))
+	case []any:
+		s := make([]any, len(v))
 		for i, value := range v {
 			s[i] = deepCopyValue(value)
 		}
@@ -462,7 +683,7 @@ func deepCopyValue(src interface{}) interface{} {
 
 // StoreAsset stores a message or file to the assets channel.
 // Returns the message ID (asset ID).
-func (db *Database) StoreAsset(message interface{}) (int, error) {
+func (db *Database) StoreAsset(message any) (int, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -470,19 +691,17 @@ func (db *Database) StoreAsset(message interface{}) (int, error) {
 		return 0, fmt.Errorf("client not initialized in database")
 	}
 
-	forumsCacheVal := db.Get("goroku.forums", "forums_cache", map[string]interface{}{})
+	forumsCache := db.GetAnyMap("goroku.forums", "forums_cache", nil)
 	var assetsTopicID int
-	if forumsCache, ok := forumsCacheVal.(map[string]interface{}); ok {
-		if hubot, ok := forumsCache["goroku-userbot"].(map[string]interface{}); ok {
-			if assetsVal, ok := hubot["Assets"]; ok {
-				switch v := assetsVal.(type) {
-				case float64:
-					assetsTopicID = int(v)
-				case int64:
-					assetsTopicID = int(v)
-				case int:
-					assetsTopicID = v
-				}
+	if hubot, ok := forumsCache["goroku-userbot"].(map[string]any); ok {
+		if assetsVal, ok := hubot["Assets"]; ok {
+			switch v := assetsVal.(type) {
+			case float64:
+				assetsTopicID = int(v)
+			case int64:
+				assetsTopicID = int(v)
+			case int:
+				assetsTopicID = v
 			}
 		}
 	}
@@ -490,20 +709,12 @@ func (db *Database) StoreAsset(message interface{}) (int, error) {
 		return 0, fmt.Errorf("Tried to save asset to non-existing asset topic.")
 	}
 
-	contentChannelVal := db.Get("goroku.forums", "channel_id", nil)
-	if contentChannelVal == nil {
+	contentChannelVal := db.GetInt64("goroku.forums", "channel_id", 0)
+	if contentChannelVal == 0 {
 		return 0, fmt.Errorf("Tried to save asset with non-existing content channel.")
 	}
 
-	var targetChatID int64
-	switch v := contentChannelVal.(type) {
-	case float64:
-		targetChatID = int64(-1000000000000 - int64(v))
-	case int64:
-		targetChatID = int64(-1000000000000 - v)
-	case int:
-		targetChatID = int64(-1000000000000 - int64(v))
-	}
+	targetChatID := int64(-1000000000000 - contentChannelVal)
 
 	opts := []MsgOption{WithReplyTo(int64(assetsTopicID))}
 
@@ -511,27 +722,27 @@ func (db *Database) StoreAsset(message interface{}) (int, error) {
 
 	switch msgVal := message.(type) {
 	case *Message:
-		res, err := db.client.SendMessageWithOptions(targetChatID, msgVal.Text, opts...)
+		res, err := db.client.SendMessageWithOptions(ChatRefID(targetChatID), msgVal.Text, opts...)
 		if err != nil {
 			return 0, err
 		}
 		msgID = GetSentMessageID(res)
 	case string:
 		if _, statErr := os.Stat(msgVal); statErr == nil {
-			res, err := db.client.SendFileWithOptions(targetChatID, msgVal, "", opts...)
+			res, err := db.client.SendFileWithOptions(ChatRefID(targetChatID), msgVal, "", opts...)
 			if err != nil {
 				return 0, err
 			}
 			msgID = GetSentMessageID(res)
 		} else {
-			res, err := db.client.SendMessageWithOptions(targetChatID, msgVal, opts...)
+			res, err := db.client.SendMessageWithOptions(ChatRefID(targetChatID), msgVal, opts...)
 			if err != nil {
 				return 0, err
 			}
 			msgID = GetSentMessageID(res)
 		}
 	default:
-		res, err := db.client.SendFileWithOptions(targetChatID, msgVal, "", opts...)
+		res, err := db.client.SendFileWithOptions(ChatRefID(targetChatID), msgVal, "", opts...)
 		if err != nil {
 			return 0, err
 		}
@@ -550,19 +761,17 @@ func (db *Database) FetchAsset(assetID int) (*Message, error) {
 		return nil, fmt.Errorf("client not initialized in database")
 	}
 
-	forumsCacheVal := db.Get("goroku.forums", "forums_cache", map[string]interface{}{})
+	forumsCache := db.GetAnyMap("goroku.forums", "forums_cache", nil)
 	var assetsTopicID int
-	if forumsCache, ok := forumsCacheVal.(map[string]interface{}); ok {
-		if hubot, ok := forumsCache["goroku-userbot"].(map[string]interface{}); ok {
-			if assetsVal, ok := hubot["Assets"]; ok {
-				switch v := assetsVal.(type) {
-				case float64:
-					assetsTopicID = int(v)
-				case int64:
-					assetsTopicID = int(v)
-				case int:
-					assetsTopicID = v
-				}
+	if hubot, ok := forumsCache["goroku-userbot"].(map[string]any); ok {
+		if assetsVal, ok := hubot["Assets"]; ok {
+			switch v := assetsVal.(type) {
+			case float64:
+				assetsTopicID = int(v)
+			case int64:
+				assetsTopicID = int(v)
+			case int:
+				assetsTopicID = v
 			}
 		}
 	}
@@ -570,8 +779,8 @@ func (db *Database) FetchAsset(assetID int) (*Message, error) {
 		return nil, fmt.Errorf("Tried to fetch asset from non-existing asset topic.")
 	}
 
-	contentChannelVal := db.Get("goroku.forums", "channel_id", nil)
-	if contentChannelVal == nil {
+	contentChannelVal := db.GetInt64("goroku.forums", "channel_id", 0)
+	if contentChannelVal == 0 {
 		return nil, fmt.Errorf("Tried to fetch asset with non-existing content channel.")
 	}
 

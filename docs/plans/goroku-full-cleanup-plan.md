@@ -99,6 +99,234 @@ GorokuFullUserCache    map[CacheKey]cache.CacheRecordFullUser
 3. Обновить все функции, которые пишут/читают эти кэши, заменить `interface{}` ключи на `CacheKey`.
 4. Запустить `go test ./...` и `go vet ./...`.
 
+---
+
+### Task 1.3: Типизировать `WebConfig` и `Web`
+
+**Objective:** Убрать `interface{}` из `web.WebConfig`, `web.Web`, `web.WebCore` и связанных callback-ов, заменив на типизированные интерфейсы.
+
+**Files:**
+- Create: `goroku/webiface/interface.go`
+- Modify: `goroku/web/root.go`
+- Modify: `goroku/web/core.go`
+- Modify: `goroku/bootstrap.go`
+- Modify: `goroku/web/web_test.go`
+- Modify: `goroku/web/proxypass.go` (при необходимости)
+
+**Steps:**
+1. Создать пакет `webiface` с интерфейсами:
+
+```go
+package webiface
+
+import (
+    "context"
+    "github.com/gotd/td/tg"
+)
+
+type TelegramClient interface {
+    TGID() int64
+    SendMessage(ctx context.Context, peer tg.InputPeerClass, msg string) (tg.UpdatesClass, error)
+    GetMe() (*tg.User, error)
+    // ... остальные методы, которые используются в web handlers
+}
+
+type Database interface {
+    Get(owner, key string, defaultValue interface{}) (interface{}, error)
+    Set(owner, key string, value interface{}) error
+    Save() bool
+}
+
+type Modules interface {
+    GetModules() []Module
+    GetModule(name string) (Module, bool)
+}
+
+type Module interface {
+    Name() string
+}
+
+type ConfigSaver interface {
+    SaveConfig(key string, value interface{}) bool
+}
+```
+
+2. Заменить `interface{}` поля в `WebConfig`:
+
+```go
+type WebConfig struct {
+    ApiToken   string
+    SetupToken string
+    DataRoot   string
+    Connection interface{} // оставить пока, если нет чёткого типа; пометить TODO
+    Proxy      interface{} // оставить пока, если нет чёткого типа; пометить TODO
+    SaveConfig func(key string, value interface{}) bool
+    Restart    func()
+    GetClient  func() webiface.TelegramClient
+    OnLogin    func(client webiface.TelegramClient) error
+}
+```
+
+3. Заменить поля в `Web`:
+
+```go
+type Web struct {
+    mu             sync.Mutex
+    signInClients  map[string]webiface.TelegramClient
+    pendingClient  webiface.TelegramClient
+    qrLogin        interface{} // TODO: заменить, когда типизируем QR-логин
+    sessions       map[string]WebSession
+    ratelimit      map[string][]int64
+    apiToken       string
+    setupToken     string
+    dataRoot       string
+    saveConfig     func(key string, value interface{}) bool
+    restart        func()
+    onLogin        func(client webiface.TelegramClient) error
+    clientData     map[int64][]interface{} // TODO: заменить на структуру
+    getClient      func() webiface.TelegramClient
+    pendingAuths   map[string]*PendingAuth
+    pendingAuthsMu sync.Mutex
+}
+```
+
+4. Переписать `web/core.go` методы, чтобы не использовали `reflect.ValueOf(client).FieldByName("TGID")`, а вызывали `client.TGID()`.
+5. Обновить `bootstrap.go` — передавать `GetClient`/`OnLogin` с конкретными типами (без `interface{}`).
+6. Обновить тесты `web/web_test.go` — моки реализуют `webiface.TelegramClient`.
+7. Запустить `go test ./goroku/web/...` и `go build ./...`.
+
+**Verify:**
+```bash
+cd /root/eblan/Goroku
+grep -R 'interface{}' goroku/web/*.go | wc -l
+# Ожидаем: < 10 (только QR-логин, connection, proxy — отмеченные TODO)
+go test ./goroku/web/...
+```
+
+---
+
+### Task 1.4: Типизировать `InlineManager.client`, `db`, `allModules`
+
+**Objective:** Убрать `interface{}` из полей `InlineManager` и конструктора `NewInlineManager`, используя интерфейсы из `inlineiface` и новых пакетов.
+
+**Files:**
+- Modify: `goroku/inlineiface/interface.go`
+- Create: `goroku/inlineiface/db.go` (опционально)
+- Modify: `goroku/inline/core.go`
+- Modify: `goroku/inline/types.go` (при необходимости)
+- Modify: `goroku/client_init.go`
+- Modify: `goroku/inline/*_test.go` (тестовые моки)
+- Modify: `goroku/modules/inline_stuff.go`, `goroku/modules/quickstart.go` (если обращаются через `interface{}`)
+
+**Steps:**
+1. Расширить `inlineiface`:
+
+```go
+type ClientAPI interface {
+    TGID() int64
+    GetMe() (*tg.User, error)
+    SendMessage(ctx context.Context, peer tg.InputPeerClass, msg string) (tg.UpdatesClass, error)
+    // методы, которые inline manager использует напрямую
+}
+
+type DatabaseAPI interface {
+    Get(owner, key string, defaultValue interface{}) (interface{}, error)
+    Set(owner, key string, value interface{}) error
+}
+
+type ModulesRegistry interface {
+    GetModules() []inline.Module
+}
+```
+
+2. Изменить `InlineManager`:
+
+```go
+type InlineManager struct {
+    mu                   sync.RWMutex
+    registerMu           sync.Mutex
+    bot                  *tgbotapi.BotAPI
+    client               inlineiface.ClientAPI
+    db                   inlineiface.DatabaseAPI
+    allModules           inlineiface.ModulesRegistry
+    // ... остальные поля без изменений
+}
+
+func NewInlineManager(client inlineiface.ClientAPI, db inlineiface.DatabaseAPI, allModules inlineiface.ModulesRegistry) *InlineManager {
+    // ...
+}
+```
+
+3. Убрать все `im.client.(type)`, `reflect.ValueOf(im.db)` и подобные касты в `inline/*.go`.
+4. В `client_init.go` передавать конкретные `*CustomTelegramClient`, `*Database`, `*Modules` (они реализуют интерфейсы автоматически).
+5. Убедиться, что `inlineiface.InlineManager` по-прежнему реализуется `*inline.InlineManager`.
+6. Запустить `go test ./goroku/inline/...` и `go build ./...`.
+
+**Verify:**
+```bash
+cd /root/eblan/Goroku
+grep -R 'interface{}' goroku/inline/*.go | wc -l
+# Ожидаем: значительно меньше текущего
+# go test ./goroku/inline/...
+```
+
+---
+
+### Task 1.5: `Database.Get` / `Database.Set` возвращают `error`
+
+**Objective:** Убрать магическое `bool` возвращаемое значение у `Set` и `Get`; сделать контракт явным через `error`.
+
+**Files:**
+- Modify: `goroku/database.go`
+- Modify: `goroku/pointers.go`
+- Modify: `goroku/pointers_test.go`
+- Modify: `goroku/modules/*.go` (все вызовы `db.Set`)
+- Modify: `goroku/dispatcher.go` (если есть)
+- Modify: `goroku/inline/*.go` (если есть)
+- Modify: `goroku/web/*.go` (если есть)
+- Modify: `goroku/database_test.go`
+- Modify: `goroku/inlineiface/*.go` (обновить интерфейсы DatabaseAPI)
+- Modify: `goroku/webiface/*.go` (обновить интерфейсы Database)
+
+**Steps:**
+1. Изменить сигнатуры:
+
+```go
+func (db *Database) Get(owner, key string, defaultValue interface{}) (interface{}, error)
+func (db *Database) Set(owner, key string, value interface{}) error
+func (db *Database) Delete(owner, key string) error
+func (db *Database) Reset(data map[string]map[string]interface{}) error
+func (db *Database) Update(items map[string]map[string]interface{}) error
+func (db *Database) DeleteOwner(owner string) error
+func (db *Database) Save() error
+```
+
+2. Убрать `return false` при ошибках; вместо этого возвращать `fmt.Errorf(...)`.
+3. Убрать `return true` при успехе; вместо этого `return nil`.
+4. Во всех вызовах обрабатывать `error`:
+
+```go
+if err := db.Set("owner", "key", value); err != nil {
+    L().Error(...)
+}
+
+val, err := db.Get("owner", "key", defaultVal)
+if err != nil {
+    // fallback или логирование
+}
+```
+
+5. Обновить `Pointer` — игнорировать ошибку `Get` там пока допустимо, но лучше вернуть `(*PointerList, error)` и т.д.
+6. Запустить `go test ./...` и `go vet ./...`.
+
+**Verify:**
+```bash
+cd /root/eblan/Goroku
+grep -R 'db.Set(.*) bool\|db.Get(.*) interface{}\b' goroku --include='*.go' | grep -v 'error' | wc -l
+# Ожидаем: 0
+go test ./goroku/...
+```
+
 **Verify:**
 ```bash
 go build ./...

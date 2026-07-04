@@ -12,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tg"
 )
@@ -92,18 +95,18 @@ func (m *GorokuSecurity) getTrans(key, def string) string {
 
 // securityGroup holds a named group of users with permissions.
 type securityGroup struct {
-	Users       []int64                  `json:"users"`
-	Permissions []map[string]interface{} `json:"permissions"`
+	Users       []int64          `json:"users"`
+	Permissions []map[string]any `json:"permissions"`
 }
 
 func (m *GorokuSecurity) loadGroups() map[string]securityGroup {
-	raw := m.db.Get("goroku.security", "sgroups", nil)
+	raw, _ := m.db.Get("goroku.security", "sgroups", nil)
 	if raw == nil {
-		raw = m.db.Get("goroku.security", "security_groups", map[string]interface{}{})
+		raw, _ = m.db.Get("goroku.security", "security_groups", map[string]any{})
 	}
 	result := make(map[string]securityGroup)
 
-	rawMap, ok := raw.(map[string]interface{})
+	rawMap, ok := raw.(map[string]any)
 	if !ok {
 		return result
 	}
@@ -123,7 +126,7 @@ func (m *GorokuSecurity) loadGroups() map[string]securityGroup {
 }
 
 func (m *GorokuSecurity) saveGroups(groups map[string]securityGroup) {
-	out := make(map[string]interface{}, len(groups))
+	out := make(map[string]any, len(groups))
 	for k, v := range groups {
 		out[k] = v
 	}
@@ -131,7 +134,7 @@ func (m *GorokuSecurity) saveGroups(groups map[string]securityGroup) {
 	m.applyGroupsToManager()
 }
 
-func (m *GorokuSecurity) getOwnerList() *goroku.PointerList {
+func (m *GorokuSecurity) getOwnerList() *goroku.PointerList[int64] {
 	sm := m.getSecurityManager()
 	if sm == nil {
 		return nil
@@ -168,7 +171,7 @@ func inputPeerUserID(peer tg.InputPeerClass, selfID int64) int64 {
 	}
 }
 
-func userClassFromFull(full interface{}) interface{} {
+func userClassFromFull(full any) any {
 	switch f := full.(type) {
 	case *tg.UsersUserFull:
 		if len(f.Users) > 0 {
@@ -178,7 +181,7 @@ func userClassFromFull(full interface{}) interface{} {
 	return nil
 }
 
-func (m *GorokuSecurity) resolveSecurityUser(ref interface{}) (resolvedSecurityUser, bool) {
+func (m *GorokuSecurity) resolveSecurityUser(ref any) (resolvedSecurityUser, bool) {
 	var res resolvedSecurityUser
 	if m.client == nil {
 		return res, false
@@ -232,25 +235,25 @@ func (m *GorokuSecurity) resolveUserFromMessage(msg *goroku.Message) (resolvedSe
 	return resolvedSecurityUser{}, false
 }
 
-func pointerContainsID(pl *goroku.PointerList, id int64) bool {
+func pointerContainsID(pl *goroku.PointerList[int64], id int64) bool {
 	if pl == nil {
 		return false
 	}
 	for _, item := range pl.ToSlice() {
-		if interfaceToInt64(item) == id {
+		if item == id {
 			return true
 		}
 	}
 	return false
 }
 
-func pointerRemoveID(pl *goroku.PointerList, id int64) bool {
+func pointerRemoveID(pl *goroku.PointerList[int64], id int64) bool {
 	if pl == nil {
 		return false
 	}
 	slice := pl.ToSlice()
 	for i, item := range slice {
-		if interfaceToInt64(item) == id {
+		if item == id {
 			pl.Remove(i)
 			return true
 		}
@@ -258,7 +261,7 @@ func pointerRemoveID(pl *goroku.PointerList, id int64) bool {
 	return false
 }
 
-func interfaceToInt64(v interface{}) int64 {
+func interfaceToInt64(v any) int64 {
 	switch x := v.(type) {
 	case int:
 		return int64(x)
@@ -307,8 +310,7 @@ func (m *GorokuSecurity) OwnerCmd(msg *goroku.Message) error {
 
 	seen := map[int64]bool{}
 	var users []resolvedSecurityUser
-	for _, item := range ol.ToSlice() {
-		id := interfaceToInt64(item)
+	for _, id := range ol.ToSlice() {
 		if id == 0 || seen[id] {
 			continue
 		}
@@ -331,10 +333,7 @@ func (m *GorokuSecurity) OwnerCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("no_owner", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Нет пользователей в группе</b> <code>owner</code>"))
 	}
 
-	prefixes := map[string]interface{}{}
-	if raw, ok := m.db.Get("goroku.main", "command_prefixes", map[string]interface{}{}).(map[string]interface{}); ok {
-		prefixes = raw
-	}
+	prefixes := m.db.GetStringMap("goroku.main", "command_prefixes", nil)
 	var lines []string
 	for _, u := range users {
 		line := fmt.Sprintf("<tg-emoji emoji-id=4974307891025543730>▫️</tg-emoji> <b><a href=\"%s\">%s</a></b>", u.URL, utils.EscapeHTML(u.Name))
@@ -409,21 +408,17 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 							{
 								Text: m.getTrans("enable_nonick_btn", "🔰 Включить"),
 								Handler: func(callSub inline.CallbackQuery) error {
-									rawUsers := m.db.Get("goroku.main", "nonickusers", []interface{}{})
-									var list []interface{}
-									if slice, ok := rawUsers.([]interface{}); ok {
-										list = slice
-									}
+									list := m.db.GetInt64Slice("goroku.main", "nonickusers", nil)
 									alreadyIn := false
-									for _, item := range list {
-										if interfaceToInt64(item) == user.ID {
+									for _, id := range list {
+										if id == user.ID {
 											alreadyIn = true
 											break
 										}
 									}
 									if !alreadyIn {
 										list = append(list, user.ID)
-										m.db.Set("goroku.main", "nonickusers", list)
+										m.db.SetInt64Slice("goroku.main", "nonickusers", list)
 									}
 
 									nnTemplate := m.getTrans("user_nn", "NoNick для ... включен")
@@ -462,20 +457,11 @@ func (m *GorokuSecurity) DelownerCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuSecurity) SudoCmd(msg *goroku.Message) error {
-	raw := m.db.Get("goroku.security", "sudo", []interface{}{})
+	sudoList := m.db.GetInt64Slice("goroku.security", "sudo", nil)
 	var lines []string
-	if slice, ok := raw.([]interface{}); ok {
-		for _, item := range slice {
-			var id int64
-			switch v := item.(type) {
-			case float64:
-				id = int64(v)
-			case int64:
-				id = v
-			}
-			if id != 0 {
-				lines = append(lines, fmt.Sprintf("<tg-emoji emoji-id=4974307891025543730>▫️</tg-emoji> <b><a href=\"tg://user?id=%d\">User%d</a></b>", id, id))
-			}
+	for _, id := range sudoList {
+		if id != 0 {
+			lines = append(lines, fmt.Sprintf("<tg-emoji emoji-id=4974307891025543730>▫️</tg-emoji> <b><a href=\"tg://user?id=%d\">User%d</a></b>", id, id))
 		}
 	}
 
@@ -499,21 +485,19 @@ func (m *GorokuSecurity) AddsudoCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
-	raw := m.db.Get("goroku.security", "sudo", []interface{}{})
-	var sudoList []interface{}
+	raw := m.db.GetInt64Slice("goroku.security", "sudo", nil)
+	sudoList := make([]int64, len(raw))
+	copy(sudoList, raw)
 	alreadyPresent := false
-	if slice, ok := raw.([]interface{}); ok {
-		sudoList = slice
-		for _, item := range slice {
-			if interfaceToInt64(item) == user.ID {
-				alreadyPresent = true
-				break
-			}
+	for _, id := range sudoList {
+		if id == user.ID {
+			alreadyPresent = true
+			break
 		}
 	}
 	if !alreadyPresent {
 		sudoList = append(sudoList, user.ID)
-		m.db.Set("goroku.security", "sudo", sudoList)
+		m.db.SetInt64Slice("goroku.security", "sudo", sudoList)
 		if sm := m.getSecurityManager(); sm != nil {
 			sm.ReloadRights()
 		}
@@ -534,22 +518,19 @@ func (m *GorokuSecurity) DelsudoCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
-	raw := m.db.Get("goroku.security", "sudo", []interface{}{})
-	var sudoList []interface{}
+	raw := m.db.GetInt64Slice("goroku.security", "sudo", nil)
 	foundIdx := -1
-	if slice, ok := raw.([]interface{}); ok {
-		for idx, item := range slice {
-			if interfaceToInt64(item) == user.ID {
-				foundIdx = idx
-				break
-			}
+	for idx, id := range raw {
+		if id == user.ID {
+			foundIdx = idx
+			break
 		}
-		if foundIdx != -1 {
-			sudoList = append(slice[:foundIdx], slice[foundIdx+1:]...)
-			m.db.Set("goroku.security", "sudo", sudoList)
-			if sm := m.getSecurityManager(); sm != nil {
-				sm.ReloadRights()
-			}
+	}
+	if foundIdx != -1 {
+		sudoList := append(raw[:foundIdx], raw[foundIdx+1:]...)
+		m.db.SetInt64Slice("goroku.security", "sudo", sudoList)
+		if sm := m.getSecurityManager(); sm != nil {
+			sm.ReloadRights()
 		}
 	}
 
@@ -579,10 +560,7 @@ func (m *GorokuSecurity) SecurityCmd(msg *goroku.Message) error {
 			}
 
 			template := m.getTrans("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
-			prefix := "."
-			if pVal, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok {
-				prefix = pVal
-			}
+			prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 			return msg.Answer(formatTrans(template, prefix, args))
 		}
 		return msg.Answer(m.getTrans("global", "🔐 <b>Здесь можно настроить глобальную исключающую маску. Если тумблер выключен здесь, он выключен для всех команд</b>"))
@@ -605,10 +583,7 @@ func (m *GorokuSecurity) SecurityCmd(msg *goroku.Message) error {
 		return msg.Answer(formatTrans(template, args))
 	}
 
-	prefix := "."
-	if pVal, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok {
-		prefix = pVal
-	}
+	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 	template := m.getTrans("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
 	textFormatted := formatTrans(template, prefix, args)
 
@@ -779,7 +754,7 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 		var lines []string
 		for _, rule := range possibleRules {
 			ruleParts := strings.Split(rule, "/")
-			line := fmt.Sprintf("🛡 <b>%s</b> <code>%s</code>", strings.Title(m.getTrans(ruleParts[0], ruleParts[0])), ruleParts[1])
+			line := fmt.Sprintf("🛡 <b>%s</b> <code>%s</code>", cases.Title(language.English).String(m.getTrans(ruleParts[0], ruleParts[0])), ruleParts[1])
 			lines = append(lines, line)
 		}
 		textTemplate := m.getTrans("multiple_rules", "Не получилось однозначно распознать... Выберите то, которое имели ввиду:\n\n{0}")
@@ -789,7 +764,7 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 		for _, r := range possibleRules {
 			ruleParts := strings.Split(r, "/")
 			ruleVal := r
-			btnText := fmt.Sprintf("🛡 %s %s", strings.Title(m.getTrans(ruleParts[0], ruleParts[0])), ruleParts[1])
+			btnText := fmt.Sprintf("🛡 %s %s", cases.Title(language.English).String(m.getTrans(ruleParts[0], ruleParts[0])), ruleParts[1])
 			buttons = append(buttons, inline.Button{
 				Text: btnText,
 				Handler: func(call inline.CallbackQuery) error {
@@ -944,7 +919,7 @@ func (m *GorokuSecurity) NewsgroupCmd(msg *goroku.Message) error {
 
 	groups[name] = securityGroup{
 		Users:       []int64{},
-		Permissions: []map[string]interface{}{},
+		Permissions: []map[string]any{},
 	}
 	m.saveGroups(groups)
 
@@ -1276,7 +1251,7 @@ func (m *GorokuSecurity) TsecclrCmd(msg *goroku.Message) error {
 			return msg.Answer(formatTrans(template, groupName))
 		}
 
-		group.Permissions = []map[string]interface{}{}
+		group.Permissions = []map[string]any{}
 		groups[groupName] = group
 		m.saveGroups(groups)
 
@@ -1412,9 +1387,7 @@ func (m *GorokuSecurity) convertTimeAbs(ts int64) string {
 func (m *GorokuSecurity) lookupRules(needle string) []string {
 	var prefixes []string
 	prefixes = append(prefixes, ".")
-	if val, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok {
-		prefixes = append(prefixes, val)
-	}
+	prefixes = append(prefixes, m.db.GetString("goroku.main", "command_prefix", "."))
 
 	command := needle
 	for _, pref := range prefixes {
@@ -1500,12 +1473,10 @@ func (m *GorokuSecurity) getCommandMask(commandName string) int {
 		key = commandName
 	}
 
-	masksRaw := m.db.Get("goroku.security", "masks", map[string]interface{}{})
-	if masks, ok := masksRaw.(map[string]interface{}); ok {
-		for _, lookup := range []string{key, strings.ToLower(key)} {
-			if val, exists := masks[lookup]; exists {
-				return intFromInterface(val, goroku.OWNER)
-			}
+	masks := m.db.GetStringMapInt("goroku.security", "masks", nil)
+	for _, lookup := range []string{key, strings.ToLower(key)} {
+		if val, exists := masks[lookup]; exists {
+			return val
 		}
 	}
 
@@ -1526,7 +1497,7 @@ func (m *GorokuSecurity) getCommandMask(commandName string) int {
 }
 
 func (m *GorokuSecurity) getBoundingMask() int {
-	return intFromInterface(m.db.Get("goroku.security", "bounding_mask", goroku.DEFAULT_PERMISSIONS), goroku.DEFAULT_PERMISSIONS)
+	return m.db.GetInt("goroku.security", "bounding_mask", goroku.DEFAULT_PERMISSIONS)
 }
 
 func (m *GorokuSecurity) buildMarkupGlobal(isInline bool) [][]inline.Button {
@@ -1555,7 +1526,7 @@ func (m *GorokuSecurity) buildMarkupGlobal(isInline bool) [][]inline.Button {
 				} else {
 					newMask |= bit
 				}
-				m.db.Set("goroku.security", "bounding_mask", newMask)
+				m.db.SetInt("goroku.security", "bounding_mask", newMask)
 				_ = call.Answer("Bounding mask value set!", false)
 
 				im := m.client.GorokuInline
@@ -1626,14 +1597,13 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 					key = commandName
 				}
 
-				masksRaw := m.db.Get("goroku.security", "masks", map[string]interface{}{})
-				masks, _ := masksRaw.(map[string]interface{})
+				masks := m.db.GetStringMapInt("goroku.security", "masks", nil)
 				if masks == nil {
-					masks = make(map[string]interface{})
+					masks = make(map[string]int)
 				}
 				masks[key] = newMask
 				masks[strings.ToLower(key)] = newMask
-				m.db.Set("goroku.security", "masks", masks)
+				m.db.SetStringMapInt("goroku.security", "masks", masks)
 
 				bounding := m.getBoundingMask()
 				if (bounding&bit) == 0 && !hasBit {
@@ -1643,10 +1613,7 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 					_ = call.Answer("Security value set!", false)
 				}
 
-				prefix := "."
-				if pVal, ok := m.db.Get("goroku.main", "command_prefix", ".").(string); ok {
-					prefix = pVal
-				}
+				prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 				if isInline {
 					prefix = "@" + call.Manager.BotUsernameStr() + " "
 				}
@@ -1681,11 +1648,7 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 }
 
 func (m *GorokuSecurity) buildMarkupQuerysec() [][]inline.Button {
-	allowQuery := false
-	raw := m.db.Get("goroku.security", "allow_inline_query", false)
-	if val, ok := raw.(bool); ok {
-		allowQuery = val
-	}
+	allowQuery := m.db.GetBool("goroku.security", "allow_inline_query", false)
 
 	btnText := "❌"
 	if allowQuery {
@@ -1698,7 +1661,7 @@ func (m *GorokuSecurity) buildMarkupQuerysec() [][]inline.Button {
 				Text: btnText,
 				Handler: func(call inline.CallbackQuery) error {
 					newVal := !allowQuery
-					m.db.Set("goroku.security", "allow_inline_query", newVal)
+					m.db.SetBool("goroku.security", "allow_inline_query", newVal)
 					_ = call.Answer("Inline query permission set!", false)
 
 					im := m.client.GorokuInline
@@ -1794,7 +1757,7 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 				if duration > 0 {
 					expires = time.Now().Unix() + int64(duration)
 				}
-				sg.Permissions = append(sg.Permissions, map[string]interface{}{
+				sg.Permissions = append(sg.Permissions, map[string]any{
 					"target":      targetName,
 					"rule_type":   strings.Split(rule, "/")[0],
 					"rule":        strings.Split(rule, "/")[1],
@@ -1848,7 +1811,7 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 							if duration > 0 {
 								expires = time.Now().Unix() + int64(duration)
 							}
-							sg.Permissions = append(sg.Permissions, map[string]interface{}{
+							sg.Permissions = append(sg.Permissions, map[string]any{
 								"target":      targetName,
 								"rule_type":   ruleParts[0],
 								"rule":        ruleParts[1],
@@ -1907,7 +1870,7 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 	return err
 }
 
-func intFromInterface(v interface{}, fallback int) int {
+func intFromInterface(v any, fallback int) int {
 	switch x := v.(type) {
 	case int:
 		return x

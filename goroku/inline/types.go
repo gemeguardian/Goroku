@@ -13,8 +13,8 @@ type Unit struct {
 	Type            string // "form", "gallery", "list", "query_gallery"
 	Text            string
 	StartText       string
-	Message         interface{}
-	Handler         interface{}
+	Message         any
+	Handler         any
 	TTL             time.Time
 	GalleryFn       func(int) string
 	Pages           []string
@@ -30,7 +30,7 @@ type Unit struct {
 	File            string
 	MimeType        string
 	Location        []float64
-	Audio           interface{}
+	Audio           any
 	ForceMe         bool
 	AlwaysAllow     []int64
 	DisableSecurity bool
@@ -61,6 +61,14 @@ type CallbackQuery struct {
 	Manager       *InlineManager
 }
 
+type ConfigurableMessage interface {
+	Edit(text string, markup tgbotapi.InlineKeyboardMarkup) error
+}
+
+type FormableMessage interface {
+	ConfigurableMessage
+}
+
 func (c CallbackQuery) Answer(text string, showAlert bool) error {
 	callbackConfig := tgbotapi.CallbackConfig{
 		CallbackQueryID: c.ID,
@@ -85,7 +93,7 @@ type InlineMessage struct {
 	InlineMessageID string
 	UnitID          string
 	InlineManager   *InlineManager
-	Form            map[string]interface{}
+	Form            map[string]any
 }
 
 func NewInlineMessage(im *InlineManager, unitID, inlineMessageID string) *InlineMessage {
@@ -93,7 +101,7 @@ func NewInlineMessage(im *InlineManager, unitID, inlineMessageID string) *Inline
 		InlineMessageID: inlineMessageID,
 		UnitID:          unitID,
 		InlineManager:   im,
-		Form:            make(map[string]interface{}),
+		Form:            make(map[string]any),
 	}
 }
 
@@ -133,7 +141,7 @@ func (m *InlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarkup) 
 }
 
 type deletableClient interface {
-	DeleteMessage(chat interface{}, msgID int64) error
+	DeleteMessage(chat any, msgID int64) error
 }
 
 func (m *InlineMessage) Delete() (bool, error) {
@@ -175,7 +183,7 @@ type BotInlineMessage struct {
 	UnitID        string
 	InlineManager *InlineManager
 	MessageID     int64
-	Form          map[string]interface{}
+	Form          map[string]any
 }
 
 func NewBotInlineMessage(im *InlineManager, unitID string, chatID, messageID int64) *BotInlineMessage {
@@ -184,7 +192,7 @@ func NewBotInlineMessage(im *InlineManager, unitID string, chatID, messageID int
 		UnitID:        unitID,
 		InlineManager: im,
 		MessageID:     messageID,
-		Form:          make(map[string]interface{}),
+		Form:          make(map[string]any),
 	}
 }
 
@@ -292,8 +300,8 @@ type ModuleCallbackHandlers interface {
 }
 
 func (q *InlineQuery) Answer(results []tgbotapi.InlineQueryResultArticle, cacheTime int) error {
-	// Convert slice of articles to slice of interface{} for tgbotapi
-	var iResults []interface{}
+	// Convert slice of articles to slice of any for tgbotapi
+	var iResults []any
 	for _, res := range results {
 		iResults = append(iResults, res)
 	}
@@ -309,7 +317,7 @@ func (q *InlineQuery) Answer(results []tgbotapi.InlineQueryResultArticle, cacheT
 }
 
 func (q *InlineQuery) AnswerResults(results []InlineResult, cacheTime int) error {
-	var iResults []interface{}
+	var iResults []any
 	for _, res := range results {
 		id := localRandStr(20)
 		markup := q.Manager.GenerateMarkup(res.ReplyMarkup)
@@ -389,7 +397,7 @@ func (q *InlineQuery) answerError(code, text string) error {
 type QueryGalleryItem struct {
 	Title           string
 	Description     string
-	NextHandler     interface{} // []string or func(int) string
+	NextHandler     any // []string or func(int) string
 	Caption         string
 	ForceMe         bool
 	DisableSecurity bool

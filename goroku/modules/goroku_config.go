@@ -69,8 +69,8 @@ func (m *GorokuConfig) Init(client *goroku.CustomTelegramClient, db *goroku.Data
 	return nil
 }
 
-func (m *GorokuConfig) ConfigDefaults() map[string]interface{} {
-	return map[string]interface{}{
+func (m *GorokuConfig) ConfigDefaults() map[string]any {
+	return map[string]any{
 		"cfg_emoji":              "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>",
 		"start_emoji":            "🍃",
 		"list_emoji":             "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>",
@@ -80,7 +80,7 @@ func (m *GorokuConfig) ConfigDefaults() map[string]interface{} {
 	}
 }
 
-func (m *GorokuConfig) ConfigReady(config map[string]interface{}) error {
+func (m *GorokuConfig) ConfigReady(config map[string]any) error {
 	if val, ok := config["cfg_emoji"].(string); ok {
 		m.cfgEmoji = val
 	}
@@ -104,8 +104,10 @@ func (m *GorokuConfig) ConfigReady(config map[string]interface{}) error {
 
 func (m *GorokuConfig) getValidationErrorEmoji() string {
 	if m.db != nil {
-		if dbEmoji, ok := m.db.Get(m.Name(), "validation_error_emoji", "").(string); ok && dbEmoji != "" {
-			m.validationErrorEmoji = dbEmoji
+		if raw, _ := m.db.Get(m.Name(), "validation_error_emoji", ""); raw != nil {
+			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
+				m.validationErrorEmoji = dbEmoji
+			}
 		}
 	}
 	return m.validationErrorEmoji
@@ -113,8 +115,10 @@ func (m *GorokuConfig) getValidationErrorEmoji() string {
 
 func (m *GorokuConfig) getDetectiveEmoji() string {
 	if m.db != nil {
-		if dbEmoji, ok := m.db.Get(m.Name(), "detective_emoji", "").(string); ok && dbEmoji != "" {
-			m.detectiveEmoji = dbEmoji
+		if raw, _ := m.db.Get(m.Name(), "detective_emoji", ""); raw != nil {
+			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
+				m.detectiveEmoji = dbEmoji
+			}
 		}
 	}
 	return m.detectiveEmoji
@@ -122,8 +126,10 @@ func (m *GorokuConfig) getDetectiveEmoji() string {
 
 func (m *GorokuConfig) getInfoEmoji() string {
 	if m.db != nil {
-		if dbEmoji, ok := m.db.Get(m.Name(), "info_emoji", "").(string); ok && dbEmoji != "" {
-			m.infoEmoji = dbEmoji
+		if raw, _ := m.db.Get(m.Name(), "info_emoji", ""); raw != nil {
+			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
+				m.infoEmoji = dbEmoji
+			}
 		}
 	}
 	return m.infoEmoji
@@ -164,9 +170,11 @@ func (m *GorokuConfig) getTrans(key, def string) string {
 	// Apply custom emoji replacement
 	emoji := m.cfgEmoji
 	if m.db != nil {
-		if dbEmoji, ok := m.db.Get(m.Name(), "cfg_emoji", "").(string); ok && dbEmoji != "" {
-			emoji = dbEmoji
-			m.cfgEmoji = dbEmoji
+		if raw, _ := m.db.Get(m.Name(), "cfg_emoji", ""); raw != nil {
+			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
+				emoji = dbEmoji
+				m.cfgEmoji = dbEmoji
+			}
 		}
 	}
 	if emoji == "" {
@@ -181,9 +189,11 @@ func (m *GorokuConfig) getTrans(key, def string) string {
 func (m *GorokuConfig) getListEmoji() string {
 	emoji := m.listEmoji
 	if m.db != nil {
-		if dbEmoji, ok := m.db.Get(m.Name(), "list_emoji", "").(string); ok && dbEmoji != "" {
-			emoji = dbEmoji
-			m.listEmoji = dbEmoji
+		if raw, _ := m.db.Get(m.Name(), "list_emoji", ""); raw != nil {
+			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
+				emoji = dbEmoji
+				m.listEmoji = dbEmoji
+			}
 		}
 	}
 	if emoji == "" {
@@ -195,9 +205,11 @@ func (m *GorokuConfig) getListEmoji() string {
 func (m *GorokuConfig) getStartText() string {
 	emoji := m.startEmoji
 	if m.db != nil {
-		if dbEmoji, ok := m.db.Get(m.Name(), "start_emoji", "").(string); ok && dbEmoji != "" {
-			emoji = dbEmoji
-			m.startEmoji = dbEmoji
+		if raw, _ := m.db.Get(m.Name(), "start_emoji", ""); raw != nil {
+			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
+				emoji = dbEmoji
+				m.startEmoji = dbEmoji
+			}
 		}
 	}
 	if emoji == "" {
@@ -241,10 +253,9 @@ func (m *GorokuConfig) optionExists(mod goroku.Module, option string) bool {
 }
 
 func (m *GorokuConfig) makeButton(text string, handler func(inline.CallbackQuery) error) inline.Button {
-	rand.Seed(time.Now().UnixNano())
 	return inline.Button{
 		Text:    text,
-		Data:    fmt.Sprintf("cfg_%d_%d", time.Now().UnixNano(), rand.Int63()),
+		Data:    fmt.Sprintf("cfg_%d_%d", time.Now().UnixNano(), rand.Int63()), //nolint:gosec
 		Handler: handler,
 	}
 }
@@ -278,14 +289,14 @@ func unwrapValidator(v goroku.Validator) goroku.Validator {
 	return v
 }
 
-func prepValue(val interface{}) string {
+func prepValue(val any) string {
 	if val == nil {
 		return "<code>None</code>"
 	}
 	switch v := val.(type) {
 	case string:
 		return fmt.Sprintf("<code>%s</code>", utils.EscapeHTML(strings.TrimSpace(v)))
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return "<code>[]</code>"
 		}
@@ -318,7 +329,7 @@ func prepValue(val interface{}) string {
 	}
 }
 
-func getDefaultValue(modName, key string) interface{} {
+func getDefaultValue(modName, key string) any {
 	modNameLower := strings.ToLower(modName)
 	keyLower := strings.ToLower(key)
 
@@ -340,7 +351,7 @@ func getDefaultValue(modName, key string) interface{} {
 		}
 	case "settings":
 		if keyLower == "aliases" {
-			return []interface{}{}
+			return []any{}
 		}
 	case "goroku.main":
 		switch keyLower {
@@ -404,7 +415,7 @@ func getDefaultValue(modName, key string) interface{} {
 	return ""
 }
 
-func (m *GorokuConfig) getDefaultValue(modName, key string) interface{} {
+func (m *GorokuConfig) getDefaultValue(modName, key string) any {
 	loader := m.client.Loader
 	if loader != nil {
 		if mod := loader.LookupByName(modName); mod != nil {
@@ -420,10 +431,10 @@ func (m *GorokuConfig) getDefaultValue(modName, key string) interface{} {
 	return getDefaultValue(modName, key)
 }
 
-func (m *GorokuConfig) getOptionValue(modName, key string) interface{} {
-	val := m.db.Get(modName, key, nil)
+func (m *GorokuConfig) getOptionValue(modName, key string) any {
+	val, _ := m.db.Get(modName, key, nil)
 	if val == nil {
-		val = m.db.Get(strings.ToLower(modName), strings.ToLower(key), nil)
+		val, _ = m.db.Get(strings.ToLower(modName), strings.ToLower(key), nil)
 	}
 	if val == nil {
 		val = m.getDefaultValue(modName, key)
@@ -490,7 +501,7 @@ func (m *GorokuConfig) ConfigCmd(msg *goroku.Message) error {
 				if targetModule != nil {
 					if _, hasConfig := targetModule.(goroku.ModuleWithConfig); !hasConfig {
 						msg.Text = "🚫 <b>This module has no configuration options</b>"
-						msg.Answer(msg.Text)
+						_ = msg.Answer(msg.Text)
 						return nil
 					}
 					if len(parts) >= 2 {
@@ -505,17 +516,17 @@ func (m *GorokuConfig) ConfigCmd(msg *goroku.Message) error {
 	return m.textConfig(msg)
 }
 
-func (m *GorokuConfig) ChooseCategory(msg interface{}) error {
+func (m *GorokuConfig) ChooseCategory(msg any) error {
 	im := m.client.GorokuInline
 	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
-	presetFolders := make(map[string]interface{})
-	foldersVal := m.db.Get("presets", "folders", nil)
+	presetFolders := make(map[string]any)
+	foldersVal, _ := m.db.Get("presets", "folders", nil)
 	if foldersVal != nil {
 		if bytes, err := json.Marshal(foldersVal); err == nil {
-			json.Unmarshal(bytes, &presetFolders)
+			_ = json.Unmarshal(bytes, &presetFolders)
 		}
 	}
 
@@ -605,7 +616,7 @@ var builtInModules = map[string]bool{
 	"updater":              true,
 }
 
-func (m *GorokuConfig) ChooseModuleList(msg interface{}, isBuiltin bool, page int) error {
+func (m *GorokuConfig) ChooseModuleList(msg any, isBuiltin bool, page int) error {
 	im := m.client.GorokuInline
 	if im == nil {
 		return fmt.Errorf("inline manager not ready")
@@ -702,27 +713,27 @@ func (m *GorokuConfig) ChooseModuleList(msg interface{}, isBuiltin bool, page in
 	return err
 }
 
-func (m *GorokuConfig) ChooseFolderList(msg interface{}) error {
+func (m *GorokuConfig) ChooseFolderList(msg any) error {
 	return m.ChooseCategory(msg)
 }
 
-func (m *GorokuConfig) ChooseFolderModuleList(msg interface{}, folderName string) error {
+func (m *GorokuConfig) ChooseFolderModuleList(msg any, folderName string) error {
 	im := m.client.GorokuInline
 	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
 
-	presetFolders := make(map[string]interface{})
-	foldersVal := m.db.Get("presets", "folders", nil)
+	presetFolders := make(map[string]any)
+	foldersVal, _ := m.db.Get("presets", "folders", nil)
 	if foldersVal != nil {
 		if bytes, err := json.Marshal(foldersVal); err == nil {
-			json.Unmarshal(bytes, &presetFolders)
+			_ = json.Unmarshal(bytes, &presetFolders)
 		}
 	}
 
-	var modNames []interface{}
+	var modNames []any
 	if list, exists := presetFolders[folderName]; exists {
-		if arr, ok := list.([]interface{}); ok {
+		if arr, ok := list.([]any); ok {
 			modNames = arr
 		}
 	}
@@ -765,7 +776,7 @@ func (m *GorokuConfig) ChooseFolderModuleList(msg interface{}, folderName string
 	return err
 }
 
-func (m *GorokuConfig) ConfigureModule(msg interface{}, modName string, fromFolder string) error {
+func (m *GorokuConfig) ConfigureModule(msg any, modName string, fromFolder string) error {
 	im := m.client.GorokuInline
 	if im == nil {
 		return fmt.Errorf("inline manager not ready")
@@ -890,7 +901,7 @@ func (m *GorokuConfig) getValidatorDocName(v goroku.Validator) string {
 	return "value"
 }
 
-func (m *GorokuConfig) ConfigureOption(msg interface{}, modName, optionName string, forceHidden bool, fromFolder string, errMsgs ...string) error {
+func (m *GorokuConfig) ConfigureOption(msg any, modName, optionName string, forceHidden bool, fromFolder string, errMsgs ...string) error {
 	im := m.client.GorokuInline
 	if im == nil {
 		return fmt.Errorf("inline manager not ready")
@@ -1153,7 +1164,7 @@ func (m *GorokuConfig) SetBoolOption(call inline.CallbackQuery, modName, optionN
 	return m.ConfigureOption(call, modName, optionName, false, fromFolder)
 }
 
-func (m *GorokuConfig) SetChoiceOption(call inline.CallbackQuery, modName, optionName string, val interface{}, fromFolder string) error {
+func (m *GorokuConfig) SetChoiceOption(call inline.CallbackQuery, modName, optionName string, val any, fromFolder string) error {
 	validatedVal, err := m.validateConfig(modName, optionName, val)
 	if err != nil {
 		_ = call.Answer(fmt.Sprintf("❌ Error: %v", err), true)
@@ -1166,7 +1177,7 @@ func (m *GorokuConfig) SetChoiceOption(call inline.CallbackQuery, modName, optio
 }
 
 func (m *GorokuConfig) SetStringOption(call inline.CallbackQuery, modName, optionName string, val string, fromFolder string) error {
-	var interfaceVal interface{}
+	var interfaceVal any
 	// Parse JSON or standard values (Bug 5)
 	if err := json.Unmarshal([]byte(val), &interfaceVal); err != nil {
 		lowerVal := strings.ToLower(val)
@@ -1182,8 +1193,8 @@ func (m *GorokuConfig) SetStringOption(call inline.CallbackQuery, modName, optio
 			interfaceVal = val
 		}
 	} else {
-		// If it's a JSON array, convert []interface{} to []string for Series compatibility
-		if arr, ok := interfaceVal.([]interface{}); ok {
+		// If it's a JSON array, convert []any to []string for Series compatibility
+		if arr, ok := interfaceVal.([]any); ok {
 			strList := make([]string, len(arr))
 			for i, v := range arr {
 				strList[i] = fmt.Sprintf("%v", v)
@@ -1215,7 +1226,7 @@ func (m *GorokuConfig) AddSeriesItem(call inline.CallbackQuery, modName, optionN
 	var list []string
 	if listStr, ok := curVal.(string); ok {
 		list = strings.Split(listStr, ",")
-	} else if listArr, ok := curVal.([]interface{}); ok {
+	} else if listArr, ok := curVal.([]any); ok {
 		for _, item := range listArr {
 			list = append(list, fmt.Sprintf("%v", item))
 		}
@@ -1225,9 +1236,9 @@ func (m *GorokuConfig) AddSeriesItem(call inline.CallbackQuery, modName, optionN
 
 	// Split comma-separated inputs or parse JSON lists (Bug 6)
 	var itemsToAdd []string
-	var jsonVal interface{}
+	var jsonVal any
 	if err := json.Unmarshal([]byte(itemVal), &jsonVal); err == nil {
-		if arr, ok := jsonVal.([]interface{}); ok {
+		if arr, ok := jsonVal.([]any); ok {
 			for _, item := range arr {
 				itemsToAdd = append(itemsToAdd, fmt.Sprintf("%v", item))
 			}
@@ -1261,7 +1272,7 @@ func (m *GorokuConfig) RemoveSeriesItem(call inline.CallbackQuery, modName, opti
 	var list []string
 	if listStr, ok := curVal.(string); ok {
 		list = strings.Split(listStr, ",")
-	} else if listArr, ok := curVal.([]interface{}); ok {
+	} else if listArr, ok := curVal.([]any); ok {
 		for _, item := range listArr {
 			list = append(list, fmt.Sprintf("%v", item))
 		}
@@ -1302,7 +1313,7 @@ func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 	loader := m.client.Loader
 	if loader == nil {
 		msg.Text = "❌ Error: Modules registry not found."
-		msg.Answer(msg.Text)
+		_ = msg.Answer(msg.Text)
 		return nil
 	}
 
@@ -1326,11 +1337,17 @@ func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 		for _, name := range modNames {
 			mod := modulesList[name]
 			if strings.EqualFold(mod.Name(), "InlineStuff") {
-				customBot, _ := m.db.Get("goroku.inline", "custom_bot", "").(string)
-				botToken, _ := m.db.Get("goroku.inline", "bot_token", "").(string)
+				customBot := "not set"
+				if raw, _ := m.db.Get("goroku.inline", "custom_bot", ""); raw != nil {
+					if cb, ok := raw.(string); ok {
+						customBot = cb
+					}
+				}
 				botTokenState := "not set"
-				if botToken != "" {
-					botTokenState = "set"
+				if raw, _ := m.db.Get("goroku.inline", "bot_token", ""); raw != nil {
+					if _, ok := raw.(string); ok {
+						botTokenState = "set"
+					}
 				}
 				if customBot == "" {
 					customBot = "not set"
@@ -1372,7 +1389,7 @@ func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 		}
 
 		msg.Text = text.String()
-		msg.Answer(msg.Text)
+		_ = msg.Answer(msg.Text)
 		return nil
 	}
 
@@ -1387,13 +1404,13 @@ func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 
 	if found == nil {
 		msg.Text = m.getTrans("no_mod", "🚫 <b>Module doesn't exist</b>")
-		msg.Answer(msg.Text)
+		_ = msg.Answer(msg.Text)
 		return nil
 	}
 
 	if _, hasConfig := found.(goroku.ModuleWithConfig); !hasConfig && !strings.EqualFold(found.Name(), "InlineStuff") {
 		msg.Text = "🚫 <b>This module has no configuration options</b>"
-		msg.Answer(msg.Text)
+		_ = msg.Answer(msg.Text)
 		return nil
 	}
 
@@ -1401,32 +1418,38 @@ func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 	modInfoTrans := m.getTrans("module_info", "⚙️ <b>Configuration of module</b> <code>%s</code>:\n\n")
 	text.WriteString(fmt.Sprintf(modInfoTrans, found.Name()))
 	if strings.EqualFold(found.Name(), "InlineStuff") {
-		customBot, _ := m.db.Get("goroku.inline", "custom_bot", "").(string)
+		customBot := "not set"
+		if raw, _ := m.db.Get("goroku.inline", "custom_bot", ""); raw != nil {
+			if cb, ok := raw.(string); ok {
+				customBot = cb
+			}
+		}
 		if customBot == "" {
 			customBot = "not set"
 		} else {
 			customBot = "@" + strings.TrimPrefix(customBot, "@")
 		}
-		botToken, _ := m.db.Get("goroku.inline", "bot_token", "").(string)
 		botTokenState := "not set"
-		if botToken != "" {
-			parts := strings.SplitN(botToken, ":", 2)
-			if len(parts) == 2 && len(parts[1]) > 6 {
-				botTokenState = fmt.Sprintf("%s:%s...%s", parts[0], parts[1][:3], parts[1][len(parts[1])-3:])
-			} else {
-				botTokenState = "configured"
+		if raw, _ := m.db.Get("goroku.inline", "bot_token", ""); raw != nil {
+			if botToken, ok := raw.(string); ok && botToken != "" {
+				parts := strings.SplitN(botToken, ":", 2)
+				if len(parts) == 2 && len(parts[1]) > 6 {
+					botTokenState = fmt.Sprintf("%s:%s...%s", parts[0], parts[1][:3], parts[1][len(parts[1])-3:])
+				} else {
+					botTokenState = "configured"
+				}
 			}
 		}
 		text.WriteString(fmt.Sprintf("• <b>custom_bot</b> = <code>%s</code>\n", customBot))
 		text.WriteString(fmt.Sprintf("• <b>bot_token</b> = <code>%s</code>\n", botTokenState))
 		text.WriteString("\n<i>Inline bot is configured via .ch_goroku_bot &lt;username&gt;, .ch_bot_token &lt;token&gt; and checked via .inlineinfo, matching Python behavior.</i>\n")
 		msg.Text = text.String()
-		msg.Answer(msg.Text)
+		_ = msg.Answer(msg.Text)
 		return nil
 	}
 
 	keys := []string{}
-	innerMapMerged := make(map[string]interface{})
+	innerMapMerged := make(map[string]any)
 
 	for _, owner := range []string{found.Name(), strings.ToLower(found.Name())} {
 		if innerMap, exists := dbData[owner]; exists {
@@ -1454,7 +1477,7 @@ func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 	}
 
 	msg.Text = text.String()
-	msg.Answer(msg.Text)
+	_ = msg.Answer(msg.Text)
 	return nil
 }
 
@@ -1569,6 +1592,7 @@ func (m *GorokuConfig) FConfigCmd(msg *goroku.Message) error {
 	replyMsg, err := msg.GetReplyMessage()
 	if err != nil {
 		// ignore
+		_ = err
 	}
 
 	parts := []string{}
@@ -1672,8 +1696,8 @@ func (m *GorokuConfig) FConfigCmd(msg *goroku.Message) error {
 	}
 
 	applyUpdate := func(opt, valStr string) (string, error) {
-		var val interface{} = valStr
-		var jsonVal interface{}
+		var val any = valStr
+		var jsonVal any
 		if err := json.Unmarshal([]byte(valStr), &jsonVal); err == nil {
 			val = jsonVal
 		} else {
@@ -1770,7 +1794,7 @@ var schemas = map[string]map[string]goroku.Validator{
 	},
 	"translate": {
 		"only_text": &goroku.BooleanValidator{},
-		"provider":  &goroku.ChoiceValidator{PossibleValues: []interface{}{"telegram", "google"}},
+		"provider":  &goroku.ChoiceValidator{PossibleValues: []string{"telegram", "google"}},
 	},
 	"terminal": {
 		"flood_wait_protect": &goroku.IntegerValidator{},
@@ -1781,7 +1805,7 @@ var schemas = map[string]map[string]goroku.Validator{
 	},
 	"tester": {
 		"force_send_all":        &goroku.BooleanValidator{},
-		"tglog_level":           &goroku.ChoiceValidator{PossibleValues: []interface{}{"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "ALL"}},
+		"tglog_level":           &goroku.ChoiceValidator{PossibleValues: []string{"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "ALL"}},
 		"ignore_common":         &goroku.BooleanValidator{},
 		"disable_internet_warn": &goroku.BooleanValidator{},
 		"custom_message":        &goroku.StringValidator{},
@@ -1843,7 +1867,7 @@ func (m *GorokuConfig) isOptionHidden(modName, option string) bool {
 	return false
 }
 
-func (m *GorokuConfig) validateConfig(modName, option string, value interface{}) (interface{}, error) {
+func (m *GorokuConfig) validateConfig(modName, option string, value any) (any, error) {
 	modName = strings.ToLower(modName)
 	option = strings.ToLower(option)
 	if val := m.getValidator(modName, option); val != nil {

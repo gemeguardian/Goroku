@@ -1,6 +1,7 @@
 package goroku
 
 import (
+	"context"
 	"testing"
 )
 
@@ -33,7 +34,7 @@ func TestCoreOverwriteError(t *testing.T) {
 
 func TestRunContext(t *testing.T) {
 	called := false
-	RunContext(nil, func() {
+	RunContext(context.TODO(), func() {
 		called = true
 	})
 	if !called {

@@ -20,7 +20,6 @@ func TestFirstNonEmpty(t *testing.T) {
 		{[]string{"", "", ""}, ""},
 		{[]string{"apple", "banana"}, "apple"},
 	}
-
 	for _, tc := range tests {
 		got := firstNonEmpty(tc.inputs...)
 		if got != tc.expected {
@@ -38,7 +37,6 @@ func TestStripHTML(t *testing.T) {
 		{"hello <a href=''>world</a>!", "hello world!"},
 		{"plain text", "plain text"},
 	}
-
 	for _, tc := range tests {
 		got := stripHTML(tc.input)
 		if got != tc.expected {
@@ -56,7 +54,6 @@ func TestCallbackQueryAnswerAndEdit(t *testing.T) {
 			lastMethod = req.URL.Path
 			bodyBytes, _ := io.ReadAll(req.Body)
 			lastBody = string(bodyBytes)
-
 			var respStr string
 			if req.URL.Path == "/botmock_token/getMe" {
 				respStr = `{"ok": true, "result": {"id": 123456, "is_bot": true, "first_name": "TestBot", "username": "test_bot"}}`
@@ -70,7 +67,7 @@ func TestCallbackQueryAnswerAndEdit(t *testing.T) {
 		},
 	}
 
-	bot, err := tgbotapi.NewBotAPIWithClient("mock_token", tgbotapi.APIEndpoint, &http.Client{Transport: transport})
+	bot, err := tgbotapi.NewBotAPIWithOptions("mock_token", tgbotapi.WithAPIEndpoint(tgbotapi.APIEndpoint), tgbotapi.WithHTTPClient(&http.Client{Transport: transport}))
 	if err != nil {
 		t.Fatalf("Failed to create mock bot: %v", err)
 	}
@@ -79,15 +76,12 @@ func TestCallbackQueryAnswerAndEdit(t *testing.T) {
 		bot:         bot,
 		buttonUnits: make(map[string]string),
 	}
-
 	cb := CallbackQuery{
 		ID:      "cb_id_123",
 		Manager: im,
 	}
 
-	// 1. Test Answer
-	err = cb.Answer("Hello", true)
-	if err != nil {
+	if err := cb.Answer("Hello", true); err != nil {
 		t.Fatalf("CallbackQuery.Answer failed: %v", err)
 	}
 	if !strings.Contains(lastMethod, "answerCallbackQuery") {
@@ -98,9 +92,7 @@ func TestCallbackQueryAnswerAndEdit(t *testing.T) {
 		t.Errorf("Expected cb_id_123 and Hello in request body, got %s", unescapedBody)
 	}
 
-	// 2. Test Edit with no message info
-	err = cb.Edit("New text", tgbotapi.InlineKeyboardMarkup{})
-	if err == nil || !strings.Contains(err.Error(), "no message to edit") {
+	if err := cb.Edit("New text", tgbotapi.InlineKeyboardMarkup{}); err == nil || !strings.Contains(err.Error(), "no message to edit") {
 		t.Errorf("Expected 'no message to edit' error, got %v", err)
 	}
 }
@@ -114,7 +106,6 @@ func TestInlineMessageEditAndDelete(t *testing.T) {
 			lastMethod = req.URL.Path
 			bodyBytes, _ := io.ReadAll(req.Body)
 			lastBody = string(bodyBytes)
-
 			var respStr string
 			if req.URL.Path == "/botmock_token/getMe" {
 				respStr = `{"ok": true, "result": {"id": 123456, "is_bot": true, "first_name": "TestBot", "username": "test_bot"}}`
@@ -128,7 +119,7 @@ func TestInlineMessageEditAndDelete(t *testing.T) {
 		},
 	}
 
-	bot, err := tgbotapi.NewBotAPIWithClient("mock_token", tgbotapi.APIEndpoint, &http.Client{Transport: transport})
+	bot, err := tgbotapi.NewBotAPIWithOptions("mock_token", tgbotapi.WithAPIEndpoint(tgbotapi.APIEndpoint), tgbotapi.WithHTTPClient(&http.Client{Transport: transport}))
 	if err != nil {
 		t.Fatalf("Failed to create mock bot: %v", err)
 	}
@@ -138,13 +129,11 @@ func TestInlineMessageEditAndDelete(t *testing.T) {
 		buttonUnits:      make(map[string]string),
 		activeMessageIDs: make(map[string]MessageIDInfo),
 	}
-
 	msg := NewInlineMessage(im, "unit_123", "inline_msg_id_789")
 	if msg.Form == nil {
 		t.Error("Expected Form map to be initialized")
 	}
 
-	// 1. Test Edit
 	btnVal := "btn_data_val"
 	swVal := "switch_val"
 	markup := tgbotapi.NewInlineKeyboardMarkup(
@@ -154,11 +143,9 @@ func TestInlineMessageEditAndDelete(t *testing.T) {
 		),
 	)
 
-	err = msg.Edit("Updated text", markup)
-	if err != nil {
+	if err := msg.Edit("Updated text", markup); err != nil {
 		t.Fatalf("InlineMessage.Edit failed: %v", err)
 	}
-
 	if !strings.Contains(lastMethod, "editMessageText") {
 		t.Errorf("Expected editMessageText method, got %s", lastMethod)
 	}
@@ -167,12 +154,10 @@ func TestInlineMessageEditAndDelete(t *testing.T) {
 		t.Errorf("Expected inlineMsgID and Text in request body, got %s", unescapedBody)
 	}
 
-	// Verify button mapping in manager
 	im.mu.RLock()
 	uData := im.buttonUnits[btnVal]
 	uSwitch := im.buttonUnits[swVal]
 	im.mu.RUnlock()
-
 	if uData != "unit_123" {
 		t.Errorf("Expected buttonUnits['%s'] to be 'unit_123', got %s", btnVal, uData)
 	}
@@ -180,7 +165,6 @@ func TestInlineMessageEditAndDelete(t *testing.T) {
 		t.Errorf("Expected buttonUnits['%s'] to be 'unit_123', got %s", swVal, uSwitch)
 	}
 
-	// 2. Test Delete (Fallback, wiping text/markup)
 	ok, err := msg.Delete()
 	if err != nil {
 		t.Fatalf("InlineMessage.Delete failed: %v", err)
@@ -193,14 +177,10 @@ func TestInlineMessageEditAndDelete(t *testing.T) {
 		t.Errorf("Expected editMessageText with Message closed, got method=%s body=%s", lastMethod, unescapedBody2)
 	}
 
-	// 3. Test Delete (With client.DeleteMessage)
 	mockClient := &mockDeletableClient{}
 	im.client = mockClient
-	im.activeMessageIDs["unit_123"] = MessageIDInfo{
-		ChatID:    456,
-		MessageID: 789,
-	}
-
+	im.activeMessageIDs["unit_123"] = MessageIDInfo{ChatID: 456, MessageID: 789}
+	_ = mockClient
 	ok, err = msg.Delete()
 	if err != nil {
 		t.Fatalf("InlineMessage.Delete with client failed: %v", err)
@@ -212,7 +192,6 @@ func TestInlineMessageEditAndDelete(t *testing.T) {
 		t.Errorf("Expected mockClient to receive DeleteMessage(456, 789), got called=%v chat=%v msgID=%d", mockClient.deleteCalled, mockClient.chat, mockClient.messageID)
 	}
 
-	// Unload should call Delete
 	mockClient.deleteCalled = false
 	im.activeMessageIDs["unit_123"] = MessageIDInfo{ChatID: 456, MessageID: 789}
 	ok, err = msg.Unload()
@@ -230,7 +209,6 @@ func TestBotInlineMessageEditAndDelete(t *testing.T) {
 			lastMethod = req.URL.Path
 			bodyBytes, _ := io.ReadAll(req.Body)
 			lastBody = string(bodyBytes)
-
 			var respStr string
 			if req.URL.Path == "/botmock_token/getMe" {
 				respStr = `{"ok": true, "result": {"id": 123456, "is_bot": true, "first_name": "TestBot", "username": "test_bot"}}`
@@ -244,7 +222,7 @@ func TestBotInlineMessageEditAndDelete(t *testing.T) {
 		},
 	}
 
-	bot, err := tgbotapi.NewBotAPIWithClient("mock_token", tgbotapi.APIEndpoint, &http.Client{Transport: transport})
+	bot, err := tgbotapi.NewBotAPIWithOptions("mock_token", tgbotapi.WithAPIEndpoint(tgbotapi.APIEndpoint), tgbotapi.WithHTTPClient(&http.Client{Transport: transport}))
 	if err != nil {
 		t.Fatalf("Failed to create mock bot: %v", err)
 	}
@@ -253,13 +231,11 @@ func TestBotInlineMessageEditAndDelete(t *testing.T) {
 		bot:         bot,
 		buttonUnits: make(map[string]string),
 	}
-
 	msg := NewBotInlineMessage(im, "unit_456", 111, 222)
 	if msg.Form == nil {
 		t.Error("Expected Form map to be initialized")
 	}
 
-	// 1. Test Edit
 	btnVal := "data_val"
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -267,11 +243,9 @@ func TestBotInlineMessageEditAndDelete(t *testing.T) {
 		),
 	)
 
-	err = msg.Edit("Bot text", markup)
-	if err != nil {
+	if err := msg.Edit("Bot text", markup); err != nil {
 		t.Fatalf("BotInlineMessage.Edit failed: %v", err)
 	}
-
 	if !strings.Contains(lastMethod, "editMessageText") {
 		t.Errorf("Expected editMessageText method, got %s", lastMethod)
 	}
@@ -280,7 +254,6 @@ func TestBotInlineMessageEditAndDelete(t *testing.T) {
 		t.Errorf("Expected ChatID, MessageID and Text in request body, got %s", unescapedBody)
 	}
 
-	// 2. Test Delete
 	ok, err := msg.Delete()
 	if err != nil {
 		t.Fatalf("BotInlineMessage.Delete failed: %v", err)
@@ -296,9 +269,16 @@ func TestBotInlineMessageEditAndDelete(t *testing.T) {
 		t.Errorf("Expected ChatID and MessageID in request body, got %s", unescapedBody2)
 	}
 
-	// Unload should call Delete
 	ok, err = msg.Unload()
 	if err != nil || !ok {
 		t.Errorf("Unload failed: err=%v, ok=%v", err, ok)
+	}
+}
+
+func TestLocalRandStr(t *testing.T) {
+	s1 := localRandStr(10)
+	s2 := localRandStr(10)
+	if len(s1) != 10 || len(s2) != 10 || s1 == s2 {
+		t.Error("localRandStr failed")
 	}
 }

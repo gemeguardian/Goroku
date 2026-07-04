@@ -27,7 +27,7 @@ func TestGallery(t *testing.T) {
 			}, nil
 		},
 	}
-	bot, err := tgbotapi.NewBotAPIWithClient("mock_token", tgbotapi.APIEndpoint, &http.Client{Transport: transport})
+	bot, err := tgbotapi.NewBotAPIWithOptions("mock_token", tgbotapi.WithAPIEndpoint(tgbotapi.APIEndpoint), tgbotapi.WithHTTPClient(&http.Client{Transport: transport}))
 	if err != nil {
 		t.Fatalf("Failed to create mock bot: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestListAndQueryGallery(t *testing.T) {
 			}, nil
 		},
 	}
-	bot, err := tgbotapi.NewBotAPIWithClient("mock_token", tgbotapi.APIEndpoint, &http.Client{Transport: transport})
+	bot, err := tgbotapi.NewBotAPIWithOptions("mock_token", tgbotapi.WithAPIEndpoint(tgbotapi.APIEndpoint), tgbotapi.WithHTTPClient(&http.Client{Transport: transport}))
 	if err != nil {
 		t.Fatalf("Failed to create mock bot: %v", err)
 	}

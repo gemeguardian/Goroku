@@ -97,7 +97,7 @@ func TestEntitiesToHTML(t *testing.T) {
 func TestGetEntityCached(t *testing.T) {
 	client := &CustomTelegramClient{
 		TGID:              42,
-		GorokuEntityCache: make(map[interface{}]cache.CacheRecordEntity),
+		GorokuEntityCache: make(map[cache.EntityCacheKey]cache.CacheRecordEntity),
 	}
 
 	client.GorokuEntityCache[cache.NormalizeEntityCacheKey(123)] = cache.CacheRecordEntity{
@@ -115,7 +115,7 @@ func TestGetEntityCached(t *testing.T) {
 	}
 
 	// Force resolve calling resolvePeer
-	client.GorokuEntityCache = make(map[interface{}]cache.CacheRecordEntity)
+	client.GorokuEntityCache = make(map[cache.EntityCacheKey]cache.CacheRecordEntity)
 	_, err = client.GetEntity(int64(123), 100, false)
 	if err == nil {
 		t.Fatal("expected error since rawAPI is not set")
@@ -126,8 +126,8 @@ func TestGetFullUserCached(t *testing.T) {
 	client := &CustomTelegramClient{
 		TGID:                42,
 		ctx:                 context.Background(),
-		GorokuEntityCache:   make(map[interface{}]cache.CacheRecordEntity),
-		GorokuFullUserCache: make(map[interface{}]cache.CacheRecordFullUser),
+		GorokuEntityCache:   make(map[cache.EntityCacheKey]cache.CacheRecordEntity),
+		GorokuFullUserCache: make(map[cache.EntityCacheKey]cache.CacheRecordFullUser),
 	}
 
 	// Mock cached full user
@@ -146,7 +146,7 @@ func TestGetFullUserCached(t *testing.T) {
 	}
 
 	// Resolve calling API
-	client.GorokuFullUserCache = make(map[interface{}]cache.CacheRecordFullUser)
+	client.GorokuFullUserCache = make(map[cache.EntityCacheKey]cache.CacheRecordFullUser)
 	client.GorokuEntityCache[cache.NormalizeEntityCacheKey(123)] = cache.CacheRecordEntity{
 		Entity: &tg.InputPeerUser{UserID: 123, AccessHash: 456},
 	}
@@ -161,7 +161,7 @@ func TestGetFullUserCached(t *testing.T) {
 			},
 		}
 		buf := &bin.Buffer{}
-		resp.Encode(buf)
+		_ = resp.Encode(buf)
 		return output.Decode(buf)
 	}
 
@@ -179,8 +179,8 @@ func TestGetFullChannelCached(t *testing.T) {
 	client := &CustomTelegramClient{
 		TGID:                   42,
 		ctx:                    context.Background(),
-		GorokuEntityCache:      make(map[interface{}]cache.CacheRecordEntity),
-		GorokuFullChannelCache: make(map[interface{}]cache.CacheRecordFullChannel),
+		GorokuEntityCache:      make(map[cache.EntityCacheKey]cache.CacheRecordEntity),
+		GorokuFullChannelCache: make(map[cache.EntityCacheKey]cache.CacheRecordFullChannel),
 	}
 
 	// Mock cached channel
@@ -199,7 +199,7 @@ func TestGetFullChannelCached(t *testing.T) {
 	}
 
 	// Resolve calling API
-	client.GorokuFullChannelCache = make(map[interface{}]cache.CacheRecordFullChannel)
+	client.GorokuFullChannelCache = make(map[cache.EntityCacheKey]cache.CacheRecordFullChannel)
 	client.GorokuEntityCache[cache.NormalizeEntityCacheKey(-100123)] = cache.CacheRecordEntity{
 		Entity: &tg.InputPeerChannel{ChannelID: 123, AccessHash: 456},
 	}
@@ -212,7 +212,7 @@ func TestGetFullChannelCached(t *testing.T) {
 			FullChat: &tg.ChannelFull{About: "retrieved chan", ChatPhoto: &tg.PhotoEmpty{}},
 		}
 		buf := &bin.Buffer{}
-		resp.Encode(buf)
+		_ = resp.Encode(buf)
 		return output.Decode(buf)
 	}
 
@@ -230,12 +230,12 @@ func TestGetPermsCachedDirect(t *testing.T) {
 	client := &CustomTelegramClient{
 		TGID:              42,
 		ctx:               context.Background(),
-		GorokuEntityCache: make(map[interface{}]cache.CacheRecordEntity),
-		GorokuPermsCache:  make(map[interface{}]map[interface{}]cache.CacheRecordPerms),
+		GorokuEntityCache: make(map[cache.EntityCacheKey]cache.CacheRecordEntity),
+		GorokuPermsCache:  make(map[cache.EntityCacheKey]map[cache.EntityCacheKey]cache.CacheRecordPerms),
 	}
 
 	// Mock cached perms
-	client.GorokuPermsCache[cache.NormalizeEntityCacheKey(-100123)] = map[interface{}]cache.CacheRecordPerms{
+	client.GorokuPermsCache[cache.NormalizeEntityCacheKey(-100123)] = map[cache.EntityCacheKey]cache.CacheRecordPerms{
 		cache.NormalizeEntityCacheKey(200): {
 			Perms: "admin_rights",
 			Exp:   time.Now().Unix() + 100,
@@ -252,7 +252,7 @@ func TestGetPermsCachedDirect(t *testing.T) {
 
 	// Mock fetch permissions for InputPeerUser (should return mapped "is_private": true)
 	client.rawAPI = tg.NewClient(&mockInvoker{})
-	client.GorokuPermsCache = make(map[interface{}]map[interface{}]cache.CacheRecordPerms)
+	client.GorokuPermsCache = make(map[cache.EntityCacheKey]map[cache.EntityCacheKey]cache.CacheRecordPerms)
 	client.GorokuEntityCache[cache.NormalizeEntityCacheKey(123)] = cache.CacheRecordEntity{
 		Entity: &tg.InputPeerUser{UserID: 123},
 	}
@@ -264,9 +264,9 @@ func TestGetPermsCachedDirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, ok := res2.(map[string]interface{})
+	m, ok := res2.(map[string]any)
 	if !ok {
-		t.Fatalf("expected map[string]interface{}, got %T", res2)
+		t.Fatalf("expected map[string]any, got %T", res2)
 	}
 	isPrivate, exists := m["is_private"].(bool)
 	if !exists || !isPrivate {

@@ -14,7 +14,15 @@ import (
 	"github.com/gotd/td/tg"
 )
 
-func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass, error) {
+func (c *CustomTelegramClient) ResolvePeer(chat any) (tg.InputPeerClass, error) {
+	return c.resolvePeerInternal(chat)
+}
+
+func (c *CustomTelegramClient) ResolvePeerRef(chat ChatRef) (tg.InputPeerClass, error) {
+	return c.resolvePeerInternal(chat.AsLegacy())
+}
+
+func (c *CustomTelegramClient) resolvePeerInternal(chat any) (tg.InputPeerClass, error) {
 	if c.rawAPI == nil {
 		return nil, fmt.Errorf("client not connected")
 	}
@@ -34,7 +42,7 @@ func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass,
 	} else if username, ok := chat.(string); ok {
 		usernameLower := strings.ToLower(strings.TrimPrefix(username, "@"))
 		c.cacheMu.RLock()
-		record, ok := c.GorokuEntityCache[usernameLower]
+		record, ok := c.GorokuEntityCache[cache.EntityCacheKey{Username: usernameLower}]
 		c.cacheMu.RUnlock()
 		if ok {
 			if peer, ok := record.Entity.(tg.InputPeerClass); ok {
@@ -101,8 +109,8 @@ func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass,
 			}
 			record := cache.CacheRecordEntity{Entity: peer, Exp: time.Now().Unix() + 86400*30, TS: time.Now().Unix()}
 			c.cacheMu.Lock()
-			c.GorokuEntityCache[user.ID] = record
-			c.GorokuEntityCache[vLower] = record
+			c.GorokuEntityCache[cache.EntityCacheKey{ID: user.ID}] = record
+			c.GorokuEntityCache[cache.EntityCacheKey{Username: vLower}] = record
 			c.cacheMu.Unlock()
 			return peer, nil
 		}
@@ -112,17 +120,17 @@ func (c *CustomTelegramClient) ResolvePeer(chat interface{}) (tg.InputPeerClass,
 				peer := &tg.InputPeerChat{ChatID: ch.ID}
 				record := cache.CacheRecordEntity{Entity: peer, Exp: time.Now().Unix() + 86400*30, TS: time.Now().Unix()}
 				c.cacheMu.Lock()
-				c.GorokuEntityCache[ch.ID] = record
-				c.GorokuEntityCache[-ch.ID] = record
+				c.GorokuEntityCache[cache.EntityCacheKey{ID: ch.ID}] = record
+				c.GorokuEntityCache[cache.EntityCacheKey{ID: -ch.ID}] = record
 				c.cacheMu.Unlock()
 				return peer, nil
 			case *tg.Channel:
 				peer := &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}
 				record := cache.CacheRecordEntity{Entity: peer, Exp: time.Now().Unix() + 86400*30, TS: time.Now().Unix()}
 				c.cacheMu.Lock()
-				c.GorokuEntityCache[ch.ID] = record
-				c.GorokuEntityCache[cache.TelegramChannelChatID(ch.ID)] = record
-				c.GorokuEntityCache[vLower] = record
+				c.GorokuEntityCache[cache.EntityCacheKey{ID: ch.ID}] = record
+				c.GorokuEntityCache[cache.EntityCacheKey{ID: cache.TelegramChannelChatID(ch.ID)}] = record
+				c.GorokuEntityCache[cache.EntityCacheKey{Username: vLower}] = record
 				c.cacheMu.Unlock()
 				return peer, nil
 			}
@@ -225,7 +233,7 @@ func (c *CustomTelegramClient) cacheEntities(e tg.Entities) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
 	if c.GorokuEntityCache == nil {
-		c.GorokuEntityCache = make(map[interface{}]cache.CacheRecordEntity)
+		c.GorokuEntityCache = make(map[cache.EntityCacheKey]cache.CacheRecordEntity)
 	}
 	exp := time.Now().Unix() + 86400*30 // 30 days cache expiration
 
@@ -236,13 +244,13 @@ func (c *CustomTelegramClient) cacheEntities(e tg.Entities) {
 		} else {
 			peer = &tg.InputPeerUser{UserID: user.ID, AccessHash: user.AccessHash}
 		}
-		c.GorokuEntityCache[user.ID] = cache.CacheRecordEntity{
+		c.GorokuEntityCache[cache.EntityCacheKey{ID: user.ID}] = cache.CacheRecordEntity{
 			Entity: peer,
 			Exp:    exp,
 			TS:     time.Now().Unix(),
 		}
 		if user.Username != "" {
-			c.GorokuEntityCache[strings.ToLower(user.Username)] = cache.CacheRecordEntity{
+			c.GorokuEntityCache[cache.EntityCacheKey{Username: strings.ToLower(user.Username)}] = cache.CacheRecordEntity{
 				Entity: peer,
 				Exp:    exp,
 				TS:     time.Now().Unix(),
@@ -257,8 +265,8 @@ func (c *CustomTelegramClient) cacheEntities(e tg.Entities) {
 			Exp:    exp,
 			TS:     time.Now().Unix(),
 		}
-		c.GorokuEntityCache[chat.ID] = record
-		c.GorokuEntityCache[-chat.ID] = record
+		c.GorokuEntityCache[cache.EntityCacheKey{ID: chat.ID}] = record
+		c.GorokuEntityCache[cache.EntityCacheKey{ID: -chat.ID}] = record
 	}
 
 	for _, channel := range e.Channels {
@@ -268,10 +276,10 @@ func (c *CustomTelegramClient) cacheEntities(e tg.Entities) {
 			Exp:    exp,
 			TS:     time.Now().Unix(),
 		}
-		c.GorokuEntityCache[channel.ID] = record
-		c.GorokuEntityCache[cache.TelegramChannelChatID(channel.ID)] = record
+		c.GorokuEntityCache[cache.EntityCacheKey{ID: channel.ID}] = record
+		c.GorokuEntityCache[cache.EntityCacheKey{ID: cache.TelegramChannelChatID(channel.ID)}] = record
 		if channel.Username != "" {
-			c.GorokuEntityCache[strings.ToLower(channel.Username)] = record
+			c.GorokuEntityCache[cache.EntityCacheKey{Username: strings.ToLower(channel.Username)}] = record
 		}
 	}
 }

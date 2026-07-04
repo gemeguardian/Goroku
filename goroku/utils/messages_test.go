@@ -10,7 +10,7 @@ type dummyDoc struct {
 }
 
 type dummyMsgWithMedia struct {
-	Media interface{}
+	Media any
 }
 
 func TestGetTopic(t *testing.T) {
@@ -129,7 +129,7 @@ func TestHasMedia(t *testing.T) {
 		t.Error("Expected false for nil Media field")
 	}
 
-	var dummyMedia interface{} = "some-media"
+	var dummyMedia any = "some-media"
 	msgWithMedia := &dummyMsgWithMedia{Media: dummyMedia}
 	if !HasMedia(msgWithMedia) {
 		t.Error("Expected true for non-nil Media field")

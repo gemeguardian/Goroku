@@ -2,13 +2,12 @@ package inline
 
 import (
 	"fmt"
-	"reflect"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 // SetFSMState sets the FSM state for a user.
-func (im *InlineManager) SetFSMState(user interface{}, state interface{}) bool {
+func (im *InlineManager) SetFSMState(user any, state any) bool {
 	im.mu.Lock()
 	defer im.mu.Unlock()
 
@@ -25,7 +24,7 @@ func (im *InlineManager) SetFSMState(user interface{}, state interface{}) bool {
 }
 
 // GetFSMState retrieves the FSM state of a user. Returns false if not set.
-func (im *InlineManager) GetFSMState(user interface{}) interface{} {
+func (im *InlineManager) GetFSMState(user any) any {
 	im.mu.RLock()
 	defer im.mu.RUnlock()
 
@@ -44,23 +43,14 @@ func (im *InlineManager) HandleBotPM(m *tgbotapi.Message) {
 
 	// Forward PM to loaded modules that support HandleBotPM
 	if im.allModules != nil {
-		val := reflect.ValueOf(im.allModules)
-		method := val.MethodByName("GetModules")
-		if method.IsValid() {
-			res := method.Call(nil)
-			if len(res) > 0 && res[0].Kind() == reflect.Map {
-				iter := res[0].MapRange()
-				for iter.Next() {
-					mod := iter.Value().Interface()
-					if m.Text == "/start" {
-						if named, ok := mod.(interface{ Name() string }); !ok || named.Name() != "InlineStuff" {
-							continue
-						}
-					}
-					if handler, ok := mod.(interface{ HandleBotPM(msg *tgbotapi.Message) }); ok {
-						handler.HandleBotPM(m)
-					}
+		for _, mod := range im.allModules.GetModules() {
+			if m.Text == "/start" {
+				if named, ok := mod.(interface{ Name() string }); !ok || named.Name() != "InlineStuff" {
+					continue
 				}
+			}
+			if handler, ok := mod.(interface{ HandleBotPM(msg *tgbotapi.Message) }); ok {
+				handler.HandleBotPM(m)
 			}
 		}
 	}

@@ -123,12 +123,12 @@ func (dm *dummyModule) Watchers() []WatcherHandler                            { 
 
 func TestHandleCommandSuccess(t *testing.T) {
 	db := NewDatabase(42)
-	db.data["goroku.security"] = map[string]interface{}{
-		"owner":         []interface{}{int64(42)},
-		"all_users":     []interface{}{},
+	db.data["goroku.security"] = map[string]any{
+		"owner":         []any{int64(42)},
+		"all_users":     []any{},
 		"bounding_mask": float64(ALL | EVERYONE),
 	}
-	db.data["goroku.main"] = map[string]interface{}{
+	db.data["goroku.main"] = map[string]any{
 		"command_prefix": ".",
 	}
 

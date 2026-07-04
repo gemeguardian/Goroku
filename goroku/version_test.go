@@ -15,7 +15,7 @@ func TestVersionInfo(t *testing.T) {
 	}
 
 	// Test IsNoGit environment variable
-	os.Setenv("GOROKU_NO_GIT", "1")
+	_ = os.Setenv("GOROKU_NO_GIT", "1")
 	if !IsNoGit() {
 		t.Error("Expected IsNoGit to be true when GOROKU_NO_GIT=1")
 	}
@@ -23,7 +23,7 @@ func TestVersionInfo(t *testing.T) {
 		t.Errorf("Expected GetVersionBranch to be 'master' when Git is disabled, got %q", branch)
 	}
 
-	os.Unsetenv("GOROKU_NO_GIT")
+	_ = os.Unsetenv("GOROKU_NO_GIT")
 	if IsNoGit() {
 		t.Error("Expected IsNoGit to be false when GOROKU_NO_GIT is unset")
 	}

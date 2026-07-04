@@ -10,22 +10,22 @@ func TestBooleanValidator(t *testing.T) {
 	v := NewBooleanValidator()
 
 	for _, tc := range []struct {
-		input    interface{}
+		input    any
 		expected bool
 		err      bool
 	}{
 		{"true", true, false},
-		{"1", true, false},
-		{"yes", true, false},
-		{"on", true, false},
-		{"y", true, false},
+		{"TRUE", true, false},
 		{"false", false, false},
-		{"0", false, false},
-		{"no", false, false},
-		{"off", false, false},
-		{"n", false, false},
+		{"FALSE", false, false},
+		{true, true, false},
+		{false, false, false},
+		{1, true, false},
+		{0, false, false},
+		{1.5, true, false},
+		{0.0, false, false},
 		{"invalid", false, true},
-		{123, false, true},
+		{123, true, false},
 	} {
 		res, err := v.Validate(tc.input)
 		if tc.err {
@@ -47,8 +47,8 @@ func TestIntegerValidator(t *testing.T) {
 	v := NewIntegerValidator(10, 20, true, true)
 
 	for _, tc := range []struct {
-		input    interface{}
-		expected int
+		input    any
+		expected int64
 		err      bool
 	}{
 		{"15", 15, false},
@@ -75,11 +75,11 @@ func TestIntegerValidator(t *testing.T) {
 }
 
 func TestChoiceValidator(t *testing.T) {
-	v := NewChoiceValidator([]interface{}{"apple", "banana", 42})
+	v := NewChoiceValidator([]any{"apple", "banana", 42})
 
 	for _, tc := range []struct {
-		input    interface{}
-		expected interface{}
+		input    any
+		expected any
 		err      bool
 	}{
 		{"apple", "apple", false},
@@ -106,7 +106,7 @@ func TestLinkValidator(t *testing.T) {
 	v := NewLinkValidator()
 
 	for _, tc := range []struct {
-		input interface{}
+		input any
 		err   bool
 	}{
 		{"https://google.com", false},
@@ -134,11 +134,11 @@ func TestSeriesValidator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	slice, ok := res.([]interface{})
+	slice, ok := res.([]any)
 	if !ok {
-		t.Fatalf("Expected []interface{}, got %T", res)
+		t.Fatalf("Expected []any, got %T", res)
 	}
-	if len(slice) != 3 || slice[0] != 3 || slice[1] != 5 || slice[2] != 7 {
+	if len(slice) != 3 || fmt.Sprintf("%v", slice[0]) != "3" || fmt.Sprintf("%v", slice[1]) != "5" || fmt.Sprintf("%v", slice[2]) != "7" {
 		t.Errorf("Unexpected result: %v", slice)
 	}
 
@@ -153,7 +153,7 @@ func TestStringValidator(t *testing.T) {
 	v := &StringValidator{MinLen: 3, MaxLen: 6}
 
 	for _, tc := range []struct {
-		input interface{}
+		input any
 		err   bool
 	}{
 		{"abc", false},
@@ -175,7 +175,7 @@ func TestRegExpValidator(t *testing.T) {
 	v := &RegExpValidator{Pattern: regexp.MustCompile(`^\d{3}$`)}
 
 	for _, tc := range []struct {
-		input interface{}
+		input any
 		err   bool
 	}{
 		{"123", false},
@@ -193,10 +193,10 @@ func TestRegExpValidator(t *testing.T) {
 }
 
 func TestFloatValidator(t *testing.T) {
-	v := &FloatValidator{Minimum: 1.5, Maximum: 5.5}
+	v := &FloatValidator{Minimum: 1.5, Maximum: 5.5, HasMin: true, HasMax: true}
 
 	for _, tc := range []struct {
-		input    interface{}
+		input    any
 		expected float64
 		err      bool
 	}{
@@ -226,7 +226,7 @@ func TestTelegramIDValidator(t *testing.T) {
 	v := &TelegramIDValidator{}
 
 	for _, tc := range []struct {
-		input interface{}
+		input any
 		err   bool
 	}{
 		{"12345", false},
@@ -252,7 +252,7 @@ func TestUnionValidator(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		input interface{}
+		input any
 		err   bool
 	}{
 		{"3", false},
@@ -292,8 +292,8 @@ func TestHiddenValidator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if res != true {
-		t.Errorf("Expected true, got %v", res)
+	if res != "true" {
+		t.Errorf(`Expected "true", got %v`, res)
 	}
 }
 
@@ -317,7 +317,7 @@ func TestEntityLikeValidator(t *testing.T) {
 	v := &EntityLikeValidator{}
 
 	for _, tc := range []struct {
-		input interface{}
+		input any
 		err   bool
 	}{
 		{"@username", false},

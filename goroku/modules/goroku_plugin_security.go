@@ -1,7 +1,7 @@
 package modules
 
 import (
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec
 	"encoding/hex"
 	"goroku/goroku"
 	"strings"
@@ -54,7 +54,7 @@ func (m *GorokuPluginSecurity) getTrans(key, def string) string {
 }
 
 func getModuleHash(name string) string {
-	hasher := md5.New()
+	hasher := md5.New() //nolint:gosec
 	hasher.Write([]byte(strings.ToLower(name)))
 	return hex.EncodeToString(hasher.Sum(nil))
 }
@@ -142,14 +142,14 @@ func (m *GorokuPluginSecurity) UnexternalCmd(msg *goroku.Message) error {
 	modHash := getModuleHash(modName)
 
 	// 1. Internalize (trust)
-	rawInternalized := m.db.Get("GorokuPluginSecurity", "internalized", []interface{}{})
+	rawInternalized, _ := m.db.Get("GorokuPluginSecurity", "internalized", []any{})
 	var internalized []string
 	alreadyInternal := false
-	if slice, ok := rawInternalized.([]interface{}); ok {
+	if slice, ok := rawInternalized.([]any); ok {
 		for _, item := range slice {
 			if s, ok := item.(string); ok {
 				internalized = append(internalized, s)
-				if strings.ToLower(s) == strings.ToLower(modName) {
+				if strings.EqualFold(s, modName) {
 					alreadyInternal = true
 				}
 			}
@@ -157,14 +157,14 @@ func (m *GorokuPluginSecurity) UnexternalCmd(msg *goroku.Message) error {
 	}
 	if !alreadyInternal {
 		internalized = append(internalized, modName)
-		m.db.Set("GorokuPluginSecurity", "internalized", internalized)
+		m.db.SetStringSlice("GorokuPluginSecurity", "internalized", internalized)
 	}
 
 	// 2. Allow session
-	rawSession := m.db.Get("GorokuPluginSecurity", "session_allow", []interface{}{})
+	rawSession, _ := m.db.Get("GorokuPluginSecurity", "session_allow", []any{})
 	var sessionAllow []string
 	alreadyAllowed := false
-	if slice, ok := rawSession.([]interface{}); ok {
+	if slice, ok := rawSession.([]any); ok {
 		for _, item := range slice {
 			if s, ok := item.(string); ok {
 				sessionAllow = append(sessionAllow, s)
@@ -176,7 +176,7 @@ func (m *GorokuPluginSecurity) UnexternalCmd(msg *goroku.Message) error {
 	}
 	if !alreadyAllowed {
 		sessionAllow = append(sessionAllow, modHash)
-		m.db.Set("GorokuPluginSecurity", "session_allow", sessionAllow)
+		m.db.SetStringSlice("GorokuPluginSecurity", "session_allow", sessionAllow)
 	}
 
 	var respText string
@@ -214,14 +214,14 @@ func (m *GorokuPluginSecurity) ExternalCmd(msg *goroku.Message) error {
 	modHash := getModuleHash(modName)
 
 	// 1. Externalize (untrust)
-	rawInternalized := m.db.Get("GorokuPluginSecurity", "internalized", []interface{}{})
+	rawInternalized, _ := m.db.Get("GorokuPluginSecurity", "internalized", []any{})
 	var internalized []string
 	foundIntIdx := -1
-	if slice, ok := rawInternalized.([]interface{}); ok {
+	if slice, ok := rawInternalized.([]any); ok {
 		for _, item := range slice {
 			if s, ok := item.(string); ok {
 				internalized = append(internalized, s)
-				if strings.ToLower(s) == strings.ToLower(modName) {
+				if strings.EqualFold(s, modName) {
 					foundIntIdx = len(internalized) - 1
 				}
 			}
@@ -229,14 +229,14 @@ func (m *GorokuPluginSecurity) ExternalCmd(msg *goroku.Message) error {
 	}
 	if foundIntIdx != -1 {
 		internalized = append(internalized[:foundIntIdx], internalized[foundIntIdx+1:]...)
-		m.db.Set("GorokuPluginSecurity", "internalized", internalized)
+		m.db.SetStringSlice("GorokuPluginSecurity", "internalized", internalized)
 	}
 
 	// 2. Deny session
-	rawSession := m.db.Get("GorokuPluginSecurity", "session_allow", []interface{}{})
+	rawSession, _ := m.db.Get("GorokuPluginSecurity", "session_allow", []any{})
 	var sessionAllow []string
 	foundSessIdx := -1
-	if slice, ok := rawSession.([]interface{}); ok {
+	if slice, ok := rawSession.([]any); ok {
 		for _, item := range slice {
 			if s, ok := item.(string); ok {
 				sessionAllow = append(sessionAllow, s)
@@ -248,7 +248,7 @@ func (m *GorokuPluginSecurity) ExternalCmd(msg *goroku.Message) error {
 	}
 	if foundSessIdx != -1 {
 		sessionAllow = append(sessionAllow[:foundSessIdx], sessionAllow[foundSessIdx+1:]...)
-		m.db.Set("GorokuPluginSecurity", "session_allow", sessionAllow)
+		m.db.SetStringSlice("GorokuPluginSecurity", "session_allow", sessionAllow)
 	}
 
 	var respText string
@@ -285,10 +285,10 @@ func (m *GorokuPluginSecurity) AllowmodCmd(msg *goroku.Message) error {
 	modName := mod.Name()
 	modHash := getModuleHash(modName)
 
-	raw := m.db.Get("GorokuPluginSecurity", "session_allow", []interface{}{})
+	raw, _ := m.db.Get("GorokuPluginSecurity", "session_allow", []any{})
 	var sessionAllow []string
 	alreadyAllowed := false
-	if slice, ok := raw.([]interface{}); ok {
+	if slice, ok := raw.([]any); ok {
 		for _, item := range slice {
 			if s, ok := item.(string); ok {
 				sessionAllow = append(sessionAllow, s)
@@ -305,7 +305,7 @@ func (m *GorokuPluginSecurity) AllowmodCmd(msg *goroku.Message) error {
 		respText = formatTrans(template, modName)
 	} else {
 		sessionAllow = append(sessionAllow, modHash)
-		m.db.Set("GorokuPluginSecurity", "session_allow", sessionAllow)
+		m.db.SetStringSlice("GorokuPluginSecurity", "session_allow", sessionAllow)
 		template := m.getTrans("session_allowed", "<emoji document_id=5118861066981344121>✅</emoji> <b>Доступ к .session разрешён для</b> <code>{0}</code>")
 		respText = formatTrans(template, modName)
 	}
@@ -335,10 +335,10 @@ func (m *GorokuPluginSecurity) DenymodCmd(msg *goroku.Message) error {
 	modName := mod.Name()
 	modHash := getModuleHash(modName)
 
-	raw := m.db.Get("GorokuPluginSecurity", "session_allow", []interface{}{})
+	raw, _ := m.db.Get("GorokuPluginSecurity", "session_allow", []any{})
 	var sessionAllow []string
 	foundIdx := -1
-	if slice, ok := raw.([]interface{}); ok {
+	if slice, ok := raw.([]any); ok {
 		for _, item := range slice {
 			if s, ok := item.(string); ok {
 				sessionAllow = append(sessionAllow, s)
@@ -355,7 +355,7 @@ func (m *GorokuPluginSecurity) DenymodCmd(msg *goroku.Message) error {
 		respText = formatTrans(template, modName)
 	} else {
 		sessionAllow = append(sessionAllow[:foundIdx], sessionAllow[foundIdx+1:]...)
-		m.db.Set("GorokuPluginSecurity", "session_allow", sessionAllow)
+		m.db.SetStringSlice("GorokuPluginSecurity", "session_allow", sessionAllow)
 		template := m.getTrans("session_denied", "<emoji document_id=5118861066981344121>✅</emoji> <b>Доступ к .session запрещён для</b> <code>{0}</code>")
 		respText = formatTrans(template, modName)
 	}
@@ -383,14 +383,14 @@ func (m *GorokuPluginSecurity) TrustmodCmd(msg *goroku.Message) error {
 	}
 
 	modName := mod.Name()
-	raw := m.db.Get("GorokuPluginSecurity", "internalized", []interface{}{})
+	raw, _ := m.db.Get("GorokuPluginSecurity", "internalized", []any{})
 	var internalized []string
 	foundIdx := -1
-	if slice, ok := raw.([]interface{}); ok {
+	if slice, ok := raw.([]any); ok {
 		for _, item := range slice {
 			if s, ok := item.(string); ok {
 				internalized = append(internalized, s)
-				if strings.ToLower(s) == strings.ToLower(modName) {
+				if strings.EqualFold(s, modName) {
 					foundIdx = len(internalized) - 1
 				}
 			}
@@ -401,13 +401,13 @@ func (m *GorokuPluginSecurity) TrustmodCmd(msg *goroku.Message) error {
 	if foundIdx != -1 {
 		// Untrust (make external)
 		internalized = append(internalized[:foundIdx], internalized[foundIdx+1:]...)
-		m.db.Set("GorokuPluginSecurity", "internalized", internalized)
+		m.db.SetStringSlice("GorokuPluginSecurity", "internalized", internalized)
 		template := m.getTrans("external_restored", "<emoji document_id=5118861066981344121>✅</emoji> <b>Флаг is_external возвращён для</b> <code>{0}</code>")
 		respText = formatTrans(template, modName)
 	} else {
 		// Trust (make internalized)
 		internalized = append(internalized, modName)
-		m.db.Set("GorokuPluginSecurity", "internalized", internalized)
+		m.db.SetStringSlice("GorokuPluginSecurity", "internalized", internalized)
 		template := m.getTrans("external_removed", "<emoji document_id=5118861066981344121>✅</emoji> <b>Флаг is_external снят для</b> <code>{0}</code>")
 		respText = formatTrans(template, modName)
 	}

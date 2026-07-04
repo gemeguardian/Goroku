@@ -66,7 +66,7 @@ func buildAndOpenPlugin(structName string) (goroku.Module, error) {
 		return nil, err
 	}
 
-	sourceBytes, err := os.ReadFile(sourcePath)
+	sourceBytes, err := os.ReadFile(sourcePath) //nolint:gosec
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func buildAndOpenPlugin(structName string) (goroku.Module, error) {
 	hash := sha256.Sum256(sourceBytes)
 	shortHash := hex.EncodeToString(hash[:])[:16]
 	workDir := filepath.Join(goroku.BasePath, ".goroku_plugins", strings.ToLower(structName)+"_"+shortHash)
-	if err := os.MkdirAll(workDir, 0755); err != nil {
+	if err := os.MkdirAll(workDir, 0750); err != nil {
 		return nil, err
 	}
 
@@ -91,15 +91,15 @@ func buildAndOpenPlugin(structName string) (goroku.Module, error) {
 	wrapperFile := filepath.Join(workDir, "plugin_export.go")
 	pluginFile := filepath.Join(workDir, strings.ToLower(structName)+".so")
 
-	if err := os.WriteFile(moduleFile, []byte(pluginSource), 0644); err != nil {
+	if err := os.WriteFile(moduleFile, []byte(pluginSource), 0600); err != nil {
 		return nil, err
 	}
 	wrapper := fmt.Sprintf("package main\n\nimport \"goroku/goroku\"\n\nfunc NewModule() goroku.Module {\n\treturn &%s{}\n}\n", structName)
-	if err := os.WriteFile(wrapperFile, []byte(wrapper), 0644); err != nil {
+	if err := os.WriteFile(wrapperFile, []byte(wrapper), 0600); err != nil {
 		return nil, err
 	}
 
-	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", pluginFile, ".")
+	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", pluginFile, ".") //nolint:gosec
 	cmd.Dir = workDir
 	goPath := os.Getenv("GOPATH")
 	if goPath == "" {
@@ -111,10 +111,10 @@ func buildAndOpenPlugin(structName string) (goroku.Module, error) {
 	}
 	goModCache := filepath.Join(goPath, "pkg", "mod")
 	goCache := filepath.Join(goroku.BasePath, ".goroku_go", "cache")
-	if err := os.MkdirAll(goPath, 0755); err != nil {
+	if err := os.MkdirAll(goPath, 0750); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(goCache, 0755); err != nil {
+	if err := os.MkdirAll(goCache, 0750); err != nil {
 		return nil, err
 	}
 	cmd.Env = append(os.Environ(),

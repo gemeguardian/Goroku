@@ -16,21 +16,43 @@ type mockChannel struct {
 }
 
 type mockDB struct {
-	data map[string]map[string]interface{}
+	data map[string]map[string]any
 }
 
-func (m *mockDB) Get(owner, key string, defaultValue interface{}) interface{} {
+func (m *mockDB) Get(owner, key string, defaultValue any) (any, error) {
 	if mod, ok := m.data[owner]; ok {
 		if val, ok := mod[key]; ok {
-			return val
+			return val, nil
 		}
 	}
-	return defaultValue
+	return defaultValue, nil
 }
 
-func (m *mockDB) Set(owner, key string, value interface{}) bool {
+func (m *mockDB) GetInt64(owner, key string, def int64) int64 {
+	if v, _ := m.Get(owner, key, def); v != nil {
+		if n, ok := v.(int64); ok {
+			return n
+		}
+	}
+	return def
+}
+
+func (m *mockDB) GetAnyMap(owner, key string, def map[string]any) map[string]any {
+	if v, _ := m.Get(owner, key, def); v != nil {
+		if mm, ok := v.(map[string]any); ok {
+			return mm
+		}
+	}
+	return def
+}
+
+func (m *mockDB) SetAnyMap(owner, key string, value map[string]any) bool {
+	return m.Set(owner, key, value)
+}
+
+func (m *mockDB) Set(owner, key string, value any) bool {
 	if _, ok := m.data[owner]; !ok {
-		m.data[owner] = make(map[string]interface{})
+		m.data[owner] = make(map[string]any)
 	}
 	m.data[owner][key] = value
 	return true
@@ -43,10 +65,10 @@ type mockChannelCreator struct {
 	ToggleForumCalled          bool
 	CreateForumTopicCalled     bool
 	SearchForumTopicCalled     bool
-	FindChannelByTitleFallback func(string) (interface{}, error)
+	FindChannelByTitleFallback func(string) (any, error)
 }
 
-func (m *mockChannelCreator) FindChannelByTitle(title string) (interface{}, error) {
+func (m *mockChannelCreator) FindChannelByTitle(title string) (any, error) {
 	m.FindChannelByTitleCalled = true
 	if m.FindChannelByTitleFallback != nil {
 		return m.FindChannelByTitleFallback(title)
@@ -54,27 +76,27 @@ func (m *mockChannelCreator) FindChannelByTitle(title string) (interface{}, erro
 	return mockChannel{Id: 987, Title: title}, nil
 }
 
-func (m *mockChannelCreator) CreateChannel(title, description string, megagroup, forum bool) (interface{}, error) {
+func (m *mockChannelCreator) CreateChannel(title, description string, megagroup, forum bool) (any, error) {
 	m.CreateChannelCalled = true
 	return mockChannel{Id: 9876, Title: title}, nil
 }
 
-func (m *mockChannelCreator) InviteBotToChannel(channelPeer interface{}) error {
+func (m *mockChannelCreator) InviteBotToChannel(channelPeer any) error {
 	m.InviteBotToChannelCalled = true
 	return nil
 }
 
-func (m *mockChannelCreator) ToggleForum(channelPeer interface{}, enabled bool) error {
+func (m *mockChannelCreator) ToggleForum(channelPeer any, enabled bool) error {
 	m.ToggleForumCalled = true
 	return nil
 }
 
-func (m *mockChannelCreator) CreateForumTopic(channelPeer interface{}, title, description string, iconEmojiID int64) (int64, error) {
+func (m *mockChannelCreator) CreateForumTopic(channelPeer any, title, description string, iconEmojiID int64) (int64, error) {
 	m.CreateForumTopicCalled = true
 	return 555, nil
 }
 
-func (m *mockChannelCreator) SearchForumTopic(channelPeer interface{}, title string) (int64, error) {
+func (m *mockChannelCreator) SearchForumTopic(channelPeer any, title string) (int64, error) {
 	m.SearchForumTopicCalled = true
 	return 444, nil
 }
@@ -195,7 +217,7 @@ func TestAssetChannel(t *testing.T) {
 	if !created {
 		t.Error("Expected created=true for first call with stub client")
 	}
-	mPeer, ok := peer.(map[string]interface{})
+	mPeer, ok := peer.(map[string]any)
 	if !ok || mPeer["Title"] != "goroku-test" {
 		t.Errorf("Expected title 'goroku-test' (with replaced prefix), got %v", peer)
 	}
@@ -224,7 +246,7 @@ func TestAssetChannel(t *testing.T) {
 }
 
 func TestAssetForumTopic(t *testing.T) {
-	db := &mockDB{data: make(map[string]map[string]interface{})}
+	db := &mockDB{data: make(map[string]map[string]any)}
 	peer := mockChannel{Id: 987, Title: "goroku-userbot"}
 
 	// 1. Stub client
@@ -232,7 +254,7 @@ func TestAssetForumTopic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stub AssetForumTopic failed: %v", err)
 	}
-	if mTopic, ok := topicStub.(map[string]interface{}); !ok || mTopic["Title"] != "TopicTitle" || mTopic["ID"] != int64(12345) {
+	if mTopic, ok := topicStub.(map[string]any); !ok || mTopic["Title"] != "TopicTitle" || mTopic["ID"] != int64(12345) {
 		t.Errorf("Unexpected topic stub: %v", topicStub)
 	}
 
@@ -244,7 +266,7 @@ func TestAssetForumTopic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AssetForumTopic failed: %v", err)
 	}
-	if mTopic, ok := topicSearch.(map[string]interface{}); !ok || mTopic["ID"] != int64(444) {
+	if mTopic, ok := topicSearch.(map[string]any); !ok || mTopic["ID"] != int64(444) {
 		t.Errorf("Expected topic ID 444 from search, got %v", topicSearch)
 	}
 	if !creator.SearchForumTopicCalled || !creator.ToggleForumCalled || !creator.InviteBotToChannelCalled {
@@ -259,7 +281,7 @@ func TestAssetForumTopic(t *testing.T) {
 }
 
 func TestWaitForContentChannel(t *testing.T) {
-	db := &mockDB{data: map[string]map[string]interface{}{
+	db := &mockDB{data: map[string]map[string]any{
 		"goroku.forums": {
 			"channel_id": int64(112233),
 		},

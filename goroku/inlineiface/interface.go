@@ -12,6 +12,10 @@ import (
 
 // InlineManager is the subset of *inline.InlineManager methods used by the
 // goroku runtime. It is implemented by *inline.InlineManager.
+//
+// The interface is defined in this separate package only to break the import
+// cycle that would otherwise exist if types.go referenced *inline.InlineManager
+// directly.
 type InlineManager interface {
 	RegisterManager(afterBreak bool, ignoreTokenChecks bool) error
 	IsComplete() bool
@@ -23,9 +27,9 @@ type InlineManager interface {
 	GenerateMarkup(buttons [][]inline.Button) tgbotapi.InlineKeyboardMarkup
 	PopQueryGallery(id string) (inline.QueryGalleryItem, bool)
 
-	Form(text string, message interface{}, replyMarkup [][]inline.Button, opts ...inline.FormOpt) (*inline.InlineMessage, error)
-	List(message interface{}, stringsList []string, opts ...inline.FormOpt) (*inline.InlineMessage, error)
-	Gallery(message interface{}, nextHandler interface{}, caption interface{}, opts ...inline.FormOpt) (*inline.InlineMessage, error)
+	Form(text string, message any, replyMarkup [][]inline.Button, opts ...inline.FormOpt) (*inline.InlineMessage, error)
+	List(message any, stringsList []string, opts ...inline.FormOpt) (*inline.InlineMessage, error)
+	Gallery(message any, nextHandler any, caption any, opts ...inline.FormOpt) (*inline.InlineMessage, error)
 }
 
 // Compile-time check that *inline.InlineManager implements InlineManager.

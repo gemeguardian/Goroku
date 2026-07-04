@@ -69,7 +69,7 @@ func (im *InlineManager) getWebAppSession(webAppURL string) (*http.Client, strin
 	if err != nil {
 		return nil, "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		return nil, "", fmt.Errorf("auth status code %d", resp.StatusCode)
@@ -88,7 +88,7 @@ func (im *InlineManager) getWebAppSession(webAppURL string) (*http.Client, strin
 	if err != nil {
 		return nil, "", err
 	}
-	defer respGet.Body.Close()
+	defer func() { _ = respGet.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(respGet.Body)
 	if err != nil {
@@ -121,7 +121,7 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 	if err != nil {
 		return false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -133,10 +133,12 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 	var botID string
 	var customBot string
 	if dbTyped, ok := im.db.(interface {
-		Get(string, string, interface{}) interface{}
+		Get(string, string, any) (any, error)
 	}); ok {
-		if cb, ok := dbTyped.Get("goroku.inline", "custom_bot", "").(string); ok && cb != "" {
-			customBot = strings.TrimPrefix(cb, "@")
+		if raw, _ := dbTyped.Get("goroku.inline", "custom_bot", ""); raw != nil {
+			if cb, ok := raw.(string); ok && cb != "" {
+				customBot = strings.TrimPrefix(cb, "@")
+			}
 		}
 	}
 
@@ -171,7 +173,7 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 			if err != nil {
 				return false, err
 			}
-			defer respPost.Body.Close()
+			defer func() { _ = respPost.Body.Close() }()
 
 			var result struct {
 				Ok    bool   `json:"ok"`
@@ -194,7 +196,7 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 			if err != nil {
 				return false, err
 			}
-			defer respGet.Body.Close()
+			defer func() { _ = respGet.Body.Close() }()
 
 			var result struct {
 				H string `json:"h"`
@@ -210,7 +212,7 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 
 		if token != "" {
 			if dbTyped, ok := im.db.(interface {
-				Set(string, string, interface{}) bool
+				Set(string, string, any) bool
 			}); ok {
 				dbTyped.Set("goroku.inline", "bot_token", token)
 			}
@@ -233,7 +235,7 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 				reqSet.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
 				reqSet.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				if rs, err := client.Do(reqSet); err == nil {
-					rs.Body.Close()
+					_ = rs.Body.Close()
 				}
 			}
 
@@ -254,10 +256,12 @@ func (im *InlineManager) createBot(client *http.Client, baseURL, hash string) (b
 
 	var customBot string
 	if dbTyped, ok := im.db.(interface {
-		Get(string, string, interface{}) interface{}
+		Get(string, string, any) (any, error)
 	}); ok {
-		if cb, ok := dbTyped.Get("goroku.inline", "custom_bot", "").(string); ok && cb != "" {
-			customBot = strings.TrimPrefix(cb, "@")
+		if raw, _ := dbTyped.Get("goroku.inline", "custom_bot", ""); raw != nil {
+			if cb, ok := raw.(string); ok && cb != "" {
+				customBot = strings.TrimPrefix(cb, "@")
+			}
 		}
 	}
 
@@ -267,9 +271,8 @@ func (im *InlineManager) createBot(client *http.Client, baseURL, hash string) (b
 	if customBot != "" {
 		username = customBot
 	} else {
-		rand.Seed(time.Now().UnixNano())
-		uid := fmt.Sprintf("%d", rand.Intn(900000)+100000)
-		genran := latinMock[rand.Intn(len(latinMock))]
+		uid := fmt.Sprintf("%d", rand.Intn(900000)+100000) //nolint:gosec
+		genran := latinMock[rand.Intn(len(latinMock))]     //nolint:gosec
 		username = fmt.Sprintf("%s_%s_bot", genran, uid)
 	}
 
@@ -291,7 +294,7 @@ func (im *InlineManager) createBot(client *http.Client, baseURL, hash string) (b
 		if err != nil {
 			return false, err
 		}
-		defer respPost.Body.Close()
+		defer func() { _ = respPost.Body.Close() }()
 
 		var result struct {
 			Ok bool `json:"ok"`
@@ -301,8 +304,8 @@ func (im *InlineManager) createBot(client *http.Client, baseURL, hash string) (b
 		}
 
 		// Generate new username if occupied
-		uid := fmt.Sprintf("%d", rand.Intn(900000)+100000)
-		genran := latinMock[rand.Intn(len(latinMock))]
+		uid := fmt.Sprintf("%d", rand.Intn(900000)+100000) //nolint:gosec
+		genran := latinMock[rand.Intn(len(latinMock))]     //nolint:gosec
 		username = fmt.Sprintf("%s_%s_bot", genran, uid)
 	}
 
@@ -325,7 +328,7 @@ func (im *InlineManager) createBot(client *http.Client, baseURL, hash string) (b
 	if err != nil {
 		return false, err
 	}
-	defer respCreate.Body.Close()
+	defer func() { _ = respCreate.Body.Close() }()
 
 	var res struct {
 		Ok    bool   `json:"ok"`
@@ -344,7 +347,7 @@ func (im *InlineManager) dpRevokeToken(client *http.Client, baseURL, hash string
 	}
 
 	if dbTyped, ok := im.db.(interface {
-		Set(string, string, interface{}) bool
+		Set(string, string, any) bool
 	}); ok {
 		dbTyped.Set("goroku.inline", "bot_token", nil)
 	}
@@ -378,7 +381,7 @@ func (im *InlineManager) checkBot(client *http.Client, baseURL, hash, username s
 	if err != nil {
 		return false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -410,7 +413,7 @@ func (im *InlineManager) checkBot(client *http.Client, baseURL, hash, username s
 	if err != nil {
 		return false, err
 	}
-	defer respPost.Body.Close()
+	defer func() { _ = respPost.Body.Close() }()
 
 	var result struct {
 		Ok bool `json:"ok"`
@@ -447,7 +450,7 @@ func (im *InlineManager) setCommands(client *http.Client, baseURL, hash string, 
 
 		respPost, err := client.Do(reqPost)
 		if err == nil {
-			respPost.Body.Close()
+			_ = respPost.Body.Close()
 		}
 		time.Sleep(1 * time.Second)
 	}
@@ -455,7 +458,7 @@ func (im *InlineManager) setCommands(client *http.Client, baseURL, hash string, 
 	return true, nil
 }
 
-func (im *InlineManager) mainTokenManager(action int, optArgs map[string]interface{}) (interface{}, error) {
+func (im *InlineManager) mainTokenManager(action int, optArgs map[string]any) (any, error) {
 	clientInterface, ok := im.client.(interface {
 		RequestWebView(peerUsername string, platform string, url string) (string, error)
 	})
@@ -532,7 +535,7 @@ func (im *InlineManager) mainTokenManager(action int, optArgs map[string]interfa
 
 // Public wrapper methods mirroring Python's async functions
 func (im *InlineManager) AssertToken(createNewIfNeeded, revokeToken bool) (bool, error) {
-	args := map[string]interface{}{
+	args := map[string]any{
 		"create_new_if_needed": createNewIfNeeded,
 		"revoke_token":         revokeToken,
 	}
@@ -552,7 +555,7 @@ func (im *InlineManager) CreateBot() (bool, error) {
 }
 
 func (im *InlineManager) DPRevokeToken(alreadyInitialised bool) (bool, error) {
-	args := map[string]interface{}{
+	args := map[string]any{
 		"already_initialised": alreadyInitialised,
 	}
 	res, err := im.mainTokenManager(3, args)
@@ -571,7 +574,7 @@ func (im *InlineManager) ReassertToken() (bool, error) {
 }
 
 func (im *InlineManager) CheckBot(username string) (bool, error) {
-	args := map[string]interface{}{
+	args := map[string]any{
 		"username": username,
 	}
 	res, err := im.mainTokenManager(5, args)
@@ -582,7 +585,7 @@ func (im *InlineManager) CheckBot(username string) (bool, error) {
 }
 
 func (im *InlineManager) SetCommands(commands map[string]string) (bool, error) {
-	args := map[string]interface{}{
+	args := map[string]any{
 		"commands": commands,
 	}
 	res, err := im.mainTokenManager(6, args)

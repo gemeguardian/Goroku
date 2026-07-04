@@ -11,7 +11,7 @@ func GetTopic(msgText string) int64 {
 	return 0
 }
 
-func GetMimeType(media interface{}) string {
+func GetMimeType(media any) string {
 	if media == nil {
 		return ""
 	}
@@ -106,7 +106,7 @@ func ExtractURLs(text string) []string {
 
 // HasMedia returns true if message has media content.
 // Uses reflection to check if msg has a non-nil Media field.
-func HasMedia(msg interface{}) bool {
+func HasMedia(msg any) bool {
 	if msg == nil {
 		return false
 	}

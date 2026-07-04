@@ -34,7 +34,7 @@ func WithLocation(lat, lon float64) FormOpt {
 	return func(u *Unit) { u.Location = []float64{lat, lon} }
 }
 
-func WithAudio(audio interface{}) FormOpt {
+func WithAudio(audio any) FormOpt {
 	return func(u *Unit) { u.Audio = audio }
 }
 
@@ -79,7 +79,7 @@ func localRandStr(size int) string {
 // Form creates and sends an interactive form.
 func (im *InlineManager) Form(
 	text string,
-	message interface{}, // This can be *Message or ChatID (int64)
+	message any, // This can be *Message or ChatID (int64)
 	replyMarkup [][]Button,
 	opts ...FormOpt,
 ) (*InlineMessage, error) {
@@ -162,7 +162,7 @@ func (im *InlineManager) Form(
 }
 
 // CreateForm is a legacy compatibility wrapper for Form.
-func (im *InlineManager) CreateForm(args ...interface{}) interface{} {
+func (im *InlineManager) CreateForm(args ...any) any {
 	if len(args) < 2 {
 		return nil
 	}

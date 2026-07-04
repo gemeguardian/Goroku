@@ -54,8 +54,7 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 			// Rate limiting check
 			db := f.client.GorokuDB
 			if db != nil {
-				disableProtectionVal := db.Get("APILimiter", "disable_protection", true)
-				disableProtection, _ := disableProtectionVal.(bool)
+				disableProtection := db.GetBool("APILimiter", "disable_protection", true)
 				if !disableProtection {
 					f.client.RatelimitMu.Lock()
 					bypassed := time.Now().Before(f.client.BypassSuspendUntil)
@@ -83,15 +82,7 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 							f.client.Ratelimiter = append(f.client.Ratelimiter, RateLimitRecord{Name: typeName, TS: now})
 
 							// Filter records within time sample
-							timeSampleSec := 15
-							if sampleVal := db.Get("APILimiter", "time_sample", 15); sampleVal != nil {
-								if sampleInt, ok := sampleVal.(int); ok {
-									timeSampleSec = sampleInt
-								} else if sampleFloat, ok := sampleVal.(float64); ok {
-									timeSampleSec = int(sampleFloat)
-								}
-							}
-
+							timeSampleSec := db.GetInt("APILimiter", "time_sample", 15)
 							cutoff := now.Add(-time.Duration(timeSampleSec) * time.Second)
 							var filtered []RateLimitRecord
 							for _, r := range f.client.Ratelimiter {
@@ -101,23 +92,8 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 							}
 							f.client.Ratelimiter = filtered
 
-							threshold := 100
-							if threshVal := db.Get("APILimiter", "threshold", 100); threshVal != nil {
-								if threshInt, ok := threshVal.(int); ok {
-									threshold = threshInt
-								} else if threshFloat, ok := threshVal.(float64); ok {
-									threshold = int(threshFloat)
-								}
-							}
-
-							localFloodWait := 30
-							if lfwVal := db.Get("APILimiter", "local_floodwait", 30); lfwVal != nil {
-								if lfwInt, ok := lfwVal.(int); ok {
-									localFloodWait = lfwInt
-								} else if lfwFloat, ok := lfwVal.(float64); ok {
-									localFloodWait = int(lfwFloat)
-								}
-							}
+							threshold := db.GetInt("APILimiter", "threshold", 100)
+							localFloodWait := db.GetInt("APILimiter", "local_floodwait", 30)
 
 							if len(f.client.Ratelimiter) > threshold && !f.client.FloodWaitLock {
 								f.client.FloodWaitLock = true
@@ -147,7 +123,7 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 									}()
 								} else {
 									go func(data []byte, capText string) {
-										_, _ = f.client.SendFile(f.client.TGID, data, capText)
+										_, _ = f.client.SendFile(ChatRefID(f.client.TGID), data, capText)
 									}(reportBytes, caption)
 								}
 
@@ -292,6 +268,7 @@ func (c *CustomTelegramClient) Connect() error {
 	})
 
 	c.client = client
+	c.rawAPI = client.API()
 	c.runDone = make(chan struct{})
 
 	go func() {
@@ -414,7 +391,7 @@ func (c *CustomTelegramClient) GetLogChatID() int64 {
 	if c.GorokuDB == nil {
 		return 0
 	}
-	if val := c.GorokuDB.Get("goroku.forums", "channel_id", nil); val != nil {
+	if val, _ := c.GorokuDB.Get("goroku.forums", "channel_id", nil); val != nil {
 		switch v := val.(type) {
 		case float64:
 			return int64(v)
@@ -446,7 +423,7 @@ func isSameChat(id1, id2 int64) bool {
 	return getRawChannelID(id1) == getRawChannelID(id2)
 }
 
-func GetSentMessageID(resp interface{}) int64 {
+func GetSentMessageID(resp any) int64 {
 	switch v := resp.(type) {
 	case *tg.Updates:
 		for _, update := range v.Updates {
@@ -505,7 +482,7 @@ func GetSentMessageID(resp interface{}) int64 {
 }
 
 func WithReplyTo(msgID int64) MsgOption {
-	return func(req interface{}) {
+	return func(req any) {
 		if msgID == 0 {
 			return
 		}
@@ -517,20 +494,28 @@ func WithReplyTo(msgID int64) MsgOption {
 	}
 }
 
-func (c *CustomTelegramClient) SendFile(chat interface{}, file interface{}, caption string) (interface{}, error) {
+func (c *CustomTelegramClient) SendFile(chat ChatRef, file any, caption string) (any, error) {
 	return c.SendFileWithOptions(chat, file, caption)
 }
 
-func (c *CustomTelegramClient) SendFileWithOptions(chat interface{}, file interface{}, caption string, opts ...MsgOption) (interface{}, error) {
+func (c *CustomTelegramClient) SendFileWithOptions(chat ChatRef, file any, caption string, opts ...MsgOption) (any, error) {
+	return c.sendFileInternal(chat, file, caption, opts...)
+}
+
+func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption string, opts ...MsgOption) (any, error) {
 	var targetChatID int64
-	switch v := chat.(type) {
-	case int64:
-		targetChatID = v
-	case int:
-		targetChatID = int64(v)
-	case string:
-		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
-			targetChatID = id
+	if !chat.IsZero() {
+		switch {
+		case chat.Peer() != nil:
+			if u, ok := chat.Peer().(*tg.InputPeerUser); ok {
+				targetChatID = u.UserID
+			}
+		case chat.Username() != "":
+			if id, err := strconv.ParseInt(chat.Username(), 10, 64); err == nil {
+				targetChatID = id
+			}
+		default:
+			targetChatID = chat.ID()
 		}
 	}
 
@@ -564,7 +549,7 @@ func (c *CustomTelegramClient) SendFileWithOptions(chat interface{}, file interf
 					if strings.HasPrefix(f, "http://") || strings.HasPrefix(f, "https://") {
 						isURL = true
 					} else {
-						data, err := os.ReadFile(f)
+						data, err := os.ReadFile(f) //nolint:gosec
 						if err == nil {
 							fileBytes = data
 							filename = filepath.Base(f)
@@ -603,10 +588,10 @@ func (c *CustomTelegramClient) SendFileWithOptions(chat interface{}, file interf
 		}
 	}
 
-	peer, err := c.ResolvePeer(chat)
+	peer, err := c.ResolvePeerRef(chat)
 	if err != nil {
-		if id, ok := chat.(int64); ok {
-			peer = &tg.InputPeerUser{UserID: id}
+		if chat.ID() != 0 {
+			peer = &tg.InputPeerUser{UserID: chat.ID()}
 		} else {
 			return nil, err
 		}
@@ -620,11 +605,11 @@ func (c *CustomTelegramClient) SendFileWithOptions(chat interface{}, file interf
 	switch v := file.(type) {
 	case string:
 		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
-			resp, err := http.Get(v)
+			resp, err := http.Get(v) //nolint:gosec
 			if err != nil {
 				return nil, err
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusOK {
 				return nil, fmt.Errorf("failed to download file: %d", resp.StatusCode)
 			}
@@ -709,7 +694,7 @@ func (c *CustomTelegramClient) SendFileWithOptions(chat interface{}, file interf
 		Media:    media,
 		Message:  plainCaption,
 		Entities: captionEntities,
-		RandomID: rand.Int63(),
+		RandomID: rand.Int63(), //nolint:gosec
 	}
 	for _, opt := range opts {
 		opt(req)
@@ -718,22 +703,15 @@ func (c *CustomTelegramClient) SendFileWithOptions(chat interface{}, file interf
 	return res, err
 }
 
-func (c *CustomTelegramClient) SendMessage(chat interface{}, message string) (interface{}, error) {
+func (c *CustomTelegramClient) SendMessage(chat ChatRef, message string) (any, error) {
 	return c.SendMessageWithOptions(chat, message)
 }
 
-func (c *CustomTelegramClient) SendMessageWithOptions(chat interface{}, message string, opts ...MsgOption) (interface{}, error) {
-	var targetChatID int64
-	switch v := chat.(type) {
-	case int64:
-		targetChatID = v
-	case int:
-		targetChatID = int64(v)
-	case string:
-		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
-			targetChatID = id
-		}
+func (c *CustomTelegramClient) SendMessageWithOptions(chat ChatRef, message string, opts ...MsgOption) (any, error) {
+	if c.rawAPI == nil {
+		return nil, ErrClientNotInitialized
 	}
+	targetChatID := chat.ID()
 
 	logChatID := c.GetLogChatID()
 	if logChatID != 0 && targetChatID != 0 && isSameChat(targetChatID, logChatID) && c.InlineManager() != nil {
@@ -758,10 +736,10 @@ func (c *CustomTelegramClient) SendMessageWithOptions(chat interface{}, message 
 		}
 	}
 
-	peer, err := c.ResolvePeer(chat)
+	peer, err := c.ResolvePeerRef(chat)
 	if err != nil {
-		if id, ok := chat.(int64); ok {
-			peer = &tg.InputPeerUser{UserID: id}
+		if chat.ID() != 0 {
+			peer = &tg.InputPeerUser{UserID: chat.ID()}
 		} else {
 			return nil, err
 		}
@@ -772,7 +750,7 @@ func (c *CustomTelegramClient) SendMessageWithOptions(chat interface{}, message 
 		Peer:     peer,
 		Message:  plainText,
 		Entities: entities,
-		RandomID: rand.Int63(),
+		RandomID: rand.Int63(), //nolint:gosec
 	}
 	for _, opt := range opts {
 		opt(req)
@@ -781,11 +759,14 @@ func (c *CustomTelegramClient) SendMessageWithOptions(chat interface{}, message 
 	return res, err
 }
 
-func (c *CustomTelegramClient) EditMessage(chat interface{}, msgID int64, text string, opts ...MsgOption) (interface{}, error) {
-	peer, err := c.ResolvePeer(chat)
+func (c *CustomTelegramClient) EditMessage(chat ChatRef, msgID int64, text string, opts ...MsgOption) (any, error) {
+	if c.rawAPI == nil {
+		return nil, ErrClientNotInitialized
+	}
+	peer, err := c.ResolvePeerRef(chat)
 	if err != nil {
-		if id, ok := chat.(int64); ok {
-			peer = &tg.InputPeerUser{UserID: id}
+		if chat.ID() != 0 {
+			peer = &tg.InputPeerUser{UserID: chat.ID()}
 		} else {
 			return nil, err
 		}
@@ -805,11 +786,14 @@ func (c *CustomTelegramClient) EditMessage(chat interface{}, msgID int64, text s
 	return res, err
 }
 
-func (c *CustomTelegramClient) DeleteMessage(chat interface{}, msgID int64) error {
-	peer, err := c.ResolvePeer(chat)
+func (c *CustomTelegramClient) DeleteMessage(chat ChatRef, msgID int64) error {
+	if c.rawAPI == nil {
+		return ErrClientNotInitialized
+	}
+	peer, err := c.ResolvePeerRef(chat)
 	if err != nil {
-		if id, ok := chat.(int64); ok {
-			peer = &tg.InputPeerUser{UserID: id}
+		if chat.ID() != 0 {
+			peer = &tg.InputPeerUser{UserID: chat.ID()}
 		} else {
 			return err
 		}
@@ -975,12 +959,12 @@ func (m *Message) Answer(text string, opts ...MsgOption) error {
 			chunk = stdhtml.EscapeString(chunk)
 			if i == 0 {
 				if m.Out {
-					_, _ = m.Client.EditMessage(m.ChatID, m.ID, chunk, opts...)
+					_, _ = m.Client.EditMessage(ChatRefID(m.ChatID), m.ID, chunk, opts...)
 				} else {
-					_, _ = m.Client.SendMessageWithOptions(m.ChatID, chunk, opts...)
+					_, _ = m.Client.SendMessageWithOptions(ChatRefID(m.ChatID), chunk, opts...)
 				}
 			} else {
-				_, _ = m.Client.SendMessageWithOptions(m.ChatID, chunk, opts...)
+				_, _ = m.Client.SendMessageWithOptions(ChatRefID(m.ChatID), chunk, opts...)
 			}
 		}
 		return nil
@@ -1003,29 +987,29 @@ func (m *Message) Answer(text string, opts ...MsgOption) error {
 			fileText = plainText
 		}
 		if m.Out {
-			_, _ = m.Client.EditMessage(m.ChatID, m.ID, "💾 <i>Output is too long. Sending as file...</i>")
+			_, _ = m.Client.EditMessage(ChatRefID(m.ChatID), m.ID, "💾 <i>Output is too long. Sending as file...</i>")
 		}
 		tmpFile, err := os.CreateTemp("", "command_result_*.txt")
 		if err == nil {
-			defer os.Remove(tmpFile.Name())
+			defer func() { _ = os.Remove(tmpFile.Name()) }()
 			_, _ = tmpFile.WriteString(fileText)
 			_ = tmpFile.Close()
-			_, err = m.Client.SendFile(m.ChatID, tmpFile.Name(), "💾 Output too long")
+			_, err = m.Client.SendFile(ChatRefID(m.ChatID), tmpFile.Name(), "💾 Output too long")
 			return err
 		}
-		_, err = m.Client.SendFile(m.ChatID, []byte(fileText), "💾 Output too long")
+		_, err = m.Client.SendFile(ChatRefID(m.ChatID), []byte(fileText), "💾 Output too long")
 		return err
 	}
 	if m.Out {
-		_, err := m.Client.EditMessage(m.ChatID, m.ID, text, opts...)
+		_, err := m.Client.EditMessage(ChatRefID(m.ChatID), m.ID, text, opts...)
 		return err
 	}
-	_, err := m.Client.SendMessageWithOptions(m.ChatID, text, opts...)
+	_, err := m.Client.SendMessageWithOptions(ChatRefID(m.ChatID), text, opts...)
 	return err
 }
 
 func WithInvertMedia(invert bool) MsgOption {
-	return func(req interface{}) {
+	return func(req any) {
 		if r, ok := req.(*tg.MessagesSendMessageRequest); ok {
 			r.SetInvertMedia(invert)
 		} else if r, ok := req.(*tg.MessagesEditMessageRequest); ok {
@@ -1035,7 +1019,7 @@ func WithInvertMedia(invert bool) MsgOption {
 }
 
 func WithNoWebpage(noWebpage bool) MsgOption {
-	return func(req interface{}) {
+	return func(req any) {
 		if r, ok := req.(*tg.MessagesSendMessageRequest); ok {
 			r.SetNoWebpage(noWebpage)
 		} else if r, ok := req.(*tg.MessagesEditMessageRequest); ok {
@@ -1045,7 +1029,7 @@ func WithNoWebpage(noWebpage bool) MsgOption {
 }
 
 func WithWebPageMedia(url string, optional bool, forceLarge bool) MsgOption {
-	return func(req interface{}) {
+	return func(req any) {
 		if url == "" {
 			return
 		}
@@ -1187,8 +1171,8 @@ func splitText(text string, length int) []string {
 	return res
 }
 
-func (c *CustomTelegramClient) GetMessage(chat interface{}, msgID int64) (*Message, error) {
-	peer, err := c.ResolvePeer(chat)
+func (c *CustomTelegramClient) GetMessage(chat ChatRef, msgID int64) (*Message, error) {
+	peer, err := c.ResolvePeerRef(chat)
 	if err != nil {
 		return nil, err
 	}
@@ -1243,7 +1227,7 @@ func (c *CustomTelegramClient) GetMessage(chat interface{}, msgID int64) (*Messa
 }
 
 // DownloadMedia downloads the document media of a message into a writer.
-func (c *CustomTelegramClient) DownloadMedia(media interface{}, writer io.Writer) error {
+func (c *CustomTelegramClient) DownloadMedia(media tg.MessageMediaClass, writer io.Writer) error {
 	mediaDoc, ok := media.(*tg.MessageMediaDocument)
 	if !ok {
 		return fmt.Errorf("media is not a document")
@@ -1305,7 +1289,7 @@ func (c *CustomTelegramClient) SendInlineBotResult(chatID int64, queryID int64, 
 		Peer:     peer,
 		QueryID:  queryID,
 		ID:       resultID,
-		RandomID: rand.Int63(),
+		RandomID: rand.Int63(), //nolint:gosec
 		ReplyTo:  replyTo,
 	})
 	return res, err
@@ -1338,7 +1322,7 @@ func (c *CustomTelegramClient) RequestWebView(peerUsername string, platform stri
 	return res.URL, nil
 }
 
-func (c *CustomTelegramClient) FindChannelByTitle(title string) (interface{}, error) {
+func (c *CustomTelegramClient) FindChannelByTitle(title string) (tg.InputPeerClass, error) {
 	if c.rawAPI == nil {
 		return nil, fmt.Errorf("client not connected")
 	}
@@ -1375,7 +1359,7 @@ func (c *CustomTelegramClient) FindChannelByTitle(title string) (interface{}, er
 
 		c.cacheMu.Lock()
 		if c.GorokuEntityCache == nil {
-			c.GorokuEntityCache = make(map[interface{}]cache.CacheRecordEntity)
+			c.GorokuEntityCache = make(map[cache.EntityCacheKey]cache.CacheRecordEntity)
 		}
 		exp := time.Now().Unix() + 86400*30
 		for _, chat := range chats {
@@ -1383,15 +1367,15 @@ func (c *CustomTelegramClient) FindChannelByTitle(title string) (interface{}, er
 			case *tg.Chat:
 				peer := &tg.InputPeerChat{ChatID: ch.ID}
 				record := cache.CacheRecordEntity{Entity: peer, Exp: exp, TS: time.Now().Unix()}
-				c.GorokuEntityCache[ch.ID] = record
-				c.GorokuEntityCache[-ch.ID] = record
+				c.GorokuEntityCache[cache.EntityCacheKey{ID: ch.ID}] = record
+				c.GorokuEntityCache[cache.EntityCacheKey{ID: -ch.ID}] = record
 			case *tg.Channel:
 				peer := &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}
 				record := cache.CacheRecordEntity{Entity: peer, Exp: exp, TS: time.Now().Unix()}
-				c.GorokuEntityCache[ch.ID] = record
-				c.GorokuEntityCache[cache.TelegramChannelChatID(ch.ID)] = record
+				c.GorokuEntityCache[cache.EntityCacheKey{ID: ch.ID}] = record
+				c.GorokuEntityCache[cache.EntityCacheKey{ID: cache.TelegramChannelChatID(ch.ID)}] = record
 				if ch.Username != "" {
-					c.GorokuEntityCache[strings.ToLower(ch.Username)] = record
+					c.GorokuEntityCache[cache.EntityCacheKey{Username: strings.ToLower(ch.Username)}] = record
 				}
 			}
 		}
@@ -1441,7 +1425,7 @@ func (c *CustomTelegramClient) FindChannelByTitle(title string) (interface{}, er
 	return nil, fmt.Errorf("channel not found")
 }
 
-func (c *CustomTelegramClient) CreateChannel(title, description string, megagroup, forum bool) (interface{}, error) {
+func (c *CustomTelegramClient) CreateChannel(title, description string, megagroup, forum bool) (tg.InputPeerClass, error) {
 	if c.rawAPI == nil {
 		return nil, fmt.Errorf("client not connected")
 	}
@@ -1473,22 +1457,22 @@ func (c *CustomTelegramClient) CreateChannel(title, description string, megagrou
 
 	c.cacheMu.Lock()
 	if c.GorokuEntityCache == nil {
-		c.GorokuEntityCache = make(map[interface{}]cache.CacheRecordEntity)
+		c.GorokuEntityCache = make(map[cache.EntityCacheKey]cache.CacheRecordEntity)
 	}
 	exp := time.Now().Unix() + 86400*30
 	switch ch := createdChat.(type) {
 	case *tg.Chat:
 		peer := &tg.InputPeerChat{ChatID: ch.ID}
 		record := cache.CacheRecordEntity{Entity: peer, Exp: exp, TS: time.Now().Unix()}
-		c.GorokuEntityCache[ch.ID] = record
-		c.GorokuEntityCache[-ch.ID] = record
+		c.GorokuEntityCache[cache.EntityCacheKey{ID: ch.ID}] = record
+		c.GorokuEntityCache[cache.EntityCacheKey{ID: -ch.ID}] = record
 	case *tg.Channel:
 		peer := &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}
 		record := cache.CacheRecordEntity{Entity: peer, Exp: exp, TS: time.Now().Unix()}
-		c.GorokuEntityCache[ch.ID] = record
-		c.GorokuEntityCache[cache.TelegramChannelChatID(ch.ID)] = record
+		c.GorokuEntityCache[cache.EntityCacheKey{ID: ch.ID}] = record
+		c.GorokuEntityCache[cache.EntityCacheKey{ID: cache.TelegramChannelChatID(ch.ID)}] = record
 		if ch.Username != "" {
-			c.GorokuEntityCache[strings.ToLower(ch.Username)] = record
+			c.GorokuEntityCache[cache.EntityCacheKey{Username: strings.ToLower(ch.Username)}] = record
 		}
 	}
 	c.cacheMu.Unlock()
@@ -1503,7 +1487,7 @@ func (c *CustomTelegramClient) CreateChannel(title, description string, megagrou
 	return nil, fmt.Errorf("unknown chat type created")
 }
 
-func (c *CustomTelegramClient) InviteBotToChannel(channelPeer interface{}) error {
+func (c *CustomTelegramClient) InviteBotToChannel(channelPeer tg.InputPeerClass) error {
 	if c.rawAPI == nil {
 		return fmt.Errorf("client not connected")
 	}
@@ -1541,7 +1525,7 @@ func (c *CustomTelegramClient) InviteBotToChannel(channelPeer interface{}) error
 	return err
 }
 
-func (c *CustomTelegramClient) PromoteBotToAdmin(channelPeer interface{}) error {
+func (c *CustomTelegramClient) PromoteBotToAdmin(channelPeer tg.InputPeerClass) error {
 	if c.rawAPI == nil {
 		return fmt.Errorf("client not connected")
 	}
@@ -1594,7 +1578,7 @@ func (c *CustomTelegramClient) PromoteBotToAdmin(channelPeer interface{}) error 
 	return err
 }
 
-func (c *CustomTelegramClient) ToggleForum(channelPeer interface{}, enabled bool) error {
+func (c *CustomTelegramClient) ToggleForum(channelPeer tg.InputPeerClass, enabled bool) error {
 	if c.rawAPI == nil {
 		return fmt.Errorf("client not connected")
 	}
@@ -1612,7 +1596,7 @@ func (c *CustomTelegramClient) ToggleForum(channelPeer interface{}, enabled bool
 	return err
 }
 
-func (c *CustomTelegramClient) CreateForumTopic(channelPeer interface{}, title, description string, iconEmojiID int64) (int64, error) {
+func (c *CustomTelegramClient) CreateForumTopic(channelPeer tg.InputPeerClass, title, description string, iconEmojiID int64) (int64, error) {
 	if c.rawAPI == nil {
 		return 0, fmt.Errorf("client not connected")
 	}
@@ -1628,7 +1612,7 @@ func (c *CustomTelegramClient) CreateForumTopic(channelPeer interface{}, title, 
 	req := &tg.ChannelsCreateForumTopicRequest{
 		Channel:  inputChannel,
 		Title:    title,
-		RandomID: rand.Int63(),
+		RandomID: rand.Int63(), //nolint:gosec
 	}
 
 	var premium bool
@@ -1672,14 +1656,14 @@ func (c *CustomTelegramClient) CreateForumTopic(channelPeer interface{}, title, 
 			Peer:     peer,
 			Message:  description,
 			ReplyTo:  replyTo,
-			RandomID: rand.Int63(),
+			RandomID: rand.Int63(), //nolint:gosec
 		})
 	}
 
 	return int64(msgID), nil
 }
 
-func (c *CustomTelegramClient) SearchForumTopic(channelPeer interface{}, title string) (int64, error) {
+func (c *CustomTelegramClient) SearchForumTopic(channelPeer tg.InputPeerClass, title string) (int64, error) {
 	if c.rawAPI == nil {
 		return 0, fmt.Errorf("client not connected")
 	}
@@ -1835,11 +1819,11 @@ func parseHTML(htmlText string) (string, []tg.MessageEntityClass) {
 	return text, entities
 }
 
-func (c *CustomTelegramClient) Translate(chat interface{}, msgID int, toLang string) (string, error) {
+func (c *CustomTelegramClient) Translate(chat ChatRef, msgID int, toLang string) (string, error) {
 	if c.rawAPI == nil {
 		return "", fmt.Errorf("client not connected")
 	}
-	peer, err := c.ResolvePeer(chat)
+	peer, err := c.ResolvePeerRef(chat)
 	if err != nil {
 		return "", err
 	}
@@ -1858,7 +1842,7 @@ func (c *CustomTelegramClient) Translate(chat interface{}, msgID int, toLang str
 	return sb.String(), nil
 }
 
-func (c *CustomTelegramClient) TranslateText(chat interface{}, text string, entities []tg.MessageEntityClass, toLang string) (string, error) {
+func (c *CustomTelegramClient) TranslateText(chat ChatRef, text string, entities []tg.MessageEntityClass, toLang string) (string, error) {
 	if c.rawAPI == nil {
 		return "", fmt.Errorf("client not connected")
 	}

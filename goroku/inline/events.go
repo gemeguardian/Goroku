@@ -2,15 +2,16 @@ package inline
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"go.uber.org/zap"
+
+	"goroku/goroku/logger"
 )
 
-func L() *zap.Logger { return zap.NewNop() }
+func L() *zap.Logger { return logger.L() }
 
 func (im *InlineManager) HandleUpdate(update tgbotapi.Update) {
 	L().Debug("HandleUpdate", zap.Int("ID", update.UpdateID), zap.Bool("InlineQuery", update.InlineQuery != nil), zap.Bool("CallbackQuery", update.CallbackQuery != nil), zap.Bool("ChosenInlineResult", update.ChosenInlineResult != nil))
@@ -25,96 +26,25 @@ func (im *InlineManager) HandleUpdate(update tgbotapi.Update) {
 	}
 }
 
-func unpackInterface(v reflect.Value) reflect.Value {
-	for v.Kind() == reflect.Interface {
-		v = v.Elem()
-	}
-	return v
-}
-
 func (im *InlineManager) isUserAuthorizedForInline(userID int64) bool {
 	if userID == im.ownerID() {
 		return true
 	}
 	allowInline := false
 	if dbTyped, ok := im.db.(interface {
-		Get(string, string, interface{}) interface{}
+		Get(string, string, any) (any, error)
 	}); ok {
-		raw := dbTyped.Get("goroku.security", "allow_inline_query", false)
-		if val, ok := raw.(bool); ok {
-			allowInline = val
+		raw, _ := dbTyped.Get("goroku.security", "allow_inline_query", false)
+		if rawBool, ok := raw.(bool); ok {
+			allowInline = rawBool
 		}
 	}
 	if allowInline {
 		return true
 	}
 	if im.client != nil {
-		vClient := reflect.ValueOf(im.client)
-		if vClient.Kind() == reflect.Ptr {
-			vClient = vClient.Elem()
-		}
-		if vClient.Kind() == reflect.Struct {
-			fLoader := vClient.FieldByName("Loader")
-			if fLoader.IsValid() && !fLoader.IsNil() {
-				vLoader := unpackInterface(fLoader)
-				mDispatcher := vLoader.MethodByName("GetDispatcher")
-				if mDispatcher.IsValid() {
-					resDisp := mDispatcher.Call(nil)
-					if len(resDisp) > 0 && !resDisp[0].IsNil() {
-						vDisp := unpackInterface(resDisp[0])
-						mSec := vDisp.MethodByName("GetSecurityManager")
-						if mSec.IsValid() {
-							resSec := mSec.Call(nil)
-							if len(resSec) > 0 && !resSec[0].IsNil() {
-								vSec := unpackInterface(resSec[0])
-
-								// First try the new IsUserInAllUsers method
-								mCheck := vSec.MethodByName("IsUserInAllUsers")
-								if mCheck.IsValid() {
-									res := mCheck.Call([]reflect.Value{reflect.ValueOf(userID)})
-									if len(res) > 0 && res[0].Kind() == reflect.Bool && res[0].Bool() {
-										return true
-									}
-								}
-
-								// Fallback: reflection on allUsers if IsUserInAllUsers is not found
-								vSecStruct := vSec
-								if vSecStruct.Kind() == reflect.Ptr {
-									vSecStruct = vSecStruct.Elem()
-								}
-								if vSecStruct.Kind() == reflect.Struct {
-									fAllUsers := vSecStruct.FieldByName("allUsers")
-									if fAllUsers.IsValid() && !fAllUsers.IsNil() {
-										vAllUsers := unpackInterface(fAllUsers)
-										mToSlice := vAllUsers.MethodByName("ToSlice")
-										if mToSlice.IsValid() {
-											resSlice := mToSlice.Call(nil)
-											if len(resSlice) > 0 && resSlice[0].Kind() == reflect.Slice {
-												slice := resSlice[0]
-												for i := 0; i < slice.Len(); i++ {
-													idVal := slice.Index(i).Interface()
-													var id int64
-													switch v := idVal.(type) {
-													case int64:
-														id = v
-													case float64:
-														id = int64(v)
-													case int:
-														id = int64(v)
-													}
-													if id == userID {
-														return true
-													}
-												}
-											}
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
+		if sm := im.client.GetSecurityManager(); sm != nil && sm.IsOwner(userID) {
+			return true
 		}
 	}
 	return false
@@ -153,7 +83,7 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 
 		inlineConf := tgbotapi.InlineConfig{
 			InlineQueryID: q.ID,
-			Results:       []interface{}{article},
+			Results:       []any{article},
 			CacheTime:     0,
 			IsPersonal:    true,
 		}
@@ -174,7 +104,7 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 		return
 	}
 
-	var result interface{}
+	var result any
 	markup := im.GenerateMarkup(unit.Buttons)
 
 	switch {
@@ -215,7 +145,7 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 		var performer string
 		var duration int
 
-		if m, ok := unit.Audio.(map[string]interface{}); ok {
+		if m, ok := unit.Audio.(map[string]any); ok {
 			if u, ok := m["url"].(string); ok {
 				audioURL = u
 			}
@@ -274,7 +204,7 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 
 	inlineConf := tgbotapi.InlineConfig{
 		InlineQueryID: q.ID,
-		Results:       []interface{}{result},
+		Results:       []any{result},
 		CacheTime:     0,
 		IsPersonal:    true,
 	}
@@ -435,7 +365,7 @@ func (im *InlineManager) answerInlineHelp(q *tgbotapi.InlineQuery) {
 	article := tgbotapi.NewInlineQueryResultArticle(localRandStr(20), "Goroku inline commands", text.String())
 	article.Description = "Available inline commands"
 	article.InputMessageContent = tgbotapi.InputTextMessageContent{Text: text.String(), ParseMode: tgbotapi.ModeHTML}
-	_, err := im.bot.Request(tgbotapi.InlineConfig{InlineQueryID: q.ID, Results: []interface{}{article}, CacheTime: 0, IsPersonal: true})
+	_, err := im.bot.Request(tgbotapi.InlineConfig{InlineQueryID: q.ID, Results: []any{article}, CacheTime: 0, IsPersonal: true})
 	if err != nil {
 		L().Info("[Inline] failed to answer inline help: {0}", zap.Any("arg0", err))
 	}
@@ -497,23 +427,14 @@ func (im *InlineManager) callbackModules() []ModuleCallbackHandlers {
 	return modules
 }
 
-func (im *InlineManager) allModuleValues() []interface{} {
+func (im *InlineManager) allModuleValues() []any {
 	if im.allModules == nil {
 		return nil
 	}
-	val := reflect.ValueOf(im.allModules)
-	method := val.MethodByName("GetModules")
-	if !method.IsValid() {
-		return nil
-	}
-	res := method.Call(nil)
-	if len(res) == 0 || res[0].Kind() != reflect.Map {
-		return nil
-	}
-	var out []interface{}
-	iter := res[0].MapRange()
-	for iter.Next() {
-		out = append(out, iter.Value().Interface())
+	modules := im.allModules.GetModules()
+	var out []any
+	for _, mod := range modules {
+		out = append(out, mod)
 	}
 	return out
 }
@@ -558,14 +479,9 @@ func (im *InlineManager) isCallbackAllowed(unit *Unit, userID int64) bool {
 
 	if sm := im.getSecurityManager(); sm != nil {
 		// Check owner first using SecurityManager
-		vSec := unpackInterface(reflect.ValueOf(sm))
-		mIsOwner := vSec.MethodByName("IsOwner")
-		if mIsOwner.IsValid() {
-			resVals := mIsOwner.Call([]reflect.Value{reflect.ValueOf(userID)})
-			if len(resVals) > 0 && resVals[0].Kind() == reflect.Bool && resVals[0].Bool() {
-				L().Info("[SecurityDebug] Allow click: userID={0} is verified owner by SecurityManager.", zap.Any("arg0", userID))
-				return true
-			}
+		if sm.IsOwner(userID) {
+			L().Info("[SecurityDebug] Allow click: userID={0} is verified owner by SecurityManager.", zap.Any("arg0", userID))
+			return true
 		}
 
 		// Check module trust
@@ -573,9 +489,8 @@ func (im *InlineManager) isCallbackAllowed(unit *Unit, userID int64) bool {
 			res := im.isUserOwnerOrTrustedForModule(sm, userID, unit.Module)
 			L().Info("[SecurityDebug] Module trust check: userID={0}, module={1}, allowed={2}", zap.Any("arg0", userID), zap.Any("arg1", unit.Module), zap.Any("arg2", res))
 			return res
-		} else {
-			L().Info("[SecurityDebug] unit.Module is empty!")
 		}
+		L().Info("[SecurityDebug] unit.Module is empty!")
 	} else {
 		L().Info("[SecurityDebug] SecurityManager is not available!")
 	}
@@ -584,86 +499,31 @@ func (im *InlineManager) isCallbackAllowed(unit *Unit, userID int64) bool {
 	return false
 }
 
-func (im *InlineManager) getSecurityManager() interface{} {
+func (im *InlineManager) getSecurityManager() SecurityChecker {
 	if im.client == nil {
 		return nil
 	}
-	vClient := reflect.ValueOf(im.client)
-	if vClient.Kind() == reflect.Ptr {
-		vClient = vClient.Elem()
-	}
-	if vClient.Kind() == reflect.Struct {
-		fLoader := vClient.FieldByName("Loader")
-		if fLoader.IsValid() && !fLoader.IsNil() {
-			vLoader := unpackInterface(fLoader)
-			mDispatcher := vLoader.MethodByName("GetDispatcher")
-			if mDispatcher.IsValid() {
-				resDisp := mDispatcher.Call(nil)
-				if len(resDisp) > 0 && !resDisp[0].IsNil() {
-					vDisp := unpackInterface(resDisp[0])
-					mSec := vDisp.MethodByName("GetSecurityManager")
-					if mSec.IsValid() {
-						resSec := mSec.Call(nil)
-						if len(resSec) > 0 && !resSec[0].IsNil() {
-							return resSec[0].Interface()
-						}
-					}
-				}
-			}
-		}
-	}
-	return nil
+	return im.client.GetSecurityManager()
 }
 
-func (im *InlineManager) isUserOwnerOrTrustedForModule(sm interface{}, userID int64, moduleName string) bool {
+func (im *InlineManager) isUserOwnerOrTrustedForModule(sm SecurityChecker, userID int64, moduleName string) bool {
 	if userID == im.ownerID() {
 		return true
 	}
-
-	vSec := unpackInterface(reflect.ValueOf(sm))
-
-	// Try calling IsOwner
-	mIsOwner := vSec.MethodByName("IsOwner")
-	if mIsOwner.IsValid() {
-		res := mIsOwner.Call([]reflect.Value{reflect.ValueOf(userID)})
-		if len(res) > 0 && res[0].Kind() == reflect.Bool && res[0].Bool() {
-			return true
-		}
+	if sm == nil {
+		return false
 	}
-
-	// Try calling CheckModuleAccess
-	mCheck := vSec.MethodByName("CheckModuleAccess")
-	if mCheck.IsValid() {
-		// Try exact module name
-		res := mCheck.Call([]reflect.Value{
-			reflect.ValueOf(userID),
-			reflect.ValueOf(moduleName),
-		})
-		if len(res) > 0 && res[0].Kind() == reflect.Bool && res[0].Bool() {
-			return true
-		}
-
-		// Try without "Goroku" prefix
-		if modTrim := strings.TrimPrefix(moduleName, "Goroku"); modTrim != moduleName {
-			res := mCheck.Call([]reflect.Value{
-				reflect.ValueOf(userID),
-				reflect.ValueOf(modTrim),
-			})
-			if len(res) > 0 && res[0].Kind() == reflect.Bool && res[0].Bool() {
-				return true
-			}
-		}
-
-		// Try without "GorokuPlugin" prefix
-		if modTrimPlugin := strings.TrimPrefix(moduleName, "GorokuPlugin"); modTrimPlugin != moduleName {
-			res := mCheck.Call([]reflect.Value{
-				reflect.ValueOf(userID),
-				reflect.ValueOf(modTrimPlugin),
-			})
-			if len(res) > 0 && res[0].Kind() == reflect.Bool && res[0].Bool() {
-				return true
-			}
-		}
+	if sm.IsOwner(userID) {
+		return true
+	}
+	if sm.CheckModuleAccess(userID, moduleName) {
+		return true
+	}
+	if modTrim := strings.TrimPrefix(moduleName, "Goroku"); modTrim != moduleName && sm.CheckModuleAccess(userID, modTrim) {
+		return true
+	}
+	if modTrimPlugin := strings.TrimPrefix(moduleName, "GorokuPlugin"); modTrimPlugin != moduleName && sm.CheckModuleAccess(userID, modTrimPlugin) {
+		return true
 	}
 	return false
 }
@@ -672,18 +532,7 @@ func (im *InlineManager) ownerID() int64 {
 	if im.client == nil {
 		return 0
 	}
-	v := reflect.ValueOf(im.client)
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
-	}
-	if v.Kind() != reflect.Struct {
-		return 0
-	}
-	f := v.FieldByName("TGID")
-	if f.IsValid() && f.Kind() == reflect.Int64 {
-		return f.Int()
-	}
-	return 0
+	return im.client.TGIDValue()
 }
 
 func (im *InlineManager) handleChosenInlineResult(r *tgbotapi.ChosenInlineResult) {

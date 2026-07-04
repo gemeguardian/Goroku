@@ -19,7 +19,7 @@ func TestGetLogChatID(t *testing.T) {
 	}
 
 	// With float64 channel_id
-	db.data["goroku.forums"] = map[string]interface{}{
+	db.data["goroku.forums"] = map[string]any{
 		"channel_id": float64(1234567890),
 	}
 	if got := client.GetLogChatID(); got != 1234567890 {
@@ -27,7 +27,7 @@ func TestGetLogChatID(t *testing.T) {
 	}
 
 	// With int64 channel_id
-	db.data["goroku.forums"] = map[string]interface{}{
+	db.data["goroku.forums"] = map[string]any{
 		"channel_id": int64(9876543210),
 	}
 	if got := client.GetLogChatID(); got != 9876543210 {
@@ -35,7 +35,7 @@ func TestGetLogChatID(t *testing.T) {
 	}
 
 	// With int channel_id
-	db.data["goroku.forums"] = map[string]interface{}{
+	db.data["goroku.forums"] = map[string]any{
 		"channel_id": int(42),
 	}
 	if got := client.GetLogChatID(); got != 42 {

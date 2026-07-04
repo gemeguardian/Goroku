@@ -59,8 +59,8 @@ func (m *Help) ClientReady() error { return nil }
 func (m *Help) OnUnload() error    { return nil }
 func (m *Help) OnDlmod() error     { return nil }
 
-func (m *Help) ConfigDefaults() map[string]interface{} {
-	return map[string]interface{}{
+func (m *Help) ConfigDefaults() map[string]any {
+	return map[string]any{
 		"core_emoji":    "<tg-emoji emoji-id=4974681956907221809>▪️</tg-emoji>",
 		"plain_emoji":   "<tg-emoji emoji-id=4974508259839836856>▪️</tg-emoji>",
 		"empty_emoji":   "<tg-emoji emoji-id=5100652175172830068>🟠</tg-emoji>",
@@ -72,7 +72,7 @@ func (m *Help) ConfigDefaults() map[string]interface{} {
 	}
 }
 
-func (m *Help) ConfigReady(config map[string]interface{}) error {
+func (m *Help) ConfigReady(config map[string]any) error {
 	if val, ok := config["core_emoji"].(string); ok {
 		m.coreEmoji = val
 	}
@@ -113,19 +113,12 @@ func (m *Help) Watchers() []goroku.WatcherHandler {
 
 // getPrefix fetches the command prefix for the sender
 func (m *Help) getPrefix(senderID int64) string {
-	mainPrefixVal := m.db.Get("goroku.main", "command_prefix", ".")
-	mainPrefix := "."
-	if val, ok := mainPrefixVal.(string); ok {
-		mainPrefix = val
+	prefixes := m.db.GetStringMap("goroku.main", "prefixes", nil)
+	senderStr := strconv.FormatInt(senderID, 10)
+	if customPrefix, exists := prefixes[senderStr]; exists {
+		return customPrefix
 	}
-	prefixesVal := m.db.Get("goroku.main", "prefixes", nil)
-	if prefixes, ok := prefixesVal.(map[string]interface{}); ok {
-		senderStr := strconv.FormatInt(senderID, 10)
-		if customPrefix, exists := prefixes[senderStr].(string); exists {
-			return customPrefix
-		}
-	}
-	return mainPrefix
+	return m.db.GetString("goroku.main", "command_prefix", ".")
 }
 
 // findAliases finds all aliases pointing to command
@@ -142,7 +135,7 @@ func (m *Help) findAliases(loader *goroku.Modules, command string) []string {
 }
 
 // formatPositional formats string replacing {} with args
-func formatPositional(format string, args ...interface{}) string {
+func formatPositional(format string, args ...any) string {
 	res := format
 	for _, arg := range args {
 		res = strings.Replace(res, "{}", fmt.Sprintf("%v", arg), 1)
@@ -247,17 +240,7 @@ func (m *Help) HelphideCmd(msg *goroku.Message) error {
 		return msg.Answer("❌ Error: Modules registry not found.")
 	}
 
-	hiddenVal := m.db.Get("Help", "hide", []interface{}{})
-	var currentlyHidden []string
-	if slice, ok := hiddenVal.([]interface{}); ok {
-		for _, v := range slice {
-			if s, ok := v.(string); ok {
-				currentlyHidden = append(currentlyHidden, s)
-			}
-		}
-	} else if stringSlice, ok := hiddenVal.([]string); ok {
-		currentlyHidden = stringSlice
-	}
+	currentlyHidden := m.db.GetStringSlice("Help", "hide", nil)
 
 	var hidden []string
 	var shown []string
@@ -285,7 +268,7 @@ func (m *Help) HelphideCmd(msg *goroku.Message) error {
 		}
 	}
 
-	m.db.Set("Help", "hide", currentlyHidden)
+	m.db.SetStringSlice("Help", "hide", currentlyHidden)
 
 	var hiddenList []string
 	for _, h := range hidden {
@@ -365,17 +348,7 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 	args := strings.TrimSpace(argsRaw)
 	modulesList := loader.GetModules()
 
-	hiddenVal := m.db.Get("Help", "hide", []interface{}{})
-	var currentlyHidden []string
-	if slice, ok := hiddenVal.([]interface{}); ok {
-		for _, v := range slice {
-			if s, ok := v.(string); ok {
-				currentlyHidden = append(currentlyHidden, s)
-			}
-		}
-	} else if stringSlice, ok := hiddenVal.([]string); ok {
-		currentlyHidden = stringSlice
-	}
+	currentlyHidden := m.db.GetStringSlice("Help", "hide", nil)
 
 	prefix := m.getPrefix(msg.SenderID)
 

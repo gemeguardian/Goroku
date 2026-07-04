@@ -6,7 +6,7 @@ import (
 	"goroku/goroku/cache"
 )
 
-func (c *CustomTelegramClient) GetFullUser(entity interface{}, exp int64, force bool) (interface{}, error) {
+func (c *CustomTelegramClient) GetFullUser(entity any, exp int64, force bool) (any, error) {
 	cacheKey := cache.NormalizeEntityCacheKey(entity)
 	if !force {
 		c.cacheMu.RLock()

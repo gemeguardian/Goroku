@@ -70,8 +70,8 @@ func (m *Test) ClientReady() error {
 func (m *Test) OnUnload() error { return nil }
 func (m *Test) OnDlmod() error  { return nil }
 
-func (m *Test) ConfigDefaults() map[string]interface{} {
-	return map[string]interface{}{
+func (m *Test) ConfigDefaults() map[string]any {
+	return map[string]any{
 		"force_send_all":        false,
 		"tglog_level":           "ERROR",
 		"ignore_common":         true,
@@ -85,7 +85,7 @@ func (m *Test) ConfigDefaults() map[string]interface{} {
 	}
 }
 
-func (m *Test) ConfigReady(config map[string]interface{}) error {
+func (m *Test) ConfigReady(config map[string]any) error {
 	if val, ok := config["force_send_all"].(bool); ok {
 		m.forceSendAll = val
 	}
@@ -164,10 +164,9 @@ func getUsername() string {
 }
 
 func (m *Test) makeButton(text string, handler func(inline.CallbackQuery) error) inline.Button {
-	rand.Seed(time.Now().UnixNano())
 	return inline.Button{
 		Text:    text,
-		Data:    fmt.Sprintf("tst_%d_%d", time.Now().UnixNano(), rand.Int63()),
+		Data:    fmt.Sprintf("tst_%d_%d", time.Now().UnixNano(), rand.Int63()), //nolint:gosec
 		Handler: handler,
 	}
 }
@@ -186,7 +185,7 @@ func (m *Test) PingCmd(msg *goroku.Message) error {
 		_ = msg.Edit(emoji)
 		targetMsgID = msg.ID
 	} else {
-		sentMsg, err := m.client.SendMessage(msg.ChatID, emoji)
+		sentMsg, err := m.client.SendMessage(goroku.ChatRefID(msg.ChatID), emoji)
 		if err == nil {
 			targetMsgID = goroku.GetSentMessageID(sentMsg)
 		}
@@ -198,7 +197,7 @@ func (m *Test) PingCmd(msg *goroku.Message) error {
 	hostname, _ := os.Hostname()
 
 	pingHint := ""
-	if m.hint != "" && rand.Intn(3) == 2 {
+	if m.hint != "" && rand.Intn(3) == 2 { //nolint:gosec
 		pingHint = m.hint
 	}
 
@@ -218,7 +217,7 @@ func (m *Test) PingCmd(msg *goroku.Message) error {
 
 	response := formatCustomMessage(tmpl, data)
 	if targetMsgID != 0 {
-		_, err := m.client.EditMessage(msg.ChatID, targetMsgID, response)
+		_, err := m.client.EditMessage(goroku.ChatRefID(msg.ChatID), targetMsgID, response)
 		return err
 	}
 	return msg.Answer(response)
@@ -328,7 +327,7 @@ func (m *Test) LogsCmd(msg *goroku.Message) error {
 	return m.SendLogs(msg, lvl, false)
 }
 
-func (m *Test) SendLogs(msg interface{}, lvl int, force bool) error {
+func (m *Test) SendLogs(msg any, lvl int, force bool) error {
 	namedLvl := strconv.Itoa(lvl)
 	switch lvl {
 	case 60:
@@ -428,7 +427,7 @@ func (m *Test) SendLogs(msg interface{}, lvl int, force bool) error {
 	)
 
 	nr := &namedReader{r: bytes.NewReader([]byte(censoredLogs)), name: filename}
-	_, err := m.client.SendFile(chatID, nr, caption)
+	_, err := m.client.SendFile(goroku.ChatRefID(chatID), nr, caption)
 	return err
 }
 

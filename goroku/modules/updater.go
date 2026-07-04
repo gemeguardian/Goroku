@@ -61,25 +61,24 @@ func (m *Updater) ClientReady() error {
 
 	m.handlePostRestart()
 
-	doNotCreate, _ := m.db.Get("Updater", "do_not_create", false).(bool)
-	if !doNotCreate {
+	if !m.db.GetBool("Updater", "do_not_create", false) {
 		go func() {
 			_ = m.client.CreateGorokuFolder(m.client.TGID)
-			m.db.Set("Updater", "do_not_create", true)
+			m.db.SetBool("Updater", "do_not_create", true)
 		}()
 	}
 	return nil
 }
 
-func (m *Updater) ConfigDefaults() map[string]interface{} {
-	return map[string]interface{}{
+func (m *Updater) ConfigDefaults() map[string]any {
+	return map[string]any{
 		"GIT_ORIGIN_URL":        "https://github.com/gemeguardian/Goroku",
 		"disable_notifications": false,
 		"autoupdate":            false,
 	}
 }
 
-func (m *Updater) ConfigReady(config map[string]interface{}) error {
+func (m *Updater) ConfigReady(config map[string]any) error {
 	if val, ok := config["disable_notifications"].(bool); ok {
 		m.disableNotifications = val
 	}
@@ -90,7 +89,7 @@ func (m *Updater) ConfigReady(config map[string]interface{}) error {
 		if val != m.gitOriginUrl {
 			m.gitOriginUrl = val
 			repoDir := m.getRepoDir()
-			cmd := exec.Command("git", "remote", "set-url", "origin", val)
+			cmd := exec.Command("git", "remote", "set-url", "origin", val) //nolint:gosec
 			cmd.Dir = repoDir
 			_ = cmd.Run()
 		}
@@ -143,7 +142,7 @@ func (m *Updater) getLatestHash() string {
 	_ = cmd.Run()
 
 	branch := goroku.GetVersionBranch()
-	cmd = exec.Command("git", "rev-parse", "origin/"+branch)
+	cmd = exec.Command("git", "rev-parse", "origin/"+branch) //nolint:gosec
 	cmd.Dir = repoDir
 	out, err := cmd.Output()
 	if err != nil {
@@ -176,7 +175,7 @@ func (m *Updater) getChangelog() string {
 	}
 	repoDir := m.getRepoDir()
 	branch := goroku.GetVersionBranch()
-	cmd := exec.Command("git", "log", "HEAD..origin/"+branch, "--oneline", "--format=<b>%h</b>: <i>%s</i>", "-10")
+	cmd := exec.Command("git", "log", "HEAD..origin/"+branch, "--oneline", "--format=<b>%h</b>: <i>%s</i>", "-10") //nolint:gosec
 	cmd.Dir = repoDir
 	out, err := cmd.Output()
 	if err != nil || len(out) == 0 {
@@ -224,7 +223,7 @@ func (m *Updater) pollerTick() error {
 		return nil
 	}
 
-	ignorePermanent, _ := m.db.Get("Updater", "ignore_permanent", "").(string)
+	ignorePermanent := m.db.GetString("Updater", "ignore_permanent", "")
 	if ignorePermanent != "" && ignorePermanent == latest {
 		return nil
 	}
@@ -239,9 +238,9 @@ func (m *Updater) pollerTick() error {
 		cmd := exec.Command("git", "pull")
 		cmd.Dir = repoDir
 		if out, err := cmd.CombinedOutput(); err == nil && !strings.Contains(string(out), "Already up to date") {
-			_, _ = m.client.SendMessage(m.client.TGID,
+			_, _ = m.client.SendMessage(goroku.ChatRefID(m.client.TGID),
 				fmt.Sprintf("🔄 <b>Auto-updated to</b> <code>%s</code>\n\n%s", latest[:6], changelog))
-			m.db.Set("Updater", "restart_ts", time.Now().Unix())
+			m.db.SetInt64("Updater", "restart_ts", time.Now().Unix())
 			go func() {
 				time.Sleep(1 * time.Second)
 				goroku.Restart()
@@ -250,7 +249,7 @@ func (m *Updater) pollerTick() error {
 		return nil
 	}
 
-	_, _ = m.client.SendMessage(m.client.TGID,
+	_, _ = m.client.SendMessage(goroku.ChatRefID(m.client.TGID),
 		fmt.Sprintf(
 			"🪐 <b>Goroku update available!</b>\n\n"+
 				"📌 <b>Current:</b> <code>%s</code>\n"+
@@ -261,7 +260,7 @@ func (m *Updater) pollerTick() error {
 		),
 	)
 	m.notified = latest
-	m.db.Set("Updater", "ignore_permanent", false)
+	m.db.SetString("Updater", "ignore_permanent", "")
 	return nil
 }
 
@@ -274,7 +273,7 @@ func (m *Updater) announcementTick() error {
 	if err != nil || resp.StatusCode != 200 {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -282,30 +281,27 @@ func (m *Updater) announcementTick() error {
 	}
 
 	announcement := strings.TrimSpace(string(body))
-	previous, _ := m.db.Get("Updater", "announcement", "").(string)
+	previous := m.db.GetString("Updater", "announcement", "")
 
 	if announcement != "" && announcement != previous {
-		_, _ = m.client.SendMessage(m.client.TGID,
+		_, _ = m.client.SendMessage(goroku.ChatRefID(m.client.TGID),
 			fmt.Sprintf("📢 <b>Goroku Announcement:</b>\n\n%s", announcement))
-		m.db.Set("Updater", "announcement", announcement)
+		m.db.SetString("Updater", "announcement", announcement)
 	}
 	return nil
 }
 
 func (m *Updater) handlePostRestart() {
-	selfUpdateMsg, _ := m.db.Get("Updater", "selfupdatemsg", "").(string)
+	selfUpdateMsg := m.db.GetString("Updater", "selfupdatemsg", "")
 	if selfUpdateMsg == "" {
 		return
 	}
 
-	startTS := m.db.Get("Updater", "restart_ts", int64(0))
+	startTS := m.db.GetInt64("Updater", "restart_ts", 0)
 	var took string
-	switch v := startTS.(type) {
-	case float64:
-		took = fmt.Sprintf("%d", int64(time.Now().Unix())-int64(v))
-	case int64:
-		took = fmt.Sprintf("%d", time.Now().Unix()-v)
-	default:
+	if startTS != 0 {
+		took = fmt.Sprintf("%d", time.Now().Unix()-startTS)
+	} else {
 		took = "n/a"
 	}
 
@@ -326,12 +322,12 @@ func (m *Updater) handlePostRestart() {
 		chatID, err1 := strconv.ParseInt(parts[0], 10, 64)
 		msgID, err2 := strconv.ParseInt(parts[1], 10, 64)
 		if err1 == nil && err2 == nil {
-			_, _ = m.client.EditMessage(chatID, msgID, msg)
+			_, _ = m.client.EditMessage(goroku.ChatRefID(chatID), msgID, msg)
 		}
 	}
 
-	m.db.Set("Updater", "selfupdatemsg", "")
-	m.db.Set("Updater", "restart_ts", nil)
+	m.db.SetString("Updater", "selfupdatemsg", "")
+	m.db.SetInt64("Updater", "restart_ts", 0)
 }
 
 func (m *Updater) UpdateCmd(msg *goroku.Message) error {
@@ -354,7 +350,7 @@ func (m *Updater) UpdateCmd(msg *goroku.Message) error {
 	backupData := m.db.GetAll()
 	if backupBytes, err := json.MarshalIndent(backupData, "", "  "); err == nil {
 		backupPath := filepath.Join(repoDir, fmt.Sprintf("db_backup_%d.json", time.Now().Unix()))
-		if writeErr := os.WriteFile(backupPath, backupBytes, 0644); writeErr == nil {
+		if writeErr := os.WriteFile(backupPath, backupBytes, 0600); writeErr == nil {
 			_ = msg.Answer(fmt.Sprintf("💾 <b>DB backup created:</b> <code>%s</code>", filepath.Base(backupPath)))
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -376,8 +372,8 @@ func (m *Updater) UpdateCmd(msg *goroku.Message) error {
 
 	_ = msg.Answer(m.getTrans("installing", "<tg-emoji emoji-id=5208622108191506906>🕗</tg-emoji> <b>Installing updates...</b>"))
 
-	m.db.Set("Updater", "selfupdatemsg", fmt.Sprintf("%d:%d", msg.ChatID, msg.ID))
-	m.db.Set("Updater", "restart_ts", time.Now().Unix())
+	m.db.SetString("Updater", "selfupdatemsg", fmt.Sprintf("%d:%d", msg.ChatID, msg.ID))
+	m.db.SetInt64("Updater", "restart_ts", time.Now().Unix())
 
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -403,8 +399,8 @@ func (m *Updater) RestartCmd(msg *goroku.Message) error {
 
 	_ = msg.Answer(text)
 
-	m.db.Set("Updater", "selfupdatemsg", fmt.Sprintf("%d:%d", msg.ChatID, msg.ID))
-	m.db.Set("Updater", "restart_ts", time.Now().Unix())
+	m.db.SetString("Updater", "selfupdatemsg", fmt.Sprintf("%d:%d", msg.ChatID, msg.ID))
+	m.db.SetInt64("Updater", "restart_ts", time.Now().Unix())
 
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -417,7 +413,7 @@ func (m *Updater) ChangelogCmd(msg *goroku.Message) error {
 	repoDir := m.getRepoDir()
 	changelogPath := filepath.Join(repoDir, "CHANGELOG.md")
 
-	content, err := os.ReadFile(changelogPath)
+	content, err := os.ReadFile(changelogPath) //nolint:gosec
 	if err != nil {
 		cmd := exec.Command("git", "log", "--oneline", "-15", "--pretty=format:%h: %s")
 		cmd.Dir = repoDir
@@ -450,7 +446,7 @@ func (m *Updater) AutoupdateCmd(msg *goroku.Message) error {
 	current := m.autoupdate
 	newState := !current
 
-	m.db.Set("Updater", "autoupdate", newState)
+	m.db.SetBool("Updater", "autoupdate", newState)
 	m.autoupdate = newState
 
 	if newState {
@@ -505,7 +501,7 @@ func (m *Updater) RollbackCmd(msg *goroku.Message) error {
 	_ = msg.Answer(fmt.Sprintf("🔄 <b>Rolling back %d commit(s)...</b>", n))
 
 	repoDir := m.getRepoDir()
-	cmd := exec.Command("git", "reset", "--hard", fmt.Sprintf("HEAD~%d", n))
+	cmd := exec.Command("git", "reset", "--hard", fmt.Sprintf("HEAD~%d", n)) //nolint:gosec
 	cmd.Dir = repoDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -521,7 +517,7 @@ func (m *Updater) RollbackCmd(msg *goroku.Message) error {
 }
 
 func (m *Updater) UbstopCmd(msg *goroku.Message) error {
-	m.db.Set("Updater", "autoupdate", false)
+	m.db.SetBool("Updater", "autoupdate", false)
 	m.autoupdate = false
 	platform := "userbot"
 	me, err := m.client.GetMe()

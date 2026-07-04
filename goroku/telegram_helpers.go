@@ -28,7 +28,7 @@ func SendMessageWithTopic(bot *tgbotapi.BotAPI, chatID int64, text string, topic
 }
 
 // SendPhotoWithTopic sends a photo to a specific topic thread in a forum chat.
-func SendPhotoWithTopic(bot *tgbotapi.BotAPI, chatID int64, file interface{}, caption string, topicID int) (tgbotapi.Message, error) {
+func SendPhotoWithTopic(bot *tgbotapi.BotAPI, chatID int64, file any, caption string, topicID int) (tgbotapi.Message, error) {
 	params := tgbotapi.Params{
 		"chat_id":    strconv.FormatInt(chatID, 10),
 		"caption":    caption,
@@ -61,7 +61,7 @@ func SendPhotoWithTopic(bot *tgbotapi.BotAPI, chatID int64, file interface{}, ca
 }
 
 // SendDocumentWithTopic sends a document to a specific topic thread in a forum chat.
-func SendDocumentWithTopic(bot *tgbotapi.BotAPI, chatID int64, file interface{}, caption string, topicID int) (tgbotapi.Message, error) {
+func SendDocumentWithTopic(bot *tgbotapi.BotAPI, chatID int64, file any, caption string, topicID int) (tgbotapi.Message, error) {
 	params := tgbotapi.Params{
 		"chat_id":    strconv.FormatInt(chatID, 10),
 		"caption":    caption,
