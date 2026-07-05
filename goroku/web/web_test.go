@@ -107,6 +107,38 @@ func TestWebRootHandlerAndSetupToken(t *testing.T) {
 	}
 }
 
+func TestWebResourceDirUsesDataRoot(t *testing.T) {
+	t.Setenv("GOROKU_WEB_RESOURCES", "")
+	tempDir := t.TempDir()
+	resourcesDir := filepath.Join(tempDir, "web-resources")
+	if err := os.Mkdir(resourcesDir, 0750); err != nil {
+		t.Fatalf("failed to create resources dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(resourcesDir, "base.jinja2"), []byte("base"), 0600); err != nil {
+		t.Fatalf("failed to write base template: %v", err)
+	}
+
+	if got := webResourceDir(tempDir); got != resourcesDir {
+		t.Fatalf("expected %q, got %q", resourcesDir, got)
+	}
+}
+
+func TestWebResourceDirPrefersEnv(t *testing.T) {
+	tempDir := t.TempDir()
+	resourcesDir := filepath.Join(tempDir, "custom-resources")
+	if err := os.Mkdir(resourcesDir, 0750); err != nil {
+		t.Fatalf("failed to create resources dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(resourcesDir, "base.jinja2"), []byte("base"), 0600); err != nil {
+		t.Fatalf("failed to write base template: %v", err)
+	}
+	t.Setenv("GOROKU_WEB_RESOURCES", resourcesDir)
+
+	if got := webResourceDir("/does/not/exist"); got != resourcesDir {
+		t.Fatalf("expected %q, got %q", resourcesDir, got)
+	}
+}
+
 func TestCheckSetupTokenSources(t *testing.T) {
 	web := NewWeb(WebConfig{SetupToken: "secret"})
 

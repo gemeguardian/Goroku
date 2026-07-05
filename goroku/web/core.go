@@ -125,7 +125,7 @@ func (wc *WebCore) Start(port int, proxyPass bool) {
 	})
 
 	// Setup static files handler
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(filepath.Join(wc.dataRoot, "web-resources/static")))))
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(filepath.Join(webResourceDir(wc.dataRoot), "static")))))
 
 	secureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setSecurityHeaders(w)

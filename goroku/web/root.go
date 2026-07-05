@@ -374,21 +374,45 @@ func (w *Web) sendMessage(client TelegramClient, chatID int64, text string) (any
 	return client.SendMessage(chatref.ID(chatID), text)
 }
 
+func webResourceDir(dataRoot string) string {
+	var candidates []string
+	if envDir := strings.TrimSpace(os.Getenv("GOROKU_WEB_RESOURCES")); envDir != "" {
+		candidates = append(candidates, envDir)
+	}
+	if dataRoot != "" {
+		candidates = append(candidates, filepath.Join(dataRoot, "web-resources"))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(cwd, "web-resources"))
+	}
+	if execPath, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(execPath), "web-resources"))
+	}
+
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(candidate, "base.jinja2")); err == nil {
+			return candidate
+		}
+	}
+	if dataRoot != "" {
+		return filepath.Join(dataRoot, "web-resources")
+	}
+	return "web-resources"
+}
+
 func (w *Web) RootHandler(wr http.ResponseWriter, r *http.Request) {
 	w.rememberSetupToken(wr, r)
-	baseBytes, err := os.ReadFile("web-resources/base.jinja2")
-	if err != nil {
-		baseBytes, err = os.ReadFile(filepath.Join(w.dataRoot, "web-resources/base.jinja2"))
-	}
+	resourceDir := webResourceDir(w.dataRoot)
+	baseBytes, err := os.ReadFile(filepath.Join(resourceDir, "base.jinja2"))
 	if err != nil {
 		http.Error(wr, "base template not found", http.StatusInternalServerError)
 		return
 	}
 
-	rootBytes, err := os.ReadFile("web-resources/root.jinja2")
-	if err != nil {
-		rootBytes, err = os.ReadFile(filepath.Join(w.dataRoot, "web-resources/root.jinja2"))
-	}
+	rootBytes, err := os.ReadFile(filepath.Join(resourceDir, "root.jinja2"))
 	if err != nil {
 		http.Error(wr, "root template not found", http.StatusInternalServerError)
 		return
