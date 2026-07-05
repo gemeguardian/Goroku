@@ -28,7 +28,7 @@ const (
 	EVERYONE                = 1 << 13
 
 	DEFAULT_PERMISSIONS = OWNER
-	ALL                 = (1 << 13) - 1
+	ALL                 = (1 << 14) - 1
 )
 
 type SecuredModule interface {
@@ -233,6 +233,14 @@ func (sm *SecurityManager) Check(msg *Message, command string) bool {
 
 	// Get mask config for the command
 	config := sm.getFlagsForCommand(command)
+
+	if (config & SUDO) != 0 {
+		for _, id := range sm.db.GetInt64Slice("goroku.security", "sudo", nil) {
+			if msg.SenderID == id {
+				return true
+			}
+		}
+	}
 
 	// If everyone can access
 	if (config & EVERYONE) != 0 {

@@ -273,6 +273,7 @@ func Main(customModules []Module) {
 		h.Web.SetPort(h.Port)
 		go h.Web.Start(h.Port, true)
 		setupURL := h.Web.GetURL(true)
+		logURL := setupURL
 		hasExistingSessions := false
 		for _, pattern := range []string{
 			filepath.Join(BaseDir, "goroku-*.session"),
@@ -297,8 +298,15 @@ func Main(customModules []Module) {
 				sep = "&"
 			}
 			setupURL = setupURL + sep + "setup_token=" + setupToken
+			setupURLPath := filepath.Join(BaseDir, "goroku-setup-url.txt")
+			if err := os.WriteFile(setupURLPath, []byte(setupURL+"\n"), 0600); err == nil {
+				utils.SecureFile(setupURLPath)
+				L().Info("Initial setup URL saved", zap.String("path", setupURLPath))
+			} else {
+				L().Warn("Failed to save initial setup URL", zap.Error(err))
+			}
 		}
-		L().Info("Web mode ready", zap.String("url", setupURL))
+		L().Info("Web mode ready", zap.String("url", logURL), zap.Bool("setup_token_required", !hasExistingSessions))
 	}
 
 	sessionPatterns := []string{

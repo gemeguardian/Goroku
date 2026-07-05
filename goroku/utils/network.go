@@ -2,7 +2,10 @@ package utils
 
 import (
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
@@ -77,4 +80,54 @@ func GetIPAddress() string {
 		}
 	}
 	return "Unknown"
+}
+
+func DownloadURLLimited(client *http.Client, rawURL string, maxBytes int64) ([]byte, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported URL scheme: %s", parsed.Scheme)
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected HTTP status: %d", resp.StatusCode)
+	}
+	if maxBytes > 0 && resp.ContentLength > maxBytes {
+		return nil, fmt.Errorf("remote file too large: %d bytes", resp.ContentLength)
+	}
+
+	return ReadResponseBodyLimited(resp, maxBytes)
+}
+
+func ReadResponseBodyLimited(resp *http.Response, maxBytes int64) ([]byte, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, fmt.Errorf("empty HTTP response")
+	}
+	if maxBytes > 0 && resp.ContentLength > maxBytes {
+		return nil, fmt.Errorf("remote file too large: %d bytes", resp.ContentLength)
+	}
+
+	reader := resp.Body
+	if maxBytes > 0 {
+		reader = io.NopCloser(io.LimitReader(resp.Body, maxBytes+1))
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	if maxBytes > 0 && int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("remote file exceeds %d bytes", maxBytes)
+	}
+	return body, nil
 }

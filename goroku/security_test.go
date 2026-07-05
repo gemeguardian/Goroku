@@ -108,6 +108,36 @@ func TestSecurityCheckEveryoneAndPMMasks(t *testing.T) {
 	}
 }
 
+func TestAllMaskIncludesEveryone(t *testing.T) {
+	if (ALL & EVERYONE) == 0 {
+		t.Fatal("ALL must include EVERYONE")
+	}
+}
+
+func TestSecurityCheckSudoMask(t *testing.T) {
+	db := NewDatabase(42)
+	db.data["goroku.security"] = map[string]any{
+		"owner":         []any{int64(42)},
+		"all_users":     []any{},
+		"sudo":          []any{int64(100)},
+		"bounding_mask": float64(ALL),
+		"masks": map[string]any{
+			"sudo_cmd": float64(SUDO),
+		},
+	}
+	db.data["goroku.main"] = map[string]any{}
+
+	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	sm.Stop()
+
+	if !sm.Check(&Message{SenderID: 100, ChatID: 1}, "sudo_cmd") {
+		t.Fatal("sudo user should pass command with SUDO mask")
+	}
+	if sm.Check(&Message{SenderID: 101, ChatID: 1}, "sudo_cmd") {
+		t.Fatal("non-sudo user should not pass command with SUDO mask")
+	}
+}
+
 func TestSecurityCheckTsecRules(t *testing.T) {
 	db := NewDatabase(42)
 	db.data["goroku.security"] = map[string]any{

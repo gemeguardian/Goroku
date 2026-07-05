@@ -103,6 +103,12 @@ func TestCheckSetupTokenSources(t *testing.T) {
 		t.Error("Expected true for cookie token")
 	}
 
+	// Query parameter used by the first setup URL.
+	req = httptest.NewRequest("GET", "/?setup_token=secret", nil)
+	if !web.checkSetupToken(req) {
+		t.Error("Expected true for query setup token")
+	}
+
 	// Wrong header token
 	req = httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("X-Goroku-Setup-Token", "wrong")
@@ -116,5 +122,80 @@ func TestCheckSetupTokenSources(t *testing.T) {
 	req.Header.Set("X-Goroku-Setup-Token", "secret")
 	if webEmpty.checkSetupToken(req) {
 		t.Error("Expected false when setup token is empty")
+	}
+}
+
+func TestReadLimitedBodyRejectsOversizedPayload(t *testing.T) {
+	req := httptest.NewRequest("POST", "/", strings.NewReader(strings.Repeat("x", 9)))
+	w := httptest.NewRecorder()
+
+	if _, ok := readLimitedBody(w, req, 8); ok {
+		t.Fatal("oversized body should be rejected")
+	}
+	if w.Result().StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", w.Result().StatusCode)
+	}
+}
+
+func TestClientIPIgnoresProxyHeadersByDefault(t *testing.T) {
+	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "")
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.99")
+
+	if got := clientIP(req); got != "10.0.0.1:1234" {
+		t.Fatalf("expected RemoteAddr, got %q", got)
+	}
+}
+
+func TestClientIPUsesProxyHeadersWhenTrusted(t *testing.T) {
+	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "true")
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.99, 10.0.0.1")
+
+	if got := clientIP(req); got != "203.0.113.99" {
+		t.Fatalf("expected forwarded IP, got %q", got)
+	}
+}
+
+func TestIsHTTPSIgnoresForwardedProtoByDefault(t *testing.T) {
+	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "")
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	if isHTTPS(req) {
+		t.Fatal("X-Forwarded-Proto should be ignored unless proxy headers are trusted")
+	}
+}
+
+func TestIsHTTPSUsesForwardedProtoWhenTrusted(t *testing.T) {
+	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "true")
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	if !isHTTPS(req) {
+		t.Fatal("X-Forwarded-Proto should be used when proxy headers are trusted")
+	}
+}
+
+func TestSameOriginRejectsCrossOrigin(t *testing.T) {
+	req := httptest.NewRequest("POST", "https://example.com/set_api", nil)
+	req.Header.Set("Origin", "https://evil.example")
+
+	if sameOrigin(req) {
+		t.Fatal("cross-origin request should be rejected")
+	}
+}
+
+func TestSetSecurityHeaders(t *testing.T) {
+	w := httptest.NewRecorder()
+	setSecurityHeaders(w)
+
+	if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("expected X-Frame-Options DENY, got %q", got)
+	}
+	if got := w.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
+		t.Fatalf("CSP should contain frame-ancestors 'none', got %q", got)
 	}
 }

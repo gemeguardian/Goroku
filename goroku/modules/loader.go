@@ -3,7 +3,6 @@ package modules
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +15,11 @@ import (
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
+)
+
+const (
+	maxModuleSourceBytes = 2 * 1024 * 1024
+	maxRepoIndexBytes    = 1024 * 1024
 )
 
 type LoaderModule struct {
@@ -138,7 +142,7 @@ func (m *LoaderModule) restoreLoadedModule(modName, url, path string) ([]byte, e
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("module restore failed with HTTP %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := utils.ReadResponseBodyLimited(resp, maxModuleSourceBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +219,7 @@ func (m *LoaderModule) getRepo(repo string) ([]string, error) {
 		return nil, fmt.Errorf("status code %d", resp.StatusCode)
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := utils.ReadResponseBodyLimited(resp, maxRepoIndexBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -352,16 +356,7 @@ func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		msg.Text = m.getTrans("no_module", "🚫 <b>Module not available in repo.</b>")
-		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-		}
-		return nil
-	}
-	bodyBytes, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
+	bodyBytes, err := utils.DownloadURLLimited(client, url, maxModuleSourceBytes)
 	if err != nil {
 		msg.Text = m.getTrans("no_module", "🚫 <b>Module not available in repo.</b>")
 		if msg.Client != nil {
@@ -646,15 +641,13 @@ func (m *LoaderModule) AddrepoCmd(msg *goroku.Message) error {
 	rawArgs = strings.TrimSuffix(rawArgs, "/")
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("%s/full.txt", rawArgs))
-	if err != nil || resp.StatusCode != http.StatusOK {
+	if _, err := utils.DownloadURLLimited(client, fmt.Sprintf("%s/full.txt", rawArgs), maxRepoIndexBytes); err != nil {
 		msg.Text = m.getTrans("no_repo", "🚫 <b>Invalid repository URL</b>")
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
-	_ = resp.Body.Close()
 
 	exists := false
 	for _, r := range m.additionalRepos {

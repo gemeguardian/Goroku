@@ -32,7 +32,7 @@ function auth(c) {
                     .then((a) => {
                         a = a.trim();
                         if ("SETUP_TOKEN_REQUIRED" == a) {
-                            error_message("Ты без setup token. Открой веб через ссылку с ?token=...");
+                            error_message("Ты без setup token. Открой веб через ссылку с ?setup_token=...");
                             return void $(".auth").fadeOut(250, () => {
                                 restoreMain();
                             });

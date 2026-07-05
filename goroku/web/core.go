@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -121,9 +122,14 @@ func (wc *WebCore) Start(port int, proxyPass bool) {
 	// Setup static files handler
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(filepath.Join(wc.dataRoot, "web-resources/static")))))
 
+	secureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w)
+		mux.ServeHTTP(w, r)
+	})
+
 	wc.server = &http.Server{
 		Addr:              fmt.Sprintf(":%d", wc.port),
-		Handler:           mux,
+		Handler:           secureHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -140,6 +146,24 @@ func (wc *WebCore) Start(port int, proxyPass bool) {
 	if err := wc.server.ListenAndServe(); err != http.ErrServerClosed {
 		L().Info("Web server error: {0}", zap.Any("arg0", err))
 	}
+}
+
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Content-Security-Policy", strings.Join([]string{
+		"default-src 'self'",
+		"script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com",
+		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://css.gg",
+		"font-src 'self' data: https://fonts.gstatic.com https://css.gg",
+		"img-src 'self' data: https:",
+		"connect-src 'self' https://*.lottiefiles.com https://static.dan.tatar",
+		"media-src 'self' https:",
+		"object-src 'none'",
+		"base-uri 'self'",
+		"frame-ancestors 'none'",
+	}, "; "))
 }
 
 func (wc *WebCore) Stop() {

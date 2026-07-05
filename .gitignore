@@ -3,6 +3,7 @@
 goroku_bin
 heroku_bin
 config-*.json
+goroku-setup-url.txt
 
 .ruff_cache
 # Byte-compiled / optimized / DLL files
@@ -217,4 +218,5 @@ goroku/modules/*
 !goroku/modules/test.go
 !goroku/modules/translate.go
 !goroku/modules/translations.go
-!goroku/modules/updater.go.kimchi/
+!goroku/modules/updater.go
+.kimchi/

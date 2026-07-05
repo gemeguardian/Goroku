@@ -174,19 +174,24 @@ func (rs *RemoteStorage) Fetch(url, auth string) (string, error) {
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	resp, err := httpClient.Do(req)
-
-	if err != nil || resp.StatusCode != http.StatusOK {
+	if err != nil {
 		L().Info("Can't load module from remote storage. Trying local storage: {0}", zap.Any("arg0", err))
 		if localCode, fetchErr := rs.localStorage.Fetch(repo, moduleName); fetchErr == nil {
 			log.Println("Module source loaded from local storage.")
 			return localCode, nil
 		}
-		if err != nil {
-			return "", err
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		L().Info("Can't load module from remote storage. Trying local storage: {0}", zap.String("status", resp.Status))
+		if localCode, fetchErr := rs.localStorage.Fetch(repo, moduleName); fetchErr == nil {
+			log.Println("Module source loaded from local storage.")
+			return localCode, nil
 		}
 		return "", fmt.Errorf("remote server returned status: %s", resp.Status)
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {

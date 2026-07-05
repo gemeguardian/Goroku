@@ -3,11 +3,13 @@ package web
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -68,6 +70,7 @@ type WebSession struct {
 const (
 	sessionCookieName = "session"
 	sessionTTL        = 6 * time.Hour
+	shortBodyLimit    = 8 * 1024
 )
 
 type inlineBotProvider interface {
@@ -190,7 +193,30 @@ func (w *Web) clearSessionCookies(wr http.ResponseWriter, r *http.Request) {
 }
 
 func isHTTPS(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	return r.TLS != nil || (trustProxyHeaders() && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
+}
+
+func trustProxyHeaders() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("GOROKU_TRUST_PROXY_HEADERS")))
+	return value == "1" || value == "true" || value == "yes"
+}
+
+func sameOrigin(r *http.Request) bool {
+	for _, header := range []string{"Origin", "Referer"} {
+		raw := strings.TrimSpace(r.Header.Get(header))
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return false
+		}
+		if !strings.EqualFold(u.Host, r.Host) {
+			return false
+		}
+		return true
+	}
+	return true
 }
 
 func (w *Web) checkSetupToken(r *http.Request) bool {
@@ -199,12 +225,13 @@ func (w *Web) checkSetupToken(r *http.Request) bool {
 	}
 	candidates := []string{
 		r.Header.Get("X-Goroku-Setup-Token"),
+		r.URL.Query().Get("setup_token"),
 	}
 	if cookie, err := r.Cookie("setup_token"); err == nil {
 		candidates = append(candidates, cookie.Value)
 	}
 	for _, token := range candidates {
-		if strings.TrimSpace(token) == w.setupToken {
+		if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(token)), []byte(w.setupToken)) == 1 {
 			return true
 		}
 	}
@@ -227,8 +254,33 @@ func (w *Web) rememberSetupToken(wr http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func readLimitedBody(wr http.ResponseWriter, r *http.Request, limit int64) ([]byte, bool) {
+	r.Body = http.MaxBytesReader(wr, r.Body, limit)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(wr, "Request body too large", http.StatusRequestEntityTooLarge)
+		return nil, false
+	}
+	return body, true
+}
+
+func (w *Web) removeInitialSetupURL() {
+	if w.dataRoot == "" {
+		return
+	}
+	if err := os.Remove(filepath.Join(w.dataRoot, "goroku-setup-url.txt")); err != nil && !os.IsNotExist(err) {
+		L().Warn("failed to remove initial setup URL file", zap.Error(err))
+	}
+}
+
 func (w *Web) checkSessionMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(wr http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
+			if !sameOrigin(r) {
+				http.Error(wr, "Forbidden: cross-origin request", http.StatusForbidden)
+				return
+			}
+		}
 		if !w.checkSession(r) {
 			http.Error(wr, "Unauthorized: Please log in using the Telegram Web Auth button first.", http.StatusUnauthorized)
 			return
@@ -389,8 +441,11 @@ func (w *Web) SetTGApiHandler(wr http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil || len(body) < 36 {
+	body, ok := readLimitedBody(wr, r, shortBodyLimit)
+	if !ok {
+		return
+	}
+	if len(body) < 36 {
 		http.Error(wr, "API ID and HASH pair has invalid length", http.StatusBadRequest)
 		return
 	}
@@ -431,7 +486,10 @@ func (w *Web) SendTGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, _ := io.ReadAll(r.Body)
+	body, ok := readLimitedBody(wr, r, shortBodyLimit)
+	if !ok {
+		return
+	}
 	phone := parsePhone(strings.TrimSpace(string(body)))
 	if phone == "" {
 		L().Info("send_tg_code rejected empty or invalid phone from {0}", zap.Any("arg0", r.RemoteAddr))
@@ -637,6 +695,9 @@ func randomToken(size int) string {
 }
 
 func clientIP(r *http.Request) string {
+	if !trustProxyHeaders() {
+		return r.RemoteAddr
+	}
 	// Cloudflare-provided client IP is the most trustworthy when present.
 	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
 		return cf
@@ -747,7 +808,10 @@ func (w *Web) TGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, _ := io.ReadAll(r.Body)
+	body, ok := readLimitedBody(wr, r, shortBodyLimit)
+	if !ok {
+		return
+	}
 	text := string(body)
 	split := strings.Split(text, "\n")
 	if len(split) < 2 {
@@ -836,6 +900,7 @@ func (w *Web) finishPendingLogin(client TelegramClient) error {
 		w.qrTaskActive = false
 		w.twoFANeeded = false
 		w.mu.Unlock()
+		w.removeInitialSetupURL()
 		return nil
 	}
 
@@ -845,6 +910,7 @@ func (w *Web) finishPendingLogin(client TelegramClient) error {
 			w.restart()
 		}()
 	}
+	w.removeInitialSetupURL()
 	return nil
 }
 
@@ -853,7 +919,10 @@ func (w *Web) CustomBotHandler(wr http.ResponseWriter, r *http.Request) {
 		http.Error(wr, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	body, _ := io.ReadAll(r.Body)
+	body, ok := readLimitedBody(wr, r, shortBodyLimit)
+	if !ok {
+		return
+	}
 	username := strings.TrimSpace(string(body))
 	username = strings.TrimPrefix(username, "@")
 	if username != "" && (!strings.HasSuffix(strings.ToLower(username), "bot") || len(username) < 5) {
@@ -1051,7 +1120,10 @@ func (w *Web) QR2FAHandler(wr http.ResponseWriter, r *http.Request) {
 		http.Error(wr, "RATE_LIMIT", http.StatusTooManyRequests)
 		return
 	}
-	body, _ := io.ReadAll(r.Body)
+	body, ok := readLimitedBody(wr, r, shortBodyLimit)
+	if !ok {
+		return
+	}
 	password := strings.TrimSpace(string(body))
 	if password == "" {
 		http.Error(wr, "Invalid 2FA password", http.StatusBadRequest)

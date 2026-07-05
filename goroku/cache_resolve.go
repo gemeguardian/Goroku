@@ -389,7 +389,7 @@ func entitiesToHTML(text string, entities []tg.MessageEntityClass) string {
 			}
 			valid = true
 		case *tg.MessageEntityTextURL:
-			offset, length, tagType, tagArg = e.Offset, e.Length, "a", fmt.Sprintf(" href=\"%s\"", e.URL)
+			offset, length, tagType, tagArg = e.Offset, e.Length, "a", fmt.Sprintf(" href=%q", stdhtml.EscapeString(e.URL))
 			valid = true
 		case *tg.MessageEntityMentionName:
 			offset, length, tagType, tagArg = e.Offset, e.Length, "a", fmt.Sprintf(" href=\"tg://user?id=%d\"", e.UserID)

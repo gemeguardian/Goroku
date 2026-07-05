@@ -62,6 +62,7 @@ type terminalSession struct {
 	done          bool
 	startTime     time.Time
 	cmdStr        string
+	ownerID       int64
 	authMsgID     int64
 	authMsgChatID int64
 	authNeeded    bool
@@ -147,6 +148,9 @@ func (m *TerminalMod) Watchers() []goroku.WatcherHandler {
 				}
 
 				if msg.ChatID == sess.authMsgChatID && msg.ID == sess.authMsgID {
+					if msg.SenderID != sess.ownerID && msg.SenderID != m.client.TGID {
+						return true
+					}
 					password := strings.TrimSpace(msg.Text)
 					if password == "" {
 						return true
@@ -177,7 +181,7 @@ func (m *TerminalMod) Watchers() []goroku.WatcherHandler {
 					return true
 				}
 				sess.mu.Lock()
-				if sess.done {
+				if sess.done || (msg.SenderID != sess.ownerID && msg.SenderID != m.client.TGID) {
 					sess.mu.Unlock()
 					return true
 				}
@@ -272,6 +276,7 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 		stdin:     stdinPipe,
 		startTime: time.Now(),
 		cmdStr:    cmdStr,
+		ownerID:   msg.SenderID,
 	}
 
 	key := msgKey(msg)

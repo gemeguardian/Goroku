@@ -70,9 +70,6 @@ func buildAndOpenPlugin(structName string) (goroku.Module, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateHotPluginSource(structName, string(sourceBytes)); err != nil {
-		return nil, err
-	}
 
 	packageRe := regexp.MustCompile(`(?m)^\s*package\s+\w+`)
 	pluginSource := packageRe.ReplaceAllString(string(sourceBytes), "package main")
@@ -141,15 +138,4 @@ func buildAndOpenPlugin(structName string) (goroku.Module, error) {
 	}
 
 	return factory(), nil
-}
-
-func validateHotPluginSource(structName, source string) error {
-	dangerousImports := []string{"os/exec", "syscall", "unsafe", "plugin"}
-	for _, imp := range dangerousImports {
-		if regexp.MustCompile(`(?m)^\s*import\s+"`+regexp.QuoteMeta(imp)+`"`).MatchString(source) ||
-			regexp.MustCompile(`(?m)^\s*"`+regexp.QuoteMeta(imp)+`"`).MatchString(source) {
-			return fmt.Errorf("module %s imports %s", structName, imp)
-		}
-	}
-	return nil
 }

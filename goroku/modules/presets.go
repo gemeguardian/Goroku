@@ -7,7 +7,6 @@ import (
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
-	"io"
 	"math/rand"
 	"net/http"
 	"os"
@@ -456,15 +455,9 @@ func (m *Presets) InstallSingleModule(call inline.CallbackQuery, preset string, 
 	modName := strings.TrimSuffix(fileName, ".go")
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	resp, err := httpClient.Get(link)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, fmt.Sprintf("❌ Failed to download module %s", modName))
-		return nil
-	}
-	bodyBytes, err := io.ReadAll(resp.Body)
-	defer func() { _ = resp.Body.Close() }()
+	bodyBytes, err := utils.DownloadURLLimited(httpClient, link, maxModuleSourceBytes)
 	if err != nil {
-		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, fmt.Sprintf("❌ Failed to read module %s", modName))
+		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, fmt.Sprintf("❌ Failed to download module %s", modName))
 		return nil
 	}
 
@@ -526,12 +519,7 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 		updateText := fmt.Sprintf(m.getTrans("installing_module", "⏳ <b>Installing preset %s (%d/%d modules)... Installing module %s...</b>"), preset, i+1, len(links), modName)
 		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, updateText)
 		httpClient := &http.Client{Timeout: 10 * time.Second}
-		resp, err := httpClient.Get(link)
-		if err != nil || resp.StatusCode != http.StatusOK {
-			continue
-		}
-		bodyBytes, err := io.ReadAll(resp.Body)
-		defer func() { _ = resp.Body.Close() }()
+		bodyBytes, err := utils.DownloadURLLimited(httpClient, link, maxModuleSourceBytes)
 		if err != nil {
 			continue
 		}
@@ -616,12 +604,7 @@ func (m *Presets) PresetCmd(msg *goroku.Message) error {
 			modName := strings.TrimSuffix(fileName, ".go")
 
 			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Get(url)
-			if err != nil || resp.StatusCode != http.StatusOK {
-				continue
-			}
-			bodyBytes, err := io.ReadAll(resp.Body)
-			defer func() { _ = resp.Body.Close() }()
+			bodyBytes, err := utils.DownloadURLLimited(client, url, maxModuleSourceBytes)
 			if err != nil {
 				continue
 			}
@@ -846,12 +829,7 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 		}
 
 		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Get(url)
-		if err != nil || resp.StatusCode != http.StatusOK {
-			continue
-		}
-		bodyBytes, err := io.ReadAll(resp.Body)
-		defer func() { _ = resp.Body.Close() }()
+		bodyBytes, err := utils.DownloadURLLimited(client, url, maxModuleSourceBytes)
 		if err != nil {
 			continue
 		}

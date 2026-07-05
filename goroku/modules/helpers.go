@@ -58,6 +58,7 @@ func getTrans(t *goroku.Translator, modName, key, def string) string {
 
 func RegisterModulesAndRebuild(msg *goroku.Message, structNames []string) error {
 	if msg != nil && msg.Client != nil {
+		_ = msg.Answer("⚠️ <b>Security warning:</b> Go modules are arbitrary code and may be malicious. Review the source before loading modules from people or repositories you do not fully trust.")
 		return RegisterModulesHot(msg, structNames)
 	}
 	return fmt.Errorf("client is required for hot module loading")

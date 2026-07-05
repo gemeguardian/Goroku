@@ -1,10 +1,19 @@
 package goroku
 
 import (
+	"context"
 	"testing"
 
+	"github.com/gotd/td/bin"
 	"github.com/gotd/td/tg"
 )
+
+type typedTestRequest struct {
+	typeID uint32
+}
+
+func (t typedTestRequest) Encode(*bin.Buffer) error { return nil }
+func (t typedTestRequest) TypeID() uint32           { return t.typeID }
 
 func TestGetRawChannelID(t *testing.T) {
 	tests := []struct {
@@ -50,6 +59,24 @@ func TestIsSameChat(t *testing.T) {
 	}
 	if isSameChat(-1001234567890, -1009876543210) {
 		t.Error("Expected different chats for different IDs")
+	}
+}
+
+func TestForbiddenInvokerBlocksConfiguredConstructor(t *testing.T) {
+	called := false
+	invoker := &forbiddenInvoker{
+		parent: &mockInvoker{onInvoke: func(ctx context.Context, input bin.Encoder, output bin.Decoder) error {
+			called = true
+			return nil
+		}},
+		client: &CustomTelegramClient{ForbiddenConstructors: []uint32{123}},
+	}
+
+	if err := invoker.Invoke(context.Background(), typedTestRequest{typeID: 123}, nil); err == nil {
+		t.Fatal("expected forbidden constructor error")
+	}
+	if called {
+		t.Fatal("parent invoker should not be called for forbidden constructor")
 	}
 }
 

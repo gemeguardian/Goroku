@@ -17,6 +17,7 @@ import (
 	"unicode/utf16"
 
 	"goroku/goroku/cache"
+	"goroku/goroku/utils"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 
@@ -262,6 +263,11 @@ func (c *CustomTelegramClient) Connect() error {
 	client := telegram.NewClient(int(c.APIID), c.APIHash, telegram.Options{
 		SessionStorage: storage,
 		UpdateHandler:  dispatcher,
+		Middlewares: []telegram.Middleware{
+			telegram.MiddlewareFunc(func(next tg.Invoker) telegram.InvokeFunc {
+				return (&forbiddenInvoker{parent: next, client: c}).Invoke
+			}),
+		},
 		Device: telegram.DeviceConfig{
 			SystemVersion: sysVer,
 		},
@@ -605,15 +611,7 @@ func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption 
 	switch v := file.(type) {
 	case string:
 		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
-			resp, err := http.Get(v) //nolint:gosec
-			if err != nil {
-				return nil, err
-			}
-			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode != http.StatusOK {
-				return nil, fmt.Errorf("failed to download file: %d", resp.StatusCode)
-			}
-			data, err := io.ReadAll(resp.Body)
+			data, err := utils.DownloadURLLimited(&http.Client{Timeout: 30 * time.Second}, v, 50*1024*1024)
 			if err != nil {
 				return nil, err
 			}
@@ -1074,7 +1072,7 @@ func (c *CustomTelegramClient) SignIn(phone, code, password string) error {
 	if c.client == nil {
 		return fmt.Errorf("client not initialized")
 	}
-	L().Debug("SignIn", zap.String("phone", phone), zap.String("code", code), zap.String("hash", c.phoneCodeHash), zap.Bool("has_password", password != ""))
+	L().Debug("SignIn", zap.Bool("has_phone", phone != ""), zap.Bool("has_code", code != ""), zap.Bool("has_hash", c.phoneCodeHash != ""), zap.Bool("has_password", password != ""))
 	var err error
 	if password != "" {
 		// 2FA password flow
