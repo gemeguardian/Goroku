@@ -97,6 +97,12 @@ func (wc *WebCore) SetPort(port int) {
 	}
 }
 
+func (wc *WebCore) Port() int {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	return wc.port
+}
+
 func (wc *WebCore) Start(port int, proxyPass bool) {
 	wc.mu.Lock()
 	if wc.running {

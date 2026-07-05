@@ -8,7 +8,6 @@ import (
 	"goroku/goroku/web"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"time"
 
@@ -74,10 +73,8 @@ func (m *GorokuWeb) WebrestartCmd(msg *goroku.Message) error {
 	}
 
 	port := 8080
-	val := reflect.ValueOf(web.Instance).Elem()
-	portVal := val.FieldByName("port")
-	if portVal.IsValid() {
-		port = int(portVal.Int())
+	if currentPort := web.Instance.Port(); currentPort != 0 {
+		port = currentPort
 	}
 
 	web.Instance.Stop()
