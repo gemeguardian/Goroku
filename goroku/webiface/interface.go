@@ -17,6 +17,7 @@ type TelegramClient interface {
 	Disconnect() error
 	SendCodeRequest(phone string) error
 	SignIn(phone, code, password string) error
+	InlineProvider() InlineProvider
 	QRLogin() (string, error)
 	QRLoginStatus() (string, error)
 	SendMessage(chat ChatRef, message string) (any, error)

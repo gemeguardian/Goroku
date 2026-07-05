@@ -7,7 +7,34 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
+	"goroku/goroku/webiface"
 )
+
+type testInlineProvider struct{}
+
+func (testInlineProvider) GetBotAPI() *tgbotapi.BotAPI       { return nil }
+func (testInlineProvider) PopWebAuthToken(token string) bool { return token == "ok" }
+
+type testWebClient struct {
+	tgid     int64
+	provider webiface.InlineProvider
+}
+
+func (c testWebClient) TGIDValue() int64                          { return c.tgid }
+func (c testWebClient) InlineProvider() webiface.InlineProvider   { return c.provider }
+func (c testWebClient) Connect() error                            { return nil }
+func (c testWebClient) Disconnect() error                         { return nil }
+func (c testWebClient) SendCodeRequest(phone string) error        { return nil }
+func (c testWebClient) SignIn(phone, code, password string) error { return nil }
+func (c testWebClient) QRLogin() (string, error)                  { return "", nil }
+func (c testWebClient) QRLoginStatus() (string, error)            { return "", nil }
+func (c testWebClient) SendMessage(chat webiface.ChatRef, message string) (any, error) {
+	return nil, nil
+}
+func (c testWebClient) ResolveUsername(username string) (bool, error) { return false, nil }
+func (c testWebClient) CheckBot(username string) (bool, error)        { return false, nil }
 
 func TestWebRootHandlerAndSetupToken(t *testing.T) {
 	tempDir := t.TempDir()
@@ -197,5 +224,28 @@ func TestSetSecurityHeaders(t *testing.T) {
 	}
 	if got := w.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
 		t.Fatalf("CSP should contain frame-ancestors 'none', got %q", got)
+	}
+}
+
+func TestGetClientTGIDUsesInterface(t *testing.T) {
+	if got := getClientTGID(testWebClient{tgid: 123}); got != 123 {
+		t.Fatalf("expected TGID 123, got %d", got)
+	}
+	if got := getClientTGID(struct{ TGID int64 }{TGID: 456}); got != 0 {
+		t.Fatalf("plain structs should not be inspected with reflection, got %d", got)
+	}
+}
+
+func TestGetInlineProviderUsesInterface(t *testing.T) {
+	provider := testInlineProvider{}
+	got := getInlineProvider(testWebClient{provider: provider})
+	if got == nil {
+		t.Fatal("expected inline provider")
+	}
+	if !got.PopWebAuthToken("ok") {
+		t.Fatal("expected provider method to be available")
+	}
+	if got := getInlineProvider(struct{ GorokuInline testInlineProvider }{GorokuInline: provider}); got != nil {
+		t.Fatal("plain structs should not be inspected with reflection")
 	}
 }

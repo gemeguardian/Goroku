@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -753,34 +752,21 @@ func (w *Web) checkEndpointRateLimit(endpoint, ips string, maxAttempts int, wind
 }
 
 func getClientTGID(client any) int64 {
-	v := reflect.ValueOf(client)
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
-	}
-	if v.Kind() != reflect.Struct {
-		return 0
-	}
-	f := v.FieldByName("TGID")
-	if f.IsValid() && f.Kind() == reflect.Int64 {
-		return f.Int()
+	if c, ok := client.(interface{ TGIDValue() int64 }); ok {
+		return c.TGIDValue()
 	}
 	return 0
 }
 
 func getInlineProvider(client any) inlineBotProvider {
-	v := reflect.ValueOf(client)
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
-	}
-	if v.Kind() != reflect.Struct {
+	c, ok := client.(interface {
+		InlineProvider() webiface.InlineProvider
+	})
+	if !ok {
 		return nil
 	}
-	f := v.FieldByName("GorokuInline")
-	if !f.IsValid() || f.IsNil() {
-		return nil
-	}
-	provider, ok := f.Interface().(inlineBotProvider)
-	if !ok || provider == nil {
+	provider := c.InlineProvider()
+	if provider == nil {
 		return nil
 	}
 	return provider

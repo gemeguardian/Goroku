@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -192,17 +191,8 @@ func (wc *WebCore) AddLoader(client any, loader any, db any) {
 	defer wc.mu.Unlock()
 
 	var id int64 = DefaultFallbackTGID
-	if client != nil {
-		v := reflect.ValueOf(client)
-		if v.Kind() == reflect.Ptr {
-			v = v.Elem()
-		}
-		if v.Kind() == reflect.Struct {
-			f := v.FieldByName("TGID")
-			if f.IsValid() && f.Kind() == reflect.Int64 {
-				id = f.Int()
-			}
-		}
+	if c, ok := client.(interface{ TGIDValue() int64 }); ok && c.TGIDValue() != 0 {
+		id = c.TGIDValue()
 	}
 	wc.clientData[id] = []any{loader, client, db}
 	wc.Web.clientData[id] = []any{loader, client, db}

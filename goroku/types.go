@@ -11,6 +11,7 @@ import (
 	"goroku/goroku/chatref"
 	"goroku/goroku/inlineiface"
 	"goroku/goroku/logger"
+	"goroku/goroku/webiface"
 
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
@@ -180,6 +181,14 @@ type CustomTelegramClient struct {
 // TGIDValue returns the Telegram user ID associated with the client.
 func (c *CustomTelegramClient) TGIDValue() int64 {
 	return c.TGID
+}
+
+func (c *CustomTelegramClient) InlineProvider() webiface.InlineProvider {
+	provider, ok := c.GorokuInline.(webiface.InlineProvider)
+	if !ok {
+		return nil
+	}
+	return provider
 }
 
 // SetTGID sets the Telegram user ID associated with the client.
