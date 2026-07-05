@@ -417,6 +417,10 @@ func (im *InlineManager) inlineModules() []ModuleInlineHandlers {
 	return modules
 }
 
+func (im *InlineManager) InlineModules() []ModuleInlineHandlers {
+	return im.inlineModules()
+}
+
 func (im *InlineManager) callbackModules() []ModuleCallbackHandlers {
 	var modules []ModuleCallbackHandlers
 	for _, mod := range im.allModuleValues() {

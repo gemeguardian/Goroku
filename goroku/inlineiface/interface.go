@@ -26,6 +26,7 @@ type InlineManager interface {
 	BotIDVal() int64
 	GenerateMarkup(buttons [][]inline.Button) tgbotapi.InlineKeyboardMarkup
 	PopQueryGallery(id string) (inline.QueryGalleryItem, bool)
+	InlineModules() []inline.ModuleInlineHandlers
 
 	Form(text string, message any, replyMarkup [][]inline.Button, opts ...inline.FormOpt) (*inline.InlineMessage, error)
 	List(message any, stringsList []string, opts ...inline.FormOpt) (*inline.InlineMessage, error)

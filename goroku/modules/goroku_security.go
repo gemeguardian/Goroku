@@ -6,7 +6,6 @@ import (
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -1174,26 +1173,15 @@ func (m *GorokuSecurity) InlinesecCmd(msg *goroku.Message) error {
 	}
 
 	exists := false
-	vIm := reflect.ValueOf(im)
-	mInlineModules := vIm.MethodByName("inlineModules")
-	if mInlineModules.IsValid() {
-		resMods := mInlineModules.Call(nil)
-		if len(resMods) > 0 && resMods[0].Kind() == reflect.Slice {
-			slice := resMods[0]
-			for i := 0; i < slice.Len(); i++ {
-				modItem := slice.Index(i).Interface()
-				if inlineMod, ok := modItem.(inline.ModuleInlineHandlers); ok {
-					for cmd := range inlineMod.InlineHandlers() {
-						if strings.EqualFold(cmd, args) {
-							exists = true
-							break
-						}
-					}
-				}
-				if exists {
-					break
-				}
+	for _, inlineMod := range im.InlineModules() {
+		for cmd := range inlineMod.InlineHandlers() {
+			if strings.EqualFold(cmd, args) {
+				exists = true
+				break
 			}
+		}
+		if exists {
+			break
 		}
 	}
 
@@ -1413,22 +1401,11 @@ func (m *GorokuSecurity) lookupRules(needle string) []string {
 	}
 
 	if im := m.client.GorokuInline; im != nil {
-		vIm := reflect.ValueOf(im)
-		mInlineModules := vIm.MethodByName("inlineModules")
-		if mInlineModules.IsValid() {
-			resMods := mInlineModules.Call(nil)
-			if len(resMods) > 0 && resMods[0].Kind() == reflect.Slice {
-				slice := resMods[0]
-				for i := 0; i < slice.Len(); i++ {
-					modItem := slice.Index(i).Interface()
-					if inlineMod, ok := modItem.(inline.ModuleInlineHandlers); ok {
-						for cmd := range inlineMod.InlineHandlers() {
-							cleanNeedle := strings.TrimPrefix(strings.ToLower(needle), "@")
-							if strings.EqualFold(cmd, cleanNeedle) {
-								results = append(results, "inline/"+strings.ToLower(cmd))
-							}
-						}
-					}
+		for _, inlineMod := range im.InlineModules() {
+			for cmd := range inlineMod.InlineHandlers() {
+				cleanNeedle := strings.TrimPrefix(strings.ToLower(needle), "@")
+				if strings.EqualFold(cmd, cleanNeedle) {
+					results = append(results, "inline/"+strings.ToLower(cmd))
 				}
 			}
 		}
