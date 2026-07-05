@@ -5,7 +5,6 @@ import (
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -363,11 +362,8 @@ func (m *SettingsModule) SetPrefixCmd(msg *goroku.Message) error {
 			userID = u.ID
 			userName = u.FirstName
 		} else {
-			t := reflect.TypeOf(entity)
-			if t.Kind() == reflect.Ptr {
-				t = t.Elem()
-			}
-			if !strings.Contains(strings.ToLower(t.Name()), "user") {
+			entityType := strings.TrimPrefix(fmt.Sprintf("%T", entity), "*")
+			if !strings.Contains(strings.ToLower(entityType), "user") {
 				_ = msg.Answer(fmt.Sprintf("The entity %s is not a User", args[1]))
 				return nil
 			}
