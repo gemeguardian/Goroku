@@ -508,6 +508,14 @@ func (c *CustomTelegramClient) SendFileWithOptions(chat ChatRef, file any, capti
 	return c.sendFileInternal(chat, file, caption, opts...)
 }
 
+func (c *CustomTelegramClient) resolveRequestPeer(chat ChatRef) (tg.InputPeerClass, error) {
+	peer, err := c.ResolvePeerRef(chat)
+	if err != nil {
+		return nil, fmt.Errorf("resolve peer: %w", err)
+	}
+	return peer, nil
+}
+
 func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption string, opts ...MsgOption) (any, error) {
 	var targetChatID int64
 	if !chat.IsZero() {
@@ -594,13 +602,9 @@ func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption 
 		}
 	}
 
-	peer, err := c.ResolvePeerRef(chat)
+	peer, err := c.resolveRequestPeer(chat)
 	if err != nil {
-		if chat.ID() != 0 {
-			peer = &tg.InputPeerUser{UserID: chat.ID()}
-		} else {
-			return nil, err
-		}
+		return nil, err
 	}
 
 	up := uploader.NewUploader(c.rawAPI)
@@ -734,13 +738,9 @@ func (c *CustomTelegramClient) SendMessageWithOptions(chat ChatRef, message stri
 		}
 	}
 
-	peer, err := c.ResolvePeerRef(chat)
+	peer, err := c.resolveRequestPeer(chat)
 	if err != nil {
-		if chat.ID() != 0 {
-			peer = &tg.InputPeerUser{UserID: chat.ID()}
-		} else {
-			return nil, err
-		}
+		return nil, err
 	}
 
 	plainText, entities := parseHTML(message)
@@ -761,13 +761,9 @@ func (c *CustomTelegramClient) EditMessage(chat ChatRef, msgID int64, text strin
 	if c.rawAPI == nil {
 		return nil, ErrClientNotInitialized
 	}
-	peer, err := c.ResolvePeerRef(chat)
+	peer, err := c.resolveRequestPeer(chat)
 	if err != nil {
-		if chat.ID() != 0 {
-			peer = &tg.InputPeerUser{UserID: chat.ID()}
-		} else {
-			return nil, err
-		}
+		return nil, err
 	}
 
 	plainText, entities := parseHTML(text)
@@ -788,13 +784,9 @@ func (c *CustomTelegramClient) DeleteMessage(chat ChatRef, msgID int64) error {
 	if c.rawAPI == nil {
 		return ErrClientNotInitialized
 	}
-	peer, err := c.ResolvePeerRef(chat)
+	peer, err := c.resolveRequestPeer(chat)
 	if err != nil {
-		if chat.ID() != 0 {
-			peer = &tg.InputPeerUser{UserID: chat.ID()}
-		} else {
-			return err
-		}
+		return err
 	}
 
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {

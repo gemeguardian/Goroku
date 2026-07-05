@@ -23,6 +23,10 @@ func (c *CustomTelegramClient) ResolvePeerRef(chat ChatRef) (tg.InputPeerClass, 
 }
 
 func (c *CustomTelegramClient) resolvePeerInternal(chat any) (tg.InputPeerClass, error) {
+	if peer, ok := chat.(tg.InputPeerClass); ok {
+		return peer, nil
+	}
+
 	if c.rawAPI == nil {
 		return nil, fmt.Errorf("client not connected")
 	}
@@ -52,8 +56,6 @@ func (c *CustomTelegramClient) resolvePeerInternal(chat any) (tg.InputPeerClass,
 	}
 
 	switch v := chat.(type) {
-	case tg.InputPeerClass:
-		return v, nil
 	case int64:
 		id := v
 		if peer, err := c.resolvePeerFromTelegram(id); err == nil {

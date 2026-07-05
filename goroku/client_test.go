@@ -80,6 +80,31 @@ func TestForbiddenInvokerBlocksConfiguredConstructor(t *testing.T) {
 	}
 }
 
+func TestResolveRequestPeerReturnsResolvedPeer(t *testing.T) {
+	client := &CustomTelegramClient{}
+	peer := &tg.InputPeerUser{UserID: 123, AccessHash: 456}
+
+	got, err := client.resolveRequestPeer(ChatRefPeer(peer))
+	if err != nil {
+		t.Fatalf("resolveRequestPeer returned error: %v", err)
+	}
+	if got != peer {
+		t.Fatal("resolveRequestPeer should return the provided peer")
+	}
+}
+
+func TestResolveRequestPeerDoesNotFallbackToBareUser(t *testing.T) {
+	client := &CustomTelegramClient{}
+
+	peer, err := client.resolveRequestPeer(ChatRefID(123))
+	if err == nil {
+		t.Fatal("expected resolve error for disconnected client")
+	}
+	if peer != nil {
+		t.Fatalf("expected nil peer on resolve error, got %T", peer)
+	}
+}
+
 func TestGetSentMessageID(t *testing.T) {
 	// UpdateNewMessage
 	resp1 := &tg.Updates{
