@@ -159,7 +159,7 @@ func (im *InlineManager) updateListPage(unitID string, page int, c CallbackQuery
 		}
 	}
 
-	_, err := im.bot.Request(editMsg)
+	_, err := im.request(editMsg)
 	return err
 }
 

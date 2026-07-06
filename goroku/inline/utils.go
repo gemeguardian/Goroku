@@ -137,7 +137,7 @@ func (im *InlineManager) EditUnit(unitID string, text string, buttons [][]Button
 			Text:      text,
 			ParseMode: tgbotapi.ModeHTML,
 		}
-		_, err := im.bot.Request(editMsg)
+		_, err := im.request(editMsg)
 		return err
 	}
 	return nil
@@ -167,7 +167,7 @@ func (im *InlineManager) DeleteUnitMessage(unitID string) error {
 			Text:      "🗑 <i>Message closed.</i>",
 			ParseMode: tgbotapi.ModeHTML,
 		}
-		_, err := im.bot.Request(editMsg)
+		_, err := im.request(editMsg)
 		return err
 	}
 	return nil

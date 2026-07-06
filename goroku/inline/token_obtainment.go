@@ -239,7 +239,9 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 				}
 			}
 
+			im.mu.Lock()
 			im.BotID = 0 // Will get on get_me
+			im.mu.Unlock()
 			return true, nil
 		}
 	}
@@ -359,7 +361,7 @@ func (im *InlineManager) dpRevokeToken(client *http.Client, baseURL, hash string
 func (im *InlineManager) reassertToken(client *http.Client, baseURL, hash string) (bool, error) {
 	ok, err := im.assertToken(client, baseURL, hash, true, true)
 	if err != nil {
-		im.initComplete = false
+		im.setInitComplete(false)
 		return false, err
 	}
 
@@ -425,11 +427,12 @@ func (im *InlineManager) checkBot(client *http.Client, baseURL, hash, username s
 }
 
 func (im *InlineManager) setCommands(client *http.Client, baseURL, hash string, commands map[string]string) (bool, error) {
-	if im.BotID == 0 {
+	botID := im.BotIDVal()
+	if botID == 0 {
 		return false, fmt.Errorf("bot not initialized")
 	}
 
-	bid := fmt.Sprintf("%d", im.BotID)
+	bid := fmt.Sprintf("%d", botID)
 
 	for cmd, desc := range commands {
 		apiURL := baseURL + "/api?hash=" + hash

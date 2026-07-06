@@ -32,6 +32,68 @@ func TestDatabaseDeepCopyClonesNestedMapsAndSlices(t *testing.T) {
 	}
 }
 
+func TestDatabaseCollectionGettersReturnCopiesAndEmptyDefaults(t *testing.T) {
+	db := NewDatabase(1111)
+	db.data["owner"] = map[string]any{
+		"strings":    []string{"a"},
+		"ids":        []int64{1},
+		"string_map": map[string]string{"k": "v"},
+		"any_map":    map[string]any{"k": "v", "nested": map[string]any{"n": "v"}},
+		"slice_map":  map[string][]string{"k": {"v"}},
+		"int_map":    map[string]int{"k": 1},
+	}
+
+	strings := db.GetStringSlice("owner", "strings", nil)
+	strings[0] = "changed"
+	if got := db.data["owner"]["strings"].([]string)[0]; got != "a" {
+		t.Fatalf("GetStringSlice returned original slice, got %q", got)
+	}
+
+	ids := db.GetInt64Slice("owner", "ids", nil)
+	ids[0] = 2
+	if got := db.data["owner"]["ids"].([]int64)[0]; got != 1 {
+		t.Fatalf("GetInt64Slice returned original slice, got %d", got)
+	}
+
+	stringMap := db.GetStringMap("owner", "string_map", nil)
+	stringMap["k"] = "changed"
+	if got := db.data["owner"]["string_map"].(map[string]string)["k"]; got != "v" {
+		t.Fatalf("GetStringMap returned original map, got %q", got)
+	}
+
+	anyMap := db.GetAnyMap("owner", "any_map", nil)
+	anyMap["k"] = "changed"
+	anyMap["nested"].(map[string]any)["n"] = "changed"
+	if got := db.data["owner"]["any_map"].(map[string]any)["k"]; got != "v" {
+		t.Fatalf("GetAnyMap returned original map, got %v", got)
+	}
+	if got := db.data["owner"]["any_map"].(map[string]any)["nested"].(map[string]any)["n"]; got != "v" {
+		t.Fatalf("GetAnyMap returned original nested map, got %v", got)
+	}
+
+	sliceMap := db.GetStringMapStringSlice("owner", "slice_map", nil)
+	sliceMap["k"][0] = "changed"
+	if got := db.data["owner"]["slice_map"].(map[string][]string)["k"][0]; got != "v" {
+		t.Fatalf("GetStringMapStringSlice returned original nested slice, got %q", got)
+	}
+
+	intMap := db.GetStringMapInt("owner", "int_map", nil)
+	intMap["k"] = 2
+	if got := db.data["owner"]["int_map"].(map[string]int)["k"]; got != 1 {
+		t.Fatalf("GetStringMapInt returned original map, got %d", got)
+	}
+
+	if got := db.GetStringMap("owner", "missing_string_map", nil); got == nil {
+		t.Fatal("GetStringMap returned nil for nil default")
+	}
+	if got := db.GetAnyMap("owner", "missing_any_map", nil); got == nil {
+		t.Fatal("GetAnyMap returned nil for nil default")
+	}
+	if got := db.GetStringSlice("owner", "missing_strings", nil); got == nil {
+		t.Fatal("GetStringSlice returned nil for nil default")
+	}
+}
+
 func TestDatabaseCRUDOperations(t *testing.T) {
 	tempDir := t.TempDir()
 	originalBaseDir := BaseDir

@@ -324,7 +324,9 @@ func (db *Database) GetStringSlice(owner, key string, def []string) []string {
 	val, _ := db.Get(owner, key, def)
 	switch v := val.(type) {
 	case []string:
-		return v
+		res := make([]string, len(v))
+		copy(res, v)
+		return res
 	case []any:
 		res := make([]string, 0, len(v))
 		for _, item := range v {
@@ -332,7 +334,12 @@ func (db *Database) GetStringSlice(owner, key string, def []string) []string {
 		}
 		return res
 	}
-	return def
+	if def == nil {
+		return []string{}
+	}
+	res := make([]string, len(def))
+	copy(res, def)
+	return res
 }
 
 // GetInt64Slice returns the stored []int64 or the default.
@@ -341,7 +348,9 @@ func (db *Database) GetInt64Slice(owner, key string, def []int64) []int64 {
 	val, _ := db.Get(owner, key, def)
 	switch v := val.(type) {
 	case []int64:
-		return v
+		res := make([]int64, len(v))
+		copy(res, v)
+		return res
 	case []int:
 		res := make([]int64, len(v))
 		for i, item := range v {
@@ -357,7 +366,12 @@ func (db *Database) GetInt64Slice(owner, key string, def []int64) []int64 {
 		}
 		return res
 	}
-	return def
+	if def == nil {
+		return []int64{}
+	}
+	res := make([]int64, len(def))
+	copy(res, def)
+	return res
 }
 
 // GetStringMap returns the stored map[string]string or the default.
@@ -365,7 +379,11 @@ func (db *Database) GetStringMap(owner, key string, def map[string]string) map[s
 	val, _ := db.Get(owner, key, def)
 	switch v := val.(type) {
 	case map[string]string:
-		return v
+		res := make(map[string]string, len(v))
+		for k, item := range v {
+			res[k] = item
+		}
+		return res
 	case map[string]any:
 		res := make(map[string]string, len(v))
 		for k, item := range v {
@@ -373,7 +391,14 @@ func (db *Database) GetStringMap(owner, key string, def map[string]string) map[s
 		}
 		return res
 	}
-	return def
+	if def == nil {
+		return map[string]string{}
+	}
+	res := make(map[string]string, len(def))
+	for k, item := range def {
+		res[k] = item
+	}
+	return res
 }
 
 // SetStringSlice stores a []string value.
@@ -440,9 +465,17 @@ func asInt64(v any, def int64) int64 {
 func (db *Database) GetAnyMap(owner, key string, def map[string]any) map[string]any {
 	val, _ := db.Get(owner, key, def)
 	if m, ok := val.(map[string]any); ok {
-		return m
+		if res, ok := deepCopyValue(m).(map[string]any); ok {
+			return res
+		}
 	}
-	return def
+	if def == nil {
+		return map[string]any{}
+	}
+	if res, ok := deepCopyValue(def).(map[string]any); ok {
+		return res
+	}
+	return map[string]any{}
 }
 
 // GetStringMapStringSlice returns the stored map[string][]string or the default.
@@ -451,7 +484,13 @@ func (db *Database) GetStringMapStringSlice(owner, key string, def map[string][]
 	val, _ := db.Get(owner, key, def)
 	switch v := val.(type) {
 	case map[string][]string:
-		return v
+		res := make(map[string][]string, len(v))
+		for k, item := range v {
+			list := make([]string, len(item))
+			copy(list, item)
+			res[k] = list
+		}
+		return res
 	case map[string]any:
 		res := make(map[string][]string, len(v))
 		for k, item := range v {
@@ -463,7 +502,16 @@ func (db *Database) GetStringMapStringSlice(owner, key string, def map[string][]
 		}
 		return res
 	}
-	return def
+	if def == nil {
+		return map[string][]string{}
+	}
+	res := make(map[string][]string, len(def))
+	for k, item := range def {
+		list := make([]string, len(item))
+		copy(list, item)
+		res[k] = list
+	}
+	return res
 }
 
 // SetStringMapStringSlice stores a map[string][]string value.
@@ -476,7 +524,11 @@ func (db *Database) GetStringMapInt(owner, key string, def map[string]int) map[s
 	val, _ := db.Get(owner, key, def)
 	switch v := val.(type) {
 	case map[string]int:
-		return v
+		res := make(map[string]int, len(v))
+		for k, item := range v {
+			res[k] = item
+		}
+		return res
 	case map[string]any:
 		res := make(map[string]int, len(v))
 		for k, item := range v {
@@ -484,7 +536,14 @@ func (db *Database) GetStringMapInt(owner, key string, def map[string]int) map[s
 		}
 		return res
 	}
-	return def
+	if def == nil {
+		return map[string]int{}
+	}
+	res := make(map[string]int, len(def))
+	for k, item := range def {
+		res[k] = item
+	}
+	return res
 }
 
 // SetStringMapInt stores a map[string]int value.

@@ -87,7 +87,7 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 			CacheTime:     0,
 			IsPersonal:    true,
 		}
-		_, err := im.bot.Request(inlineConf)
+		_, err := im.request(inlineConf)
 		if err != nil {
 			L().Info("[Inline] Failed to answer input inline query: {0}", zap.Any("arg0", err))
 		}
@@ -209,7 +209,7 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 		IsPersonal:    true,
 	}
 
-	_, err := im.bot.Request(inlineConf)
+	_, err := im.request(inlineConf)
 	if err != nil {
 		L().Info("[Inline] Failed to answer inline query: {0}", zap.Any("arg0", err))
 	}
@@ -221,7 +221,7 @@ func (im *InlineManager) handleCallbackQuery(c *tgbotapi.CallbackQuery) {
 		im.mu.Lock()
 		im.webAuthTokens = append(im.webAuthTokens, token)
 		im.mu.Unlock()
-		_, _ = im.bot.Request(tgbotapi.CallbackConfig{
+		_, _ = im.request(tgbotapi.CallbackConfig{
 			CallbackQueryID: c.ID,
 			Text:            "Web authorization approved",
 		})
@@ -289,7 +289,7 @@ func (im *InlineManager) handleCallbackQuery(c *tgbotapi.CallbackQuery) {
 		callbackConfig := tgbotapi.CallbackConfig{
 			CallbackQueryID: c.ID,
 		}
-		_, _ = im.bot.Request(callbackConfig)
+		_, _ = im.request(callbackConfig)
 		return
 	}
 
@@ -355,7 +355,7 @@ func (im *InlineManager) answerInlineHelp(q *tgbotapi.InlineQuery) {
 			if desc == "" {
 				desc = "No description"
 			}
-			text.WriteString(fmt.Sprintf("• <code>@%s %s</code> — <b>%s</b>\n", im.BotUsername, cmd, desc))
+			text.WriteString(fmt.Sprintf("• <code>@%s %s</code> — <b>%s</b>\n", im.BotUsernameStr(), cmd, desc))
 			_ = name
 		}
 	}
@@ -365,7 +365,7 @@ func (im *InlineManager) answerInlineHelp(q *tgbotapi.InlineQuery) {
 	article := tgbotapi.NewInlineQueryResultArticle(localRandStr(20), "Goroku inline commands", text.String())
 	article.Description = "Available inline commands"
 	article.InputMessageContent = tgbotapi.InputTextMessageContent{Text: text.String(), ParseMode: tgbotapi.ModeHTML}
-	_, err := im.bot.Request(tgbotapi.InlineConfig{InlineQueryID: q.ID, Results: []any{article}, CacheTime: 0, IsPersonal: true})
+	_, err := im.request(tgbotapi.InlineConfig{InlineQueryID: q.ID, Results: []any{article}, CacheTime: 0, IsPersonal: true})
 	if err != nil {
 		L().Info("[Inline] failed to answer inline help: {0}", zap.Any("arg0", err))
 	}

@@ -92,7 +92,11 @@ func (c *CustomTelegramClient) GetSecurityManager() inline.SecurityChecker {
 	if c.Loader == nil {
 		return nil
 	}
-	return c.Loader.GetDispatcher().GetSecurityManager()
+	dispatcher := c.Loader.GetDispatcher()
+	if dispatcher == nil {
+		return nil
+	}
+	return dispatcher.GetSecurityManager()
 }
 
 func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
@@ -133,7 +137,7 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 	disabledWatchers := cd.db.GetAnyMap("goroku.main", "disabled_watchers", nil)
 
 	// Dispatch message watchers
-	for _, watcher := range cd.modules.watchers {
+	for _, watcher := range cd.modules.GetWatchers() {
 		modName := watcher.ModuleName
 
 		// Check if this module's watchers are disabled
@@ -490,7 +494,7 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 
 	actualCmd := tagParts[0]
 	actualCmdL := strings.ToLower(actualCmd)
-	if realCmd, exists := cd.modules.aliases[actualCmdL]; exists {
+	if realCmd, exists := cd.modules.GetAliases()[actualCmdL]; exists {
 		actualCmd = realCmd
 	}
 	handler, exists := cd.modules.Dispatch(actualCmd)

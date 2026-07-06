@@ -53,7 +53,7 @@ func (im *InlineManager) QueryGallery(
 		IsPersonal:    true,
 	}
 
-	_, err := im.bot.Request(answer)
+	_, err := im.request(answer)
 	return err
 }
 

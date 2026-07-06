@@ -75,7 +75,7 @@ func (c CallbackQuery) Answer(text string, showAlert bool) error {
 		Text:            text,
 		ShowAlert:       showAlert,
 	}
-	_, err := c.Manager.bot.Request(callbackConfig)
+	_, err := c.Manager.request(callbackConfig)
 	return err
 }
 
@@ -136,7 +136,7 @@ func (m *InlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarkup) 
 		Text:      text,
 		ParseMode: tgbotapi.ModeHTML,
 	}
-	_, err := m.InlineManager.bot.Request(editMsg)
+	_, err := m.InlineManager.request(editMsg)
 	return err
 }
 
@@ -170,7 +170,7 @@ func (m *InlineMessage) Delete() (bool, error) {
 		Text:      "🗑 <i>Message closed.</i>",
 		ParseMode: tgbotapi.ModeHTML,
 	}
-	_, err := m.InlineManager.bot.Request(editMsg)
+	_, err := m.InlineManager.request(editMsg)
 	return err == nil, err
 }
 
@@ -230,7 +230,7 @@ func (m *BotInlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarku
 		Text:      text,
 		ParseMode: tgbotapi.ModeHTML,
 	}
-	_, err := m.InlineManager.bot.Request(editMsg)
+	_, err := m.InlineManager.request(editMsg)
 	return err
 }
 
@@ -241,7 +241,7 @@ func (m *BotInlineMessage) Delete() (bool, error) {
 			MessageID:  int(m.MessageID),
 		},
 	}
-	_, err := m.InlineManager.bot.Request(delMsg)
+	_, err := m.InlineManager.request(delMsg)
 	return err == nil, err
 }
 
@@ -312,7 +312,7 @@ func (q *InlineQuery) Answer(results []tgbotapi.InlineQueryResultArticle, cacheT
 		CacheTime:     cacheTime,
 		IsPersonal:    true,
 	}
-	_, err := q.Manager.bot.Request(answer)
+	_, err := q.Manager.request(answer)
 	return err
 }
 
@@ -365,7 +365,7 @@ func (q *InlineQuery) AnswerResults(results []InlineResult, cacheTime int) error
 		}
 	}
 	answer := tgbotapi.InlineConfig{InlineQueryID: q.QueryID, Results: iResults, CacheTime: cacheTime, IsPersonal: true}
-	_, err := q.Manager.bot.Request(answer)
+	_, err := q.Manager.request(answer)
 	return err
 }
 

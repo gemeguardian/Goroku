@@ -95,7 +95,7 @@ func (im *InlineManager) RegisterManager(afterBreak bool, ignoreTokenChecks bool
 		if !ignoreTokenChecks {
 			ok, err := im.AssertToken(true, false)
 			if err != nil || !ok {
-				im.initComplete = false
+				im.setInitComplete(false)
 				return fmt.Errorf("failed to assert bot token: %v", err)
 			}
 			token = im.getToken()
@@ -112,7 +112,7 @@ func (im *InlineManager) RegisterManager(afterBreak bool, ignoreTokenChecks bool
 		}
 		ok, assertErr := im.AssertToken(true, false)
 		if assertErr != nil || !ok {
-			im.initComplete = false
+			im.setInitComplete(false)
 			return fmt.Errorf("failed to assert bot token after bot api error %v: %v", err, assertErr)
 		}
 		token = im.getToken()
@@ -122,9 +122,14 @@ func (im *InlineManager) RegisterManager(afterBreak bool, ignoreTokenChecks bool
 		}
 	}
 
+	im.mu.Lock()
 	im.bot = bot
 	im.BotUsername = bot.Self.UserName
 	im.BotID = bot.Self.ID
+	im.stopCh = make(chan struct{})
+	im.initComplete = true
+	botUsername := im.BotUsername
+	im.mu.Unlock()
 
 	if dbTyped, ok := im.db.(interface {
 		Get(string, string, any) (any, error)
@@ -150,18 +155,36 @@ func (im *InlineManager) RegisterManager(afterBreak bool, ignoreTokenChecks bool
 		}
 	}
 
-	im.stopCh = make(chan struct{})
-	im.initComplete = true
 	if err := im.bootstrapUserBotSide(afterBreak); err != nil {
-		im.initComplete = false
+		im.setInitComplete(false)
 		return err
 	}
 
 	go im.startPolling()
 	go im.ttlCleaner()
 
-	L().Info("InlineManager started: @{0}", zap.Any("arg0", im.BotUsername))
+	L().Info("InlineManager started: @{0}", zap.Any("arg0", botUsername))
 	return nil
+}
+
+func (im *InlineManager) setInitComplete(complete bool) {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	im.initComplete = complete
+}
+
+func (im *InlineManager) runtimeState() (*tgbotapi.BotAPI, chan struct{}, string, int64) {
+	im.mu.RLock()
+	defer im.mu.RUnlock()
+	return im.bot, im.stopCh, im.BotUsername, im.BotID
+}
+
+func (im *InlineManager) request(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error) {
+	bot := im.GetBotAPI()
+	if bot == nil {
+		return nil, fmt.Errorf("inline bot is not initialized")
+	}
+	return bot.Request(c)
 }
 
 type userBotInlineBootstrap interface {
@@ -173,7 +196,8 @@ type userBotInlineBootstrap interface {
 
 func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 	client, ok := im.client.(userBotInlineBootstrap)
-	if !ok || client == nil || im.BotUsername == "" {
+	_, _, botUsername, botID := im.runtimeState()
+	if !ok || client == nil || botUsername == "" {
 		return nil
 	}
 
@@ -204,7 +228,7 @@ func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 	}
 
 	if !folderCreated {
-		msg, err := client.SendMessage(chatref.Username(im.BotUsername), "/start goroku init")
+		msg, err := client.SendMessage(chatref.Username(botUsername), "/start goroku init")
 		if err != nil {
 			if okDb && !afterBreak {
 				dbTyped.Set("goroku.inline", "bot_token", nil)
@@ -212,11 +236,11 @@ func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 				L().Info("[Inline] Failed to start inline bot, token reset: {0}", zap.Any("arg0", err))
 				return im.RegisterManager(true, false)
 			}
-			return fmt.Errorf("failed to start inline bot @%s: %w", im.BotUsername, err)
+			return fmt.Errorf("failed to start inline bot @%s: %w", botUsername, err)
 		}
-		L().Info("[Inline] Inline bot @{0} initialized via userbot side: {1}", zap.Any("arg0", im.BotUsername), zap.Any("arg1", msg))
+		L().Info("[Inline] Inline bot @{0} initialized via userbot side: {1}", zap.Any("arg0", botUsername), zap.Any("arg1", msg))
 
-		if err := client.CreateGorokuFolder(im.BotID); err != nil {
+		if err := client.CreateGorokuFolder(botID); err != nil {
 			L().Info("[Inline] Failed to add inline bot to Goroku folder: {0}", zap.Any("arg0", err))
 		} else {
 			if okDb {
@@ -258,11 +282,12 @@ func (im *InlineManager) bootstrapUserBotSide(afterBreak bool) error {
 
 func (im *InlineManager) Stop() {
 	defer func() { _ = recover() }()
-	if im.stopCh != nil {
-		close(im.stopCh)
+	bot, stopCh, _, _ := im.runtimeState()
+	if stopCh != nil {
+		close(stopCh)
 	}
-	if im.bot != nil {
-		im.bot.StopReceivingUpdates()
+	if bot != nil {
+		bot.StopReceivingUpdates()
 	}
 }
 
@@ -306,6 +331,10 @@ func (im *InlineManager) getToken() string {
 }
 
 func (im *InlineManager) startPolling() {
+	bot, stopCh, _, _ := im.runtimeState()
+	if bot == nil || stopCh == nil {
+		return
+	}
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	// Explicitly request chosen_inline_result — without this Telegram
@@ -317,7 +346,7 @@ func (im *InlineManager) startPolling() {
 		"chosen_inline_result",
 		"callback_query",
 	}
-	updates := im.bot.GetUpdatesChan(u)
+	updates := bot.GetUpdatesChan(u)
 
 	for {
 		select {
@@ -326,14 +355,18 @@ func (im *InlineManager) startPolling() {
 				return
 			}
 			go im.HandleUpdate(update)
-		case <-im.stopCh:
-			im.bot.StopReceivingUpdates()
+		case <-stopCh:
+			bot.StopReceivingUpdates()
 			return
 		}
 	}
 }
 
 func (im *InlineManager) ttlCleaner() {
+	_, stopCh, _, _ := im.runtimeState()
+	if stopCh == nil {
+		return
+	}
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -348,7 +381,7 @@ func (im *InlineManager) ttlCleaner() {
 				}
 			}
 			im.mu.Unlock()
-		case <-im.stopCh:
+		case <-stopCh:
 			return
 		}
 	}
@@ -433,7 +466,7 @@ func (im *InlineManager) InvokeUnit(unitID string, chatID int64, replyToMsgID in
 		im.mu.Unlock()
 	}()
 
-	results, err := client.InlineQuery(im.BotUsername, unitID, chatID)
+	results, err := client.InlineQuery(im.BotUsernameStr(), unitID, chatID)
 	if err != nil {
 		return err
 	}

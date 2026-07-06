@@ -314,7 +314,7 @@ func (im *InlineManager) updateGalleryPage(unitID string, page int, c CallbackQu
 		}
 	}
 
-	_, err := im.bot.Request(editMsg)
+	_, err := im.request(editMsg)
 	return err
 }
 
