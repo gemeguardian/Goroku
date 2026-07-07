@@ -201,14 +201,8 @@ func (m *Presets) sendMenu(chatID int64) error {
 		return fmt.Errorf("inline manager not ready")
 	}
 
-	var keys []string
-	for k := range defaultPresets {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
 	var btns [][]inline.Button
-	for _, preset := range keys {
+	for _, preset := range presetKeys() {
 		p := preset
 		title := m.getTrans(fmt.Sprintf("_%s_title", p), p)
 		btns = append(btns, []inline.Button{
@@ -251,6 +245,39 @@ func (m *Presets) makeButton(text string, handler func(inline.CallbackQuery) err
 	}
 }
 
+func presetKeys() []string {
+	keys := make([]string, 0, len(defaultPresets))
+	for k := range defaultPresets {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func moduleFileAndName(link string) (string, string) {
+	urlParts := strings.Split(link, "/")
+	fileName := urlParts[len(urlParts)-1]
+	return fileName, strings.TrimSuffix(fileName, ".go")
+}
+
+func extractStructName(source []byte, fallback string) string {
+	goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
+	if loc := goReg.FindStringSubmatch(string(source)); len(loc) == 2 {
+		return loc[1]
+	}
+	return fallback
+}
+
+func sentMessageID(sent any) int64 {
+	if hasID, ok := sent.(interface{ GetID() int64 }); ok {
+		return hasID.GetID()
+	}
+	if hasID, ok := sent.(interface{ GetID() int }); ok {
+		return int64(hasID.GetID())
+	}
+	return 0
+}
+
 func (m *Presets) _isInstalled(link string) bool {
 	loadedMods := m.getLoadedModules()
 
@@ -284,13 +311,7 @@ func (m *Presets) ListPresetsCmd(msg *goroku.Message) error {
 	text.WriteString(m.getTrans("welcome", "👋 <b>Hi there! Tired of scrolling through endless modules in channels? Let me suggest you some pre-made collections.</b>"))
 	text.WriteString("\n\n<b>Available collections:</b>\n")
 
-	var keys []string
-	for k := range defaultPresets {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, k := range keys {
+	for _, k := range presetKeys() {
 		text.WriteString(fmt.Sprintf("• <b>%s</b> (%d modules)\n", k, len(defaultPresets[k])))
 	}
 
@@ -326,14 +347,8 @@ func (m *Presets) ChoosePresetsMenu(msg any) error {
 		return fmt.Errorf("inline manager not ready")
 	}
 
-	var keys []string
-	for k := range defaultPresets {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
 	var btns [][]inline.Button
-	for _, preset := range keys {
+	for _, preset := range presetKeys() {
 		p := preset
 		title := m.getTrans(fmt.Sprintf("_%s_title", p), p)
 		btns = append(btns, []inline.Button{
@@ -376,9 +391,7 @@ func (m *Presets) ChoosePresetDetail(call inline.CallbackQuery, preset string) e
 	var toInstall []string
 
 	for _, link := range links {
-		urlParts := strings.Split(link, "/")
-		fileName := urlParts[len(urlParts)-1]
-		modName := strings.TrimSuffix(fileName, ".go")
+		_, modName := moduleFileAndName(link)
 
 		isInstalled := m._isInstalled(link)
 		status := "▫️"
@@ -438,21 +451,14 @@ func (m *Presets) InstallSingleModule(call inline.CallbackQuery, preset string, 
 		return err
 	}
 
-	var progressMsgID int64
-	if hasID, ok := progressMsg.(interface{ GetID() int64 }); ok {
-		progressMsgID = hasID.GetID()
-	} else if hasID, ok := progressMsg.(interface{ GetID() int }); ok {
-		progressMsgID = int64(hasID.GetID())
-	}
+	progressMsgID := sentMessageID(progressMsg)
 	msgObj := &goroku.Message{
 		ID:     progressMsgID,
 		ChatID: m.client.TGID,
 		Client: m.client,
 	}
 
-	urlParts := strings.Split(link, "/")
-	fileName := urlParts[len(urlParts)-1]
-	modName := strings.TrimSuffix(fileName, ".go")
+	fileName, modName := moduleFileAndName(link)
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	bodyBytes, err := utils.DownloadURLLimited(httpClient, link, maxModuleSourceBytes)
@@ -468,11 +474,7 @@ func (m *Presets) InstallSingleModule(call inline.CallbackQuery, preset string, 
 		return nil
 	}
 
-	structName := modName
-	goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
-	if loc := goReg.FindStringSubmatch(string(bodyBytes)); len(loc) == 2 {
-		structName = loc[1]
-	}
+	structName := extractStructName(bodyBytes, modName)
 
 	// Update loaded modules in DB
 	loadedMods := m.getLoadedModules()
@@ -496,12 +498,7 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 		return err
 	}
 
-	var progressMsgID int64
-	if hasID, ok := progressMsg.(interface{ GetID() int64 }); ok {
-		progressMsgID = hasID.GetID()
-	} else if hasID, ok := progressMsg.(interface{ GetID() int }); ok {
-		progressMsgID = int64(hasID.GetID())
-	}
+	progressMsgID := sentMessageID(progressMsg)
 	msgObj := &goroku.Message{
 		ID:     progressMsgID,
 		ChatID: m.client.TGID,
@@ -512,9 +509,7 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 
 	var structNames []string
 	for i, link := range links {
-		urlParts := strings.Split(link, "/")
-		fileName := urlParts[len(urlParts)-1]
-		modName := strings.TrimSuffix(fileName, ".go")
+		fileName, modName := moduleFileAndName(link)
 
 		updateText := fmt.Sprintf(m.getTrans("installing_module", "⏳ <b>Installing preset %s (%d/%d modules)... Installing module %s...</b>"), preset, i+1, len(links), modName)
 		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, updateText)
@@ -530,11 +525,7 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 			continue
 		}
 
-		structName := modName
-		goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
-		if loc := goReg.FindStringSubmatch(string(bodyBytes)); len(loc) == 2 {
-			structName = loc[1]
-		}
+		structName := extractStructName(bodyBytes, modName)
 		structNames = append(structNames, structName)
 		loadedMods[modName] = link
 		time.Sleep(500 * time.Millisecond)
@@ -599,9 +590,7 @@ func (m *Presets) PresetCmd(msg *goroku.Message) error {
 
 		var structNames []string
 		for _, url := range modules {
-			urlParts := strings.Split(url, "/")
-			fileName := urlParts[len(urlParts)-1]
-			modName := strings.TrimSuffix(fileName, ".go")
+			fileName, modName := moduleFileAndName(url)
 
 			client := &http.Client{Timeout: 5 * time.Second}
 			bodyBytes, err := utils.DownloadURLLimited(client, url, maxModuleSourceBytes)
@@ -615,11 +604,7 @@ func (m *Presets) PresetCmd(msg *goroku.Message) error {
 				continue
 			}
 
-			structName := modName
-			goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
-			if loc := goReg.FindStringSubmatch(string(bodyBytes)); len(loc) == 2 {
-				structName = loc[1]
-			}
+			structName := extractStructName(bodyBytes, modName)
 			structNames = append(structNames, structName)
 
 			loadedMods[modName] = url
@@ -642,9 +627,7 @@ func (m *Presets) PresetCmd(msg *goroku.Message) error {
 	text.WriteString(fmt.Sprintf(m.Strings()["preset_header"], presetName))
 
 	for _, url := range modules {
-		urlParts := strings.Split(url, "/")
-		fileName := urlParts[len(urlParts)-1]
-		modName := strings.TrimSuffix(fileName, ".go")
+		_, modName := moduleFileAndName(url)
 
 		isInstalled := m._isInstalled(url)
 		status := "▫️"
@@ -766,9 +749,7 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 		var modBtns []inline.Button
 
 		for _, link := range presetData.Modules {
-			urlParts := strings.Split(link, "/")
-			fileName := urlParts[len(urlParts)-1]
-			modName := strings.TrimSuffix(fileName, ".go")
+			_, modName := moduleFileAndName(link)
 
 			isInstalled := m._isInstalled(link)
 			status := "▫️"
@@ -820,9 +801,7 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 	loadedMods := m.getLoadedModules()
 
 	for _, url := range presetData.Modules {
-		urlParts := strings.Split(url, "/")
-		fileName := urlParts[len(urlParts)-1]
-		modName := strings.TrimSuffix(fileName, ".go")
+		fileName, modName := moduleFileAndName(url)
 
 		if m._isInstalled(url) {
 			continue
@@ -840,11 +819,7 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 			continue
 		}
 
-		structName := modName
-		goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
-		if loc := goReg.FindStringSubmatch(string(bodyBytes)); len(loc) == 2 {
-			structName = loc[1]
-		}
+		structName := extractStructName(bodyBytes, modName)
 		structNames = append(structNames, structName)
 		loadedMods[modName] = url
 	}

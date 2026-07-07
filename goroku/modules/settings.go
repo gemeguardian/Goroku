@@ -539,6 +539,47 @@ func (m *SettingsModule) ClearDBCmd(msg *goroku.Message) error {
 	return err
 }
 
+func (m *SettingsModule) resolveSettingsModule(msg *goroku.Message, modArg string) (*goroku.Modules, goroku.Module, bool) {
+	loader := msg.Client.Loader
+	if loader == nil {
+		_ = msg.Answer("❌ Modules registry not found")
+		return nil, nil, false
+	}
+
+	mod := loader.LookupByName(modArg)
+	if mod == nil {
+		text := formatTrans(m.getTrans("mod404", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Watcher {} not found</b>"), modArg)
+		_ = msg.Answer(text)
+		return nil, nil, false
+	}
+	return loader, mod, true
+}
+
+func findCommandName(mod goroku.Module, cmdArg string) string {
+	for cmdName := range mod.Commands() {
+		if strings.EqualFold(cmdName, cmdArg) {
+			return cmdName
+		}
+	}
+	return ""
+}
+
+func toggleStringFold(items []string, value string) ([]string, bool) {
+	result := make([]string, 0, len(items)+1)
+	removed := false
+	for _, item := range items {
+		if strings.EqualFold(item, value) {
+			removed = true
+			continue
+		}
+		result = append(result, item)
+	}
+	if removed {
+		return result, false
+	}
+	return append(result, value), true
+}
+
 func (m *SettingsModule) ToggleCmdCmd(msg *goroku.Message) error {
 	args := utils.GetArgs(msg.Text)
 	if len(args) < 2 {
@@ -548,27 +589,13 @@ func (m *SettingsModule) ToggleCmdCmd(msg *goroku.Message) error {
 
 	modArg, cmdArg := args[0], args[1]
 
-	loader := msg.Client.Loader
-	if loader == nil {
-		_ = msg.Answer("❌ Modules registry not found")
-		return nil
-	}
-
-	mod := loader.LookupByName(modArg)
-	if mod == nil {
-		text := formatTrans(m.getTrans("mod404", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Watcher {} not found</b>"), modArg)
-		_ = msg.Answer(text)
+	loader, mod, ok := m.resolveSettingsModule(msg, modArg)
+	if !ok {
 		return nil
 	}
 
 	moduleKey := mod.Name()
-	actualCmd := ""
-	for cmdName := range mod.Commands() {
-		if strings.EqualFold(cmdName, cmdArg) {
-			actualCmd = cmdName
-			break
-		}
-	}
+	actualCmd := findCommandName(mod, cmdArg)
 	if actualCmd == "" {
 		_ = msg.Answer(m.getTrans("cmd404", "<tg-emoji emoji-id=5469791106591890404>🪄</tg-emoji> <b>Command not found</b>"))
 		return nil
@@ -576,22 +603,14 @@ func (m *SettingsModule) ToggleCmdCmd(msg *goroku.Message) error {
 
 	disabledCmds := m.db.GetStringMapStringSlice("goroku.main", "disabled_commands", nil)
 	modDisabled := disabledCmds[moduleKey]
+	newList, enabled := toggleStringFold(modDisabled, actualCmd)
 
-	isDisabled := false
-	for _, c := range modDisabled {
-		if strings.EqualFold(c, actualCmd) {
-			isDisabled = true
-			break
-		}
-	}
-
-	if isDisabled {
-		var newList []string
-		for _, c := range modDisabled {
-			if !strings.EqualFold(c, actualCmd) {
-				newList = append(newList, c)
-			}
-		}
+	if enabled {
+		disabledCmds[moduleKey] = newList
+		m.db.SetStringMapStringSlice("goroku.main", "disabled_commands", disabledCmds)
+		loader.UnregisterCommand(actualCmd)
+		_ = msg.Answer(fmt.Sprintf("Command %s disabled in module %s", actualCmd, moduleKey))
+	} else {
 		if len(newList) == 0 {
 			delete(disabledCmds, moduleKey)
 		} else {
@@ -600,12 +619,6 @@ func (m *SettingsModule) ToggleCmdCmd(msg *goroku.Message) error {
 		m.db.SetStringMapStringSlice("goroku.main", "disabled_commands", disabledCmds)
 		loader.RegisterCommand(actualCmd, mod.Commands()[actualCmd])
 		_ = msg.Answer(fmt.Sprintf("Command %s enabled in module %s", actualCmd, moduleKey))
-	} else {
-		modDisabled = append(modDisabled, actualCmd)
-		disabledCmds[moduleKey] = modDisabled
-		m.db.SetStringMapStringSlice("goroku.main", "disabled_commands", disabledCmds)
-		loader.UnregisterCommand(actualCmd)
-		_ = msg.Answer(fmt.Sprintf("Command %s disabled in module %s", actualCmd, moduleKey))
 	}
 
 	return nil
@@ -619,38 +632,17 @@ func (m *SettingsModule) ToggleModCmd(msg *goroku.Message) error {
 	}
 
 	modArg := args[0]
-	loader := msg.Client.Loader
-	if loader == nil {
-		_ = msg.Answer("❌ Modules registry not found")
-		return nil
-	}
-
-	mod := loader.LookupByName(modArg)
-	if mod == nil {
-		text := formatTrans(m.getTrans("mod404", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Watcher {} not found</b>"), modArg)
-		_ = msg.Answer(text)
+	loader, mod, ok := m.resolveSettingsModule(msg, modArg)
+	if !ok {
 		return nil
 	}
 
 	moduleKey := mod.Name()
 
 	disabled := m.db.GetStringSlice("goroku.main", "disabled_modules", nil)
+	newDisabled, enabled := toggleString(disabled, moduleKey)
 
-	isDisabled := false
-	for _, d := range disabled {
-		if d == moduleKey {
-			isDisabled = true
-			break
-		}
-	}
-
-	if isDisabled {
-		var newDisabled []string
-		for _, d := range disabled {
-			if d != moduleKey {
-				newDisabled = append(newDisabled, d)
-			}
-		}
+	if !enabled {
 		m.db.SetStringSlice("goroku.main", "disabled_modules", newDisabled)
 		for cmdName, handler := range mod.Commands() {
 			loader.RegisterCommand(cmdName, handler)
@@ -658,8 +650,7 @@ func (m *SettingsModule) ToggleModCmd(msg *goroku.Message) error {
 		text := formatTrans(m.getTrans("mod_enabled", "Module {} enabled"), moduleKey)
 		_ = msg.Answer(text)
 	} else {
-		disabled = append(disabled, moduleKey)
-		m.db.SetStringSlice("goroku.main", "disabled_modules", disabled)
+		m.db.SetStringSlice("goroku.main", "disabled_modules", newDisabled)
 		for cmdName := range mod.Commands() {
 			loader.UnregisterCommand(cmdName)
 		}

@@ -357,6 +357,19 @@ func parsePhone(s string) string {
 	return sb.String()
 }
 
+func (m *GorokuWeb) floodWaitMessage() string {
+	floodTemplate := getTrans(m.translator, m.Name(), "floodwait_error", "Too many attempts. Try again in {} seconds.")
+	return strings.Replace(floodTemplate, "{}", "many", 1)
+}
+
+func (m *GorokuWeb) editClosableError(c inline.CallbackQuery, text string) error {
+	btnNo := inline.Button{
+		Text:    getTrans(m.translator, m.Name(), "btn_no", "🔻 Close"),
+		Handler: closeForm,
+	}
+	return c.Edit(fmt.Sprintf("❌ %s", text), c.Manager.GenerateMarkup([][]inline.Button{{btnNo}}))
+}
+
 func (m *GorokuWeb) InlinePhoneHandler(c inline.CallbackQuery, data string, targetUser *tg.User) error {
 	phone := parsePhone(data)
 	if phone == "" {
@@ -377,14 +390,9 @@ func (m *GorokuWeb) InlinePhoneHandler(c inline.CallbackQuery, data string, targ
 		_ = tempClient.Disconnect()
 		errMsg := err.Error()
 		if strings.Contains(strings.ToLower(errMsg), "flood") {
-			floodTemplate := getTrans(m.translator, m.Name(), "floodwait_error", "Too many attempts. Try again in {} seconds.")
-			errMsg = strings.Replace(floodTemplate, "{}", "many", 1)
+			errMsg = m.floodWaitMessage()
 		}
-		btnNo := inline.Button{
-			Text:    getTrans(m.translator, m.Name(), "btn_no", "🔻 Close"),
-			Handler: closeForm,
-		}
-		return c.Edit(fmt.Sprintf("❌ %s", errMsg), c.Manager.GenerateMarkup([][]inline.Button{{btnNo}}))
+		return m.editClosableError(c, errMsg)
 	}
 
 	return m.PromptCode(c, tempClient, phone, targetUser, "")
@@ -443,13 +451,7 @@ func (m *GorokuWeb) InlineCodeHandler(c inline.CallbackQuery, code string, tempC
 			return c.Edit(expiredTemplate, c.Manager.GenerateMarkup([][]inline.Button{{btnRequest}}))
 		}
 		if strings.Contains(strings.ToLower(errMsg), "flood") {
-			floodTemplate := getTrans(m.translator, m.Name(), "floodwait_error", "Too many attempts. Try again in {} seconds.")
-			errMsg = strings.Replace(floodTemplate, "{}", "many", 1)
-			btnNo := inline.Button{
-				Text:    getTrans(m.translator, m.Name(), "btn_no", "🔻 Close"),
-				Handler: closeForm,
-			}
-			return c.Edit(fmt.Sprintf("❌ %s", errMsg), c.Manager.GenerateMarkup([][]inline.Button{{btnNo}}))
+			return m.editClosableError(c, m.floodWaitMessage())
 		}
 		invalidCode := getTrans(m.translator, m.Name(), "invalid_code", "Invalid code. Please try again.")
 		return m.PromptCode(c, tempClient, phone, targetUser, fmt.Sprintf("%s (%v)", invalidCode, err))
@@ -491,13 +493,7 @@ func (m *GorokuWeb) Inline2FAHandler(c inline.CallbackQuery, password string, te
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(strings.ToLower(errMsg), "flood") {
-			floodTemplate := getTrans(m.translator, m.Name(), "floodwait_error", "Too many attempts. Try again in {} seconds.")
-			errMsg = strings.Replace(floodTemplate, "{}", "many", 1)
-			btnNo := inline.Button{
-				Text:    getTrans(m.translator, m.Name(), "btn_no", "🔻 Close"),
-				Handler: closeForm,
-			}
-			return c.Edit(fmt.Sprintf("❌ %s", errMsg), c.Manager.GenerateMarkup([][]inline.Button{{btnNo}}))
+			return m.editClosableError(c, m.floodWaitMessage())
 		}
 		invalidPassword := getTrans(m.translator, m.Name(), "invalid_password", "Invalid password. Please try again.")
 		return m.Prompt2FA(c, tempClient, phone, targetUser, fmt.Sprintf("%s (%v)", invalidPassword, err))

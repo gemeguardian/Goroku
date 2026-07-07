@@ -81,58 +81,47 @@ func (m *GorokuConfig) ConfigDefaults() map[string]any {
 }
 
 func (m *GorokuConfig) ConfigReady(config map[string]any) error {
-	if val, ok := config["cfg_emoji"].(string); ok {
-		m.cfgEmoji = val
-	}
-	if val, ok := config["start_emoji"].(string); ok {
-		m.startEmoji = val
-	}
-	if val, ok := config["list_emoji"].(string); ok {
-		m.listEmoji = val
-	}
-	if val, ok := config["validation_error_emoji"].(string); ok {
-		m.validationErrorEmoji = val
-	}
-	if val, ok := config["detective_emoji"].(string); ok {
-		m.detectiveEmoji = val
-	}
-	if val, ok := config["info_emoji"].(string); ok {
-		m.infoEmoji = val
+	for key, target := range map[string]*string{
+		"cfg_emoji":              &m.cfgEmoji,
+		"start_emoji":            &m.startEmoji,
+		"list_emoji":             &m.listEmoji,
+		"validation_error_emoji": &m.validationErrorEmoji,
+		"detective_emoji":        &m.detectiveEmoji,
+		"info_emoji":             &m.infoEmoji,
+	} {
+		if val, ok := config[key].(string); ok {
+			*target = val
+		}
 	}
 	return nil
 }
 
-func (m *GorokuConfig) getValidationErrorEmoji() string {
+func (m *GorokuConfig) getConfigString(key string, cached *string, fallback string) string {
+	value := *cached
 	if m.db != nil {
-		if raw, _ := m.db.Get(m.Name(), "validation_error_emoji", ""); raw != nil {
-			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
-				m.validationErrorEmoji = dbEmoji
+		if raw, _ := m.db.Get(m.Name(), key, ""); raw != nil {
+			if dbValue, ok := raw.(string); ok && dbValue != "" {
+				value = dbValue
+				*cached = dbValue
 			}
 		}
 	}
-	return m.validationErrorEmoji
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func (m *GorokuConfig) getValidationErrorEmoji() string {
+	return m.getConfigString("validation_error_emoji", &m.validationErrorEmoji, m.validationErrorEmoji)
 }
 
 func (m *GorokuConfig) getDetectiveEmoji() string {
-	if m.db != nil {
-		if raw, _ := m.db.Get(m.Name(), "detective_emoji", ""); raw != nil {
-			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
-				m.detectiveEmoji = dbEmoji
-			}
-		}
-	}
-	return m.detectiveEmoji
+	return m.getConfigString("detective_emoji", &m.detectiveEmoji, m.detectiveEmoji)
 }
 
 func (m *GorokuConfig) getInfoEmoji() string {
-	if m.db != nil {
-		if raw, _ := m.db.Get(m.Name(), "info_emoji", ""); raw != nil {
-			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
-				m.infoEmoji = dbEmoji
-			}
-		}
-	}
-	return m.infoEmoji
+	return m.getConfigString("info_emoji", &m.infoEmoji, m.infoEmoji)
 }
 
 func (m *GorokuConfig) ClientReady() error { return nil }
@@ -168,18 +157,7 @@ func (m *GorokuConfig) Watchers() []goroku.WatcherHandler {
 func (m *GorokuConfig) getTrans(key, def string) string {
 	val := getTrans(m.translator, m.Name(), key, def)
 	// Apply custom emoji replacement
-	emoji := m.cfgEmoji
-	if m.db != nil {
-		if raw, _ := m.db.Get(m.Name(), "cfg_emoji", ""); raw != nil {
-			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
-				emoji = dbEmoji
-				m.cfgEmoji = dbEmoji
-			}
-		}
-	}
-	if emoji == "" {
-		emoji = "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>"
-	}
+	emoji := m.getConfigString("cfg_emoji", &m.cfgEmoji, "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>")
 	val = configEmojiRe.ReplaceAllString(val, emoji)
 	val = strings.ReplaceAll(val, "⚙️", emoji)
 	val = strings.ReplaceAll(val, "🪐", emoji)
@@ -187,34 +165,11 @@ func (m *GorokuConfig) getTrans(key, def string) string {
 }
 
 func (m *GorokuConfig) getListEmoji() string {
-	emoji := m.listEmoji
-	if m.db != nil {
-		if raw, _ := m.db.Get(m.Name(), "list_emoji", ""); raw != nil {
-			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
-				emoji = dbEmoji
-				m.listEmoji = dbEmoji
-			}
-		}
-	}
-	if emoji == "" {
-		emoji = "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>"
-	}
-	return emoji
+	return m.getConfigString("list_emoji", &m.listEmoji, "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>")
 }
 
 func (m *GorokuConfig) getStartText() string {
-	emoji := m.startEmoji
-	if m.db != nil {
-		if raw, _ := m.db.Get(m.Name(), "start_emoji", ""); raw != nil {
-			if dbEmoji, ok := raw.(string); ok && dbEmoji != "" {
-				emoji = dbEmoji
-				m.startEmoji = dbEmoji
-			}
-		}
-	}
-	if emoji == "" {
-		emoji = "🍃"
-	}
+	emoji := m.getConfigString("start_emoji", &m.startEmoji, "🍃")
 	emoji = tgEmojiTagRe.ReplaceAllStringFunc(emoji, stdhtml.EscapeString)
 	return emoji
 }
@@ -1481,6 +1436,75 @@ func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 	return nil
 }
 
+func splitConfigArgs(raw string) []string {
+	var parts []string
+	for _, p := range strings.Split(raw, "&&") {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return parts
+}
+
+func splitFirstSpace(s string) (string, string) {
+	idx := -1
+	for i, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return s, ""
+	}
+	return s[:idx], strings.TrimSpace(s[idx:])
+}
+
+func splitBySpaceN(s string, n int) []string {
+	var result []string
+	start := 0
+	count := 0
+	for i, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if count < n {
+				if i > start {
+					result = append(result, strings.TrimSpace(s[start:i]))
+				}
+				start = i + 1
+				count++
+			}
+		}
+	}
+	if start < len(s) {
+		result = append(result, strings.TrimSpace(s[start:]))
+	}
+	return result
+}
+
+func (m *GorokuConfig) resolveConfigModule(msg *goroku.Message, mod string) (goroku.Module, bool) {
+	loader := m.client.Loader
+	if loader == nil {
+		_ = msg.Answer("❌ Error: Modules registry not found.")
+		return nil, false
+	}
+
+	targetModName := strings.ToLower(mod)
+	for _, modObj := range loader.GetModules() {
+		if strings.ToLower(modObj.Name()) != targetModName {
+			continue
+		}
+		if _, hasConfig := modObj.(goroku.ModuleWithConfig); !hasConfig {
+			_ = msg.Answer("🚫 <b>This module has no configuration options</b>")
+			return nil, false
+		}
+		return modObj, true
+	}
+
+	_ = msg.Answer(m.getTrans("no_mod", "🚫 <b>Module doesn't exist</b>"))
+	return nil, false
+}
+
 func (m *GorokuConfig) DConfigCmd(msg *goroku.Message) error {
 	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
 	if rawArgs == "" {
@@ -1488,61 +1512,21 @@ func (m *GorokuConfig) DConfigCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	parts := []string{}
-	for _, p := range strings.Split(rawArgs, "&&") {
-		trimmed := strings.TrimSpace(p)
-		if trimmed != "" {
-			parts = append(parts, trimmed)
-		}
-	}
+	parts := splitConfigArgs(rawArgs)
 	if len(parts) == 0 {
 		_ = msg.Answer(m.getTrans("args", "🚫 <b>You specified incorrect args</b>"))
 		return nil
 	}
 
-	splitBySpace := func(s string) (string, string) {
-		idx := -1
-		for i, r := range s {
-			if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-				idx = i
-				break
-			}
-		}
-		if idx == -1 {
-			return s, ""
-		}
-		return s[:idx], strings.TrimSpace(s[idx:])
-	}
-
 	p0 := strings.TrimSpace(parts[0])
-	mod, option := splitBySpace(p0)
+	mod, option := splitFirstSpace(p0)
 	if option == "" {
 		_ = msg.Answer(m.getTrans("args", "🚫 <b>You specified incorrect args</b>"))
 		return nil
 	}
 
-	loader := m.client.Loader
-	if loader == nil {
-		_ = msg.Answer("❌ Error: Modules registry not found.")
-		return nil
-	}
-
-	targetModName := strings.ToLower(mod)
-	var targetModule goroku.Module
-	for _, modObj := range loader.GetModules() {
-		if strings.ToLower(modObj.Name()) == targetModName {
-			targetModule = modObj
-			break
-		}
-	}
-
-	if targetModule == nil {
-		_ = msg.Answer(m.getTrans("no_mod", "🚫 <b>Module doesn't exist</b>"))
-		return nil
-	}
-
-	if _, hasConfig := targetModule.(goroku.ModuleWithConfig); !hasConfig {
-		_ = msg.Answer("🚫 <b>This module has no configuration options</b>")
+	targetModule, ok := m.resolveConfigModule(msg, mod)
+	if !ok {
 		return nil
 	}
 
@@ -1595,37 +1579,10 @@ func (m *GorokuConfig) FConfigCmd(msg *goroku.Message) error {
 		_ = err
 	}
 
-	parts := []string{}
-	for _, p := range strings.Split(rawArgs, "&&") {
-		trimmed := strings.TrimSpace(p)
-		if trimmed != "" {
-			parts = append(parts, trimmed)
-		}
-	}
+	parts := splitConfigArgs(rawArgs)
 	if len(parts) == 0 {
 		_ = msg.Answer(m.getTrans("args", "🚫 <b>You specified incorrect args</b>"))
 		return nil
-	}
-
-	splitBySpaceN := func(s string, n int) []string {
-		var result []string
-		start := 0
-		count := 0
-		for i, r := range s {
-			if r == ' ' || r == '	' || r == '\n' || r == '\r' {
-				if count < n {
-					if i > start {
-						result = append(result, strings.TrimSpace(s[start:i]))
-					}
-					start = i + 1
-					count++
-				}
-			}
-		}
-		if start < len(s) {
-			result = append(result, strings.TrimSpace(s[start:]))
-		}
-		return result
 	}
 
 	p0 := strings.TrimSpace(parts[0])
@@ -1651,28 +1608,8 @@ func (m *GorokuConfig) FConfigCmd(msg *goroku.Message) error {
 		}
 	}
 
-	loader := m.client.Loader
-	if loader == nil {
-		_ = msg.Answer("❌ Error: Modules registry not found.")
-		return nil
-	}
-
-	targetModName := strings.ToLower(mod)
-	var targetModule goroku.Module
-	for _, modObj := range loader.GetModules() {
-		if strings.ToLower(modObj.Name()) == targetModName {
-			targetModule = modObj
-			break
-		}
-	}
-
-	if targetModule == nil {
-		_ = msg.Answer(m.getTrans("no_mod", "🚫 <b>Module doesn't exist</b>"))
-		return nil
-	}
-
-	if _, hasConfig := targetModule.(goroku.ModuleWithConfig); !hasConfig {
-		_ = msg.Answer("🚫 <b>This module has no configuration options</b>")
+	targetModule, ok := m.resolveConfigModule(msg, mod)
+	if !ok {
 		return nil
 	}
 

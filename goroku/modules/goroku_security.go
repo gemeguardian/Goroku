@@ -1477,6 +1477,25 @@ func (m *GorokuSecurity) getBoundingMask() int {
 	return m.db.GetInt("goroku.security", "bounding_mask", goroku.DEFAULT_PERMISSIONS)
 }
 
+func (m *GorokuSecurity) buttonsWithCloseRows(buttons []inline.Button, rowSize int) [][]inline.Button {
+	var markup [][]inline.Button
+	for i := 0; i < len(buttons); i += rowSize {
+		end := i + rowSize
+		if end > len(buttons) {
+			end = len(buttons)
+		}
+		markup = append(markup, buttons[i:end])
+	}
+
+	markup = append(markup, []inline.Button{{
+		Text: m.getTrans("close_menu", "🙈 Закрыть это меню"),
+		Handler: func(call inline.CallbackQuery) error {
+			return closeForm(call)
+		},
+	}})
+	return markup
+}
+
 func (m *GorokuSecurity) buildMarkupGlobal(isInline bool) [][]inline.Button {
 	mask := m.getBoundingMask()
 
@@ -1513,24 +1532,7 @@ func (m *GorokuSecurity) buildMarkupGlobal(isInline bool) [][]inline.Button {
 		})
 	}
 
-	var markup [][]inline.Button
-	for i := 0; i < len(buttons); i += 2 {
-		end := i + 2
-		if end > len(buttons) {
-			end = len(buttons)
-		}
-		markup = append(markup, buttons[i:end])
-	}
-
-	closeBtn := inline.Button{
-		Text: m.getTrans("close_menu", "🙈 Закрыть это меню"),
-		Handler: func(call inline.CallbackQuery) error {
-			return closeForm(call)
-		},
-	}
-	markup = append(markup, []inline.Button{closeBtn})
-
-	return markup
+	return m.buttonsWithCloseRows(buttons, 2)
 }
 
 func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [][]inline.Button {
@@ -1604,24 +1606,7 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 		})
 	}
 
-	var markup [][]inline.Button
-	for i := 0; i < len(buttons); i += 2 {
-		end := i + 2
-		if end > len(buttons) {
-			end = len(buttons)
-		}
-		markup = append(markup, buttons[i:end])
-	}
-
-	closeBtn := inline.Button{
-		Text: m.getTrans("close_menu", "🙈 Закрыть это меню"),
-		Handler: func(call inline.CallbackQuery) error {
-			return closeForm(call)
-		},
-	}
-	markup = append(markup, []inline.Button{closeBtn})
-
-	return markup
+	return m.buttonsWithCloseRows(buttons, 2)
 }
 
 func (m *GorokuSecurity) buildMarkupQuerysec() [][]inline.Button {

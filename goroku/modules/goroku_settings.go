@@ -242,6 +242,45 @@ func (m *GorokuSettings) WatcherCmdCmd(msg *goroku.Message) error {
 	return msg.Answer(formatTrans(template, realName))
 }
 
+func toggleInt64(items []int64, value int64) ([]int64, bool) {
+	result := make([]int64, 0, len(items)+1)
+	removed := false
+	for _, item := range items {
+		if item == value {
+			removed = true
+			continue
+		}
+		result = append(result, item)
+	}
+	if removed {
+		return result, false
+	}
+	return append(result, value), true
+}
+
+func toggleString(items []string, value string) ([]string, bool) {
+	result := make([]string, 0, len(items)+1)
+	removed := false
+	for _, item := range items {
+		if item == value {
+			removed = true
+			continue
+		}
+		result = append(result, item)
+	}
+	if removed {
+		return result, false
+	}
+	return append(result, value), true
+}
+
+func onOffState(enabled bool) string {
+	if enabled {
+		return "on"
+	}
+	return "off"
+}
+
 // NoNickUserCmd toggles no-nick for a replied-to user.
 func (m *GorokuSettings) NoNickUserCmd(msg *goroku.Message) error {
 	reply, err := msg.GetReplyMessage()
@@ -251,29 +290,11 @@ func (m *GorokuSettings) NoNickUserCmd(msg *goroku.Message) error {
 
 	u := reply.SenderID
 	users := m.db.GetInt64Slice("goroku.main", "nonickusers", nil)
-
-	found := false
-	var newList []int64
-	for _, id := range users {
-		if id == u {
-			found = true
-		} else {
-			newList = append(newList, id)
-		}
-	}
-
-	var state string
-	if found {
-		m.db.SetInt64Slice("goroku.main", "nonickusers", newList)
-		state = "off"
-	} else {
-		newList = append(newList, u)
-		m.db.SetInt64Slice("goroku.main", "nonickusers", newList)
-		state = "on"
-	}
+	newList, enabled := toggleInt64(users, u)
+	m.db.SetInt64Slice("goroku.main", "nonickusers", newList)
 
 	template := m.getTrans("user_nn", "<tg-emoji emoji-id=5469791106591890404>🪄</tg-emoji> <b>Состояние NoNick для этого пользователя: {0}</b>")
-	return msg.Answer(formatTrans(template, state))
+	return msg.Answer(formatTrans(template, onOffState(enabled)))
 }
 
 // NoNickChatCmd toggles no-nick for the current chat.
@@ -283,26 +304,8 @@ func (m *GorokuSettings) NoNickChatCmd(msg *goroku.Message) error {
 	}
 
 	chats := m.db.GetInt64Slice("goroku.main", "nonickchats", nil)
-
-	found := false
-	var newList []int64
-	for _, c := range chats {
-		if c == msg.ChatID {
-			found = true
-		} else {
-			newList = append(newList, c)
-		}
-	}
-
-	var state string
-	if found {
-		m.db.SetInt64Slice("goroku.main", "nonickchats", newList)
-		state = "off"
-	} else {
-		newList = append(chats, msg.ChatID)
-		m.db.SetInt64Slice("goroku.main", "nonickchats", newList)
-		state = "on"
-	}
+	newList, enabled := toggleInt64(chats, msg.ChatID)
+	m.db.SetInt64Slice("goroku.main", "nonickchats", newList)
 
 	chatTitle := fmt.Sprintf("Chat %d", msg.ChatID)
 	if entity, err := m.client.GetEntity(msg.ChatID, 0, false); err == nil {
@@ -312,7 +315,7 @@ func (m *GorokuSettings) NoNickChatCmd(msg *goroku.Message) error {
 	}
 
 	template := m.getTrans("cmd_nn", "<tg-emoji emoji-id=5469791106591890404>🪄</tg-emoji> <b>Состояние NoNick для {0}: {1}</b>")
-	return msg.Answer(formatTrans(template, utils.EscapeHTML(chatTitle), state))
+	return msg.Answer(formatTrans(template, utils.EscapeHTML(chatTitle), onOffState(enabled)))
 }
 
 // NoNickUsersCmd lists all users with no-nick enabled.
@@ -397,31 +400,13 @@ func (m *GorokuSettings) NoNickCmdCmd(msg *goroku.Message) error {
 	}
 
 	cmds := m.db.GetStringSlice("goroku.main", "nonickcmds", nil)
-
-	found := false
-	var newList []string
-	for _, c := range cmds {
-		if c == cmdInput {
-			found = true
-		} else {
-			newList = append(newList, c)
-		}
-	}
+	newList, enabled := toggleString(cmds, cmdInput)
+	m.db.SetStringSlice("goroku.main", "nonickcmds", newList)
 
 	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
-	var state string
-	if found {
-		m.db.SetStringSlice("goroku.main", "nonickcmds", newList)
-		state = "off"
-	} else {
-		newList = append(cmds, cmdInput)
-		m.db.SetStringSlice("goroku.main", "nonickcmds", newList)
-		state = "on"
-	}
-
 	template := m.getTrans("cmd_nn", "<tg-emoji emoji-id=5469791106591890404>🪄</tg-emoji> <b>Состояние NoNick для {0}: {1}</b>")
-	return msg.Answer(formatTrans(template, prefix+cmdInput, state))
+	return msg.Answer(formatTrans(template, prefix+cmdInput, onOffState(enabled)))
 }
 
 // NoNickCmdsCmd lists all commands whitelisted for nickname enforcement.

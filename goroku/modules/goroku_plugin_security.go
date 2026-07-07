@@ -120,14 +120,14 @@ func minVal(a, b int) int {
 	return b
 }
 
-func (m *GorokuPluginSecurity) UnexternalCmd(msg *goroku.Message) error {
+func (m *GorokuPluginSecurity) resolveModuleArg(msg *goroku.Message) (goroku.Module, string, string, bool) {
 	parts := strings.SplitN(msg.Text, " ", 2)
 	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
 		_ = msg.Answer(m.getTrans("no_hash", "<emoji document_id=5210952531676504517>🚫</emoji> <b>Нужно указать название модуля</b>"))
-		return nil
+		return nil, "", "", false
 	}
-	query := strings.TrimSpace(parts[1])
-	mod, closest := m.resolveModule(query)
+
+	mod, closest := m.resolveModule(strings.TrimSpace(parts[1]))
 	if mod == nil {
 		if closest != "" {
 			template := m.getTrans("hash_not_found_suggest", "<emoji document_id=5312383351217201533>⚠️</emoji> <b>Совпадений нет. Ближайшее:</b> <code>{0}</code>")
@@ -135,45 +135,61 @@ func (m *GorokuPluginSecurity) UnexternalCmd(msg *goroku.Message) error {
 		} else {
 			_ = msg.Answer(m.getTrans("hash_not_found", "<emoji document_id=5210952531676504517>🚫</emoji> <b>Модуль с таким названием не найден</b>"))
 		}
-		return nil
+		return nil, "", "", false
 	}
 
 	modName := mod.Name()
-	modHash := getModuleHash(modName)
+	return mod, modName, getModuleHash(modName), true
+}
 
-	// 1. Internalize (trust)
-	rawInternalized, _ := m.db.Get("GorokuPluginSecurity", "internalized", []any{})
-	var internalized []string
-	alreadyInternal := false
-	if slice, ok := rawInternalized.([]any); ok {
+func (m *GorokuPluginSecurity) pluginStringSlice(key string) []string {
+	raw, _ := m.db.Get("GorokuPluginSecurity", key, []any{})
+	switch slice := raw.(type) {
+	case []string:
+		return append([]string(nil), slice...)
+	case []any:
+		result := make([]string, 0, len(slice))
 		for _, item := range slice {
 			if s, ok := item.(string); ok {
-				internalized = append(internalized, s)
-				if strings.EqualFold(s, modName) {
-					alreadyInternal = true
-				}
+				result = append(result, s)
 			}
 		}
+		return result
+	default:
+		return nil
 	}
+}
+
+func stringIndex(items []string, needle string, fold bool) int {
+	for i, item := range items {
+		if (fold && strings.EqualFold(item, needle)) || (!fold && item == needle) {
+			return i
+		}
+	}
+	return -1
+}
+
+func removeStringAt(items []string, idx int) []string {
+	return append(items[:idx], items[idx+1:]...)
+}
+
+func (m *GorokuPluginSecurity) UnexternalCmd(msg *goroku.Message) error {
+	_, modName, modHash, ok := m.resolveModuleArg(msg)
+	if !ok {
+		return nil
+	}
+
+	// 1. Internalize (trust)
+	internalized := m.pluginStringSlice("internalized")
+	alreadyInternal := stringIndex(internalized, modName, true) != -1
 	if !alreadyInternal {
 		internalized = append(internalized, modName)
 		m.db.SetStringSlice("GorokuPluginSecurity", "internalized", internalized)
 	}
 
 	// 2. Allow session
-	rawSession, _ := m.db.Get("GorokuPluginSecurity", "session_allow", []any{})
-	var sessionAllow []string
-	alreadyAllowed := false
-	if slice, ok := rawSession.([]any); ok {
-		for _, item := range slice {
-			if s, ok := item.(string); ok {
-				sessionAllow = append(sessionAllow, s)
-				if s == modHash {
-					alreadyAllowed = true
-				}
-			}
-		}
-	}
+	sessionAllow := m.pluginStringSlice("session_allow")
+	alreadyAllowed := stringIndex(sessionAllow, modHash, false) != -1
 	if !alreadyAllowed {
 		sessionAllow = append(sessionAllow, modHash)
 		m.db.SetStringSlice("GorokuPluginSecurity", "session_allow", sessionAllow)
@@ -193,61 +209,24 @@ func (m *GorokuPluginSecurity) UnexternalCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuPluginSecurity) ExternalCmd(msg *goroku.Message) error {
-	parts := strings.SplitN(msg.Text, " ", 2)
-	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-		_ = msg.Answer(m.getTrans("no_hash", "<emoji document_id=5210952531676504517>🚫</emoji> <b>Нужно указать название модуля</b>"))
+	_, modName, modHash, ok := m.resolveModuleArg(msg)
+	if !ok {
 		return nil
 	}
-	query := strings.TrimSpace(parts[1])
-	mod, closest := m.resolveModule(query)
-	if mod == nil {
-		if closest != "" {
-			template := m.getTrans("hash_not_found_suggest", "<emoji document_id=5312383351217201533>⚠️</emoji> <b>Совпадений нет. Ближайшее:</b> <code>{0}</code>")
-			_ = msg.Answer(formatTrans(template, closest))
-		} else {
-			_ = msg.Answer(m.getTrans("hash_not_found", "<emoji document_id=5210952531676504517>🚫</emoji> <b>Модуль с таким названием не найден</b>"))
-		}
-		return nil
-	}
-
-	modName := mod.Name()
-	modHash := getModuleHash(modName)
 
 	// 1. Externalize (untrust)
-	rawInternalized, _ := m.db.Get("GorokuPluginSecurity", "internalized", []any{})
-	var internalized []string
-	foundIntIdx := -1
-	if slice, ok := rawInternalized.([]any); ok {
-		for _, item := range slice {
-			if s, ok := item.(string); ok {
-				internalized = append(internalized, s)
-				if strings.EqualFold(s, modName) {
-					foundIntIdx = len(internalized) - 1
-				}
-			}
-		}
-	}
+	internalized := m.pluginStringSlice("internalized")
+	foundIntIdx := stringIndex(internalized, modName, true)
 	if foundIntIdx != -1 {
-		internalized = append(internalized[:foundIntIdx], internalized[foundIntIdx+1:]...)
+		internalized = removeStringAt(internalized, foundIntIdx)
 		m.db.SetStringSlice("GorokuPluginSecurity", "internalized", internalized)
 	}
 
 	// 2. Deny session
-	rawSession, _ := m.db.Get("GorokuPluginSecurity", "session_allow", []any{})
-	var sessionAllow []string
-	foundSessIdx := -1
-	if slice, ok := rawSession.([]any); ok {
-		for _, item := range slice {
-			if s, ok := item.(string); ok {
-				sessionAllow = append(sessionAllow, s)
-				if s == modHash {
-					foundSessIdx = len(sessionAllow) - 1
-				}
-			}
-		}
-	}
+	sessionAllow := m.pluginStringSlice("session_allow")
+	foundSessIdx := stringIndex(sessionAllow, modHash, false)
 	if foundSessIdx != -1 {
-		sessionAllow = append(sessionAllow[:foundSessIdx], sessionAllow[foundSessIdx+1:]...)
+		sessionAllow = removeStringAt(sessionAllow, foundSessIdx)
 		m.db.SetStringSlice("GorokuPluginSecurity", "session_allow", sessionAllow)
 	}
 
@@ -265,39 +244,13 @@ func (m *GorokuPluginSecurity) ExternalCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuPluginSecurity) AllowmodCmd(msg *goroku.Message) error {
-	parts := strings.SplitN(msg.Text, " ", 2)
-	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-		_ = msg.Answer(m.getTrans("no_hash", "<emoji document_id=5210952531676504517>🚫</emoji> <b>Нужно указать название модуля</b>"))
-		return nil
-	}
-	query := strings.TrimSpace(parts[1])
-	mod, closest := m.resolveModule(query)
-	if mod == nil {
-		if closest != "" {
-			template := m.getTrans("hash_not_found_suggest", "<emoji document_id=5312383351217201533>⚠️</emoji> <b>Совпадений нет. Ближайшее:</b> <code>{0}</code>")
-			_ = msg.Answer(formatTrans(template, closest))
-		} else {
-			_ = msg.Answer(m.getTrans("hash_not_found", "<emoji document_id=5210952531676504517>🚫</emoji> <b>Модуль с таким названием не найден</b>"))
-		}
+	_, modName, modHash, ok := m.resolveModuleArg(msg)
+	if !ok {
 		return nil
 	}
 
-	modName := mod.Name()
-	modHash := getModuleHash(modName)
-
-	raw, _ := m.db.Get("GorokuPluginSecurity", "session_allow", []any{})
-	var sessionAllow []string
-	alreadyAllowed := false
-	if slice, ok := raw.([]any); ok {
-		for _, item := range slice {
-			if s, ok := item.(string); ok {
-				sessionAllow = append(sessionAllow, s)
-				if s == modHash {
-					alreadyAllowed = true
-				}
-			}
-		}
-	}
+	sessionAllow := m.pluginStringSlice("session_allow")
+	alreadyAllowed := stringIndex(sessionAllow, modHash, false) != -1
 
 	var respText string
 	if alreadyAllowed {
@@ -315,46 +268,20 @@ func (m *GorokuPluginSecurity) AllowmodCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuPluginSecurity) DenymodCmd(msg *goroku.Message) error {
-	parts := strings.SplitN(msg.Text, " ", 2)
-	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-		_ = msg.Answer(m.getTrans("no_hash", "<emoji document_id=5210952531676504517>🚫</emoji> <b>Нужно указать название модуля</b>"))
-		return nil
-	}
-	query := strings.TrimSpace(parts[1])
-	mod, closest := m.resolveModule(query)
-	if mod == nil {
-		if closest != "" {
-			template := m.getTrans("hash_not_found_suggest", "<emoji document_id=5312383351217201533>⚠️</emoji> <b>Совпадений нет. Ближайшее:</b> <code>{0}</code>")
-			_ = msg.Answer(formatTrans(template, closest))
-		} else {
-			_ = msg.Answer(m.getTrans("hash_not_found", "<emoji document_id=5210952531676504517>🚫</emoji> <b>Модуль с таким названием не найден</b>"))
-		}
+	_, modName, modHash, ok := m.resolveModuleArg(msg)
+	if !ok {
 		return nil
 	}
 
-	modName := mod.Name()
-	modHash := getModuleHash(modName)
-
-	raw, _ := m.db.Get("GorokuPluginSecurity", "session_allow", []any{})
-	var sessionAllow []string
-	foundIdx := -1
-	if slice, ok := raw.([]any); ok {
-		for _, item := range slice {
-			if s, ok := item.(string); ok {
-				sessionAllow = append(sessionAllow, s)
-				if s == modHash {
-					foundIdx = len(sessionAllow) - 1
-				}
-			}
-		}
-	}
+	sessionAllow := m.pluginStringSlice("session_allow")
+	foundIdx := stringIndex(sessionAllow, modHash, false)
 
 	var respText string
 	if foundIdx == -1 {
 		template := m.getTrans("already_denied", "<emoji document_id=5312383351217201533>⚠️</emoji> <b>Доступ к .session уже запрещён для</b> <code>{0}</code>")
 		respText = formatTrans(template, modName)
 	} else {
-		sessionAllow = append(sessionAllow[:foundIdx], sessionAllow[foundIdx+1:]...)
+		sessionAllow = removeStringAt(sessionAllow, foundIdx)
 		m.db.SetStringSlice("GorokuPluginSecurity", "session_allow", sessionAllow)
 		template := m.getTrans("session_denied", "<emoji document_id=5118861066981344121>✅</emoji> <b>Доступ к .session запрещён для</b> <code>{0}</code>")
 		respText = formatTrans(template, modName)
@@ -365,42 +292,18 @@ func (m *GorokuPluginSecurity) DenymodCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuPluginSecurity) TrustmodCmd(msg *goroku.Message) error {
-	parts := strings.SplitN(msg.Text, " ", 2)
-	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-		_ = msg.Answer(m.getTrans("no_hash", "<emoji document_id=5210952531676504517>🚫</emoji> <b>Нужно указать название модуля</b>"))
-		return nil
-	}
-	query := strings.TrimSpace(parts[1])
-	mod, closest := m.resolveModule(query)
-	if mod == nil {
-		if closest != "" {
-			template := m.getTrans("hash_not_found_suggest", "<emoji document_id=5312383351217201533>⚠️</emoji> <b>Совпадений нет. Ближайшее:</b> <code>{0}</code>")
-			_ = msg.Answer(formatTrans(template, closest))
-		} else {
-			_ = msg.Answer(m.getTrans("hash_not_found", "<emoji document_id=5210952531676504517>🚫</emoji> <b>Модуль с таким названием не найден</b>"))
-		}
+	_, modName, _, ok := m.resolveModuleArg(msg)
+	if !ok {
 		return nil
 	}
 
-	modName := mod.Name()
-	raw, _ := m.db.Get("GorokuPluginSecurity", "internalized", []any{})
-	var internalized []string
-	foundIdx := -1
-	if slice, ok := raw.([]any); ok {
-		for _, item := range slice {
-			if s, ok := item.(string); ok {
-				internalized = append(internalized, s)
-				if strings.EqualFold(s, modName) {
-					foundIdx = len(internalized) - 1
-				}
-			}
-		}
-	}
+	internalized := m.pluginStringSlice("internalized")
+	foundIdx := stringIndex(internalized, modName, true)
 
 	var respText string
 	if foundIdx != -1 {
 		// Untrust (make external)
-		internalized = append(internalized[:foundIdx], internalized[foundIdx+1:]...)
+		internalized = removeStringAt(internalized, foundIdx)
 		m.db.SetStringSlice("GorokuPluginSecurity", "internalized", internalized)
 		template := m.getTrans("external_restored", "<emoji document_id=5118861066981344121>✅</emoji> <b>Флаг is_external возвращён для</b> <code>{0}</code>")
 		respText = formatTrans(template, modName)

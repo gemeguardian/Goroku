@@ -155,7 +155,7 @@ func formatPythonTraceback(tb string) string {
 	return "🚫 " + formatted[0]
 }
 
-func (m *Eval) EvalCmd(msg *goroku.Message) error {
+func evalCodeFromMessage(msg *goroku.Message, normalizeSpaces bool) string {
 	code := utils.GetArgsRaw(msg.RawText)
 	if code == "" {
 		reply, err := msg.GetReplyMessage()
@@ -163,10 +163,45 @@ func (m *Eval) EvalCmd(msg *goroku.Message) error {
 			code = reply.RawText
 		}
 	}
+	if normalizeSpaces {
+		code = strings.ReplaceAll(code, "\u00a0", " ")
+	}
+	return code
+}
+
+func (m *Eval) evalBlockText(errorOccurred bool, emojiID, lang, code, output string) string {
+	transKey := m.getTrans("eval", "")
+	if errorOccurred {
+		transKey = m.getTrans("err", "")
+	}
+	if transKey == "" {
+		if errorOccurred {
+			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Error:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
+		} else {
+			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5197688912457245639>✅</tg-emoji><b> Result:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
+		}
+	}
+
+	outputLabel := "output"
+	if errorOccurred {
+		outputLabel = "error"
+	}
+
+	return formatTrans(
+		transKey,
+		emojiID,
+		lang,
+		utils.EscapeHTML(code),
+		outputLabel,
+		utils.EscapeHTML(m.censor(output)),
+	)
+}
+
+func (m *Eval) EvalCmd(msg *goroku.Message) error {
+	code := evalCodeFromMessage(msg, true)
 	if code == "" {
 		return msg.Answer("❌ No code to evaluate")
 	}
-	code = strings.ReplaceAll(code, "\u00a0", " ")
 
 	start := time.Now()
 	result, stdout, stderr, err := m.runYaegiEval(msg, code)
@@ -421,17 +456,10 @@ print(json.dumps(_res_data))
 }
 
 func (m *Eval) EvalPyCmd(msg *goroku.Message) error {
-	code := utils.GetArgsRaw(msg.RawText)
-	if code == "" {
-		reply, err := msg.GetReplyMessage()
-		if err == nil && reply != nil && reply.RawText != "" {
-			code = reply.RawText
-		}
-	}
+	code := evalCodeFromMessage(msg, true)
 	if code == "" {
 		return msg.Answer("❌ No Python code to evaluate")
 	}
-	code = strings.ReplaceAll(code, "\u00a0", " ")
 
 	start := time.Now()
 	resData, err := m.runPythonEval(msg, code)
@@ -726,18 +754,11 @@ func (m *Eval) ECPPCmd(msg *goroku.Message) error {
 }
 
 func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
-	code := utils.GetArgsRaw(msg.RawText)
-	if code == "" {
-		reply, err := msg.GetReplyMessage()
-		if err == nil && reply != nil && reply.RawText != "" {
-			code = reply.RawText
-		}
-	}
+	code := evalCodeFromMessage(msg, true)
 	if code == "" {
 		msg.Text = "❌ No code to compile/execute"
 		return nil
 	}
-	code = strings.ReplaceAll(code, "\u00a0", " ")
 
 	compiler := "g++"
 	lang := "cpp"
@@ -820,33 +841,7 @@ func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
 		}
 	}
 
-	evalOrErrTrans := "eval"
-	if errorOccurred {
-		evalOrErrTrans = "err"
-	}
-
-	transKey := m.getTrans(evalOrErrTrans, "")
-	if transKey == "" {
-		if errorOccurred {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Error:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		} else {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5197688912457245639>✅</tg-emoji><b> Result:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		}
-	}
-
-	errorOrOutputLabel := "output"
-	if errorOccurred {
-		errorOrOutputLabel = "error"
-	}
-
-	msg.Text = formatTrans(
-		transKey,
-		emojiID,
-		lang,
-		utils.EscapeHTML(code),
-		errorOrOutputLabel,
-		utils.EscapeHTML(m.censor(output)),
-	)
+	msg.Text = m.evalBlockText(errorOccurred, emojiID, lang, code, output)
 
 	if msg.Client != nil {
 		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
@@ -855,18 +850,11 @@ func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
 }
 
 func (m *Eval) ENodeCmd(msg *goroku.Message) error {
-	code := utils.GetArgsRaw(msg.RawText)
-	if code == "" {
-		reply, err := msg.GetReplyMessage()
-		if err == nil && reply != nil && reply.RawText != "" {
-			code = reply.RawText
-		}
-	}
+	code := evalCodeFromMessage(msg, true)
 	if code == "" {
 		msg.Text = "❌ No code to execute"
 		return nil
 	}
-	code = strings.ReplaceAll(code, "\u00a0", " ")
 
 	_, checkErr := exec.LookPath("node")
 	if checkErr != nil {
@@ -910,33 +898,7 @@ func (m *Eval) ENodeCmd(msg *goroku.Message) error {
 		}
 	}
 
-	evalOrErrTrans := "eval"
-	if errorOccurred {
-		evalOrErrTrans = "err"
-	}
-
-	transKey := m.getTrans(evalOrErrTrans, "")
-	if transKey == "" {
-		if errorOccurred {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Error:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		} else {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5197688912457245639>✅</tg-emoji><b> Result:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		}
-	}
-
-	errorOrOutputLabel := "output"
-	if errorOccurred {
-		errorOrOutputLabel = "error"
-	}
-
-	msg.Text = formatTrans(
-		transKey,
-		"4985643941807260310",
-		"javascript",
-		utils.EscapeHTML(code),
-		errorOrOutputLabel,
-		utils.EscapeHTML(m.censor(output)),
-	)
+	msg.Text = m.evalBlockText(errorOccurred, "4985643941807260310", "javascript", code, output)
 
 	if msg.Client != nil {
 		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
@@ -1018,13 +980,7 @@ func runBrainfuck(code string) (string, error) {
 }
 
 func (m *Eval) EBFCmd(msg *goroku.Message) error {
-	code := utils.GetArgsRaw(msg.RawText)
-	if code == "" {
-		reply, err := msg.GetReplyMessage()
-		if err == nil && reply != nil && reply.RawText != "" {
-			code = reply.RawText
-		}
-	}
+	code := evalCodeFromMessage(msg, false)
 	if code == "" {
 		msg.Text = "❌ No code to execute"
 		return nil
@@ -1041,33 +997,7 @@ func (m *Eval) EBFCmd(msg *goroku.Message) error {
 		}
 	}
 
-	evalOrErrTrans := "eval"
-	if errorOccurred {
-		evalOrErrTrans = "err"
-	}
-
-	transKey := m.getTrans(evalOrErrTrans, "")
-	if transKey == "" {
-		if errorOccurred {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Error:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		} else {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5197688912457245639>✅</tg-emoji><b> Result:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		}
-	}
-
-	errorOrOutputLabel := "output"
-	if errorOccurred {
-		errorOrOutputLabel = "error"
-	}
-
-	msg.Text = formatTrans(
-		transKey,
-		"4985930888572306287",
-		"brainfuck",
-		utils.EscapeHTML(code),
-		errorOrOutputLabel,
-		utils.EscapeHTML(m.censor(output)),
-	)
+	msg.Text = m.evalBlockText(errorOccurred, "4985930888572306287", "brainfuck", code, output)
 
 	if msg.Client != nil {
 		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
@@ -1076,18 +1006,11 @@ func (m *Eval) EBFCmd(msg *goroku.Message) error {
 }
 
 func (m *Eval) EPHPCmd(msg *goroku.Message) error {
-	code := utils.GetArgsRaw(msg.RawText)
-	if code == "" {
-		reply, err := msg.GetReplyMessage()
-		if err == nil && reply != nil && reply.RawText != "" {
-			code = reply.RawText
-		}
-	}
+	code := evalCodeFromMessage(msg, true)
 	if code == "" {
 		msg.Text = "❌ No code to execute"
 		return nil
 	}
-	code = strings.ReplaceAll(code, "\u00a0", " ")
 
 	_, checkErr := exec.LookPath("php")
 	if checkErr != nil {
@@ -1131,33 +1054,7 @@ func (m *Eval) EPHPCmd(msg *goroku.Message) error {
 		}
 	}
 
-	evalOrErrTrans := "eval"
-	if errorOccurred {
-		evalOrErrTrans = "err"
-	}
-
-	transKey := m.getTrans(evalOrErrTrans, "")
-	if transKey == "" {
-		if errorOccurred {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Error:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		} else {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5197688912457245639>✅</tg-emoji><b> Result:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		}
-	}
-
-	errorOrOutputLabel := "output"
-	if errorOccurred {
-		errorOrOutputLabel = "error"
-	}
-
-	msg.Text = formatTrans(
-		transKey,
-		"4983593786413155017",
-		"php",
-		utils.EscapeHTML(code),
-		errorOrOutputLabel,
-		utils.EscapeHTML(m.censor(output)),
-	)
+	msg.Text = m.evalBlockText(errorOccurred, "4983593786413155017", "php", code, output)
 
 	if msg.Client != nil {
 		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
@@ -1166,18 +1063,11 @@ func (m *Eval) EPHPCmd(msg *goroku.Message) error {
 }
 
 func (m *Eval) ERubyCmd(msg *goroku.Message) error {
-	code := utils.GetArgsRaw(msg.RawText)
-	if code == "" {
-		reply, err := msg.GetReplyMessage()
-		if err == nil && reply != nil && reply.RawText != "" {
-			code = reply.RawText
-		}
-	}
+	code := evalCodeFromMessage(msg, true)
 	if code == "" {
 		msg.Text = "❌ No code to execute"
 		return nil
 	}
-	code = strings.ReplaceAll(code, "\u00a0", " ")
 
 	_, checkErr := exec.LookPath("ruby")
 	if checkErr != nil {
@@ -1221,33 +1111,7 @@ func (m *Eval) ERubyCmd(msg *goroku.Message) error {
 		}
 	}
 
-	evalOrErrTrans := "eval"
-	if errorOccurred {
-		evalOrErrTrans = "err"
-	}
-
-	transKey := m.getTrans(evalOrErrTrans, "")
-	if transKey == "" {
-		if errorOccurred {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Error:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		} else {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5197688912457245639>✅</tg-emoji><b> Result:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		}
-	}
-
-	errorOrOutputLabel := "output"
-	if errorOccurred {
-		errorOrOutputLabel = "error"
-	}
-
-	msg.Text = formatTrans(
-		transKey,
-		"4985760855112024628",
-		"ruby",
-		utils.EscapeHTML(code),
-		errorOrOutputLabel,
-		utils.EscapeHTML(m.censor(output)),
-	)
+	msg.Text = m.evalBlockText(errorOccurred, "4985760855112024628", "ruby", code, output)
 
 	if msg.Client != nil {
 		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec
@@ -1256,18 +1120,11 @@ func (m *Eval) ERubyCmd(msg *goroku.Message) error {
 }
 
 func (m *Eval) ERustCmd(msg *goroku.Message) error {
-	code := utils.GetArgsRaw(msg.RawText)
-	if code == "" {
-		reply, err := msg.GetReplyMessage()
-		if err == nil && reply != nil && reply.RawText != "" {
-			code = reply.RawText
-		}
-	}
+	code := evalCodeFromMessage(msg, true)
 	if code == "" {
 		msg.Text = "❌ No code to compile/execute"
 		return nil
 	}
-	code = strings.ReplaceAll(code, "\u00a0", " ")
 
 	_, checkErr := exec.LookPath("rustc")
 	if checkErr != nil {
@@ -1339,33 +1196,7 @@ func (m *Eval) ERustCmd(msg *goroku.Message) error {
 		}
 	}
 
-	evalOrErrTrans := "eval"
-	if errorOccurred {
-		evalOrErrTrans = "err"
-	}
-
-	transKey := m.getTrans(evalOrErrTrans, "")
-	if transKey == "" {
-		if errorOccurred {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Error:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		} else {
-			transKey = "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5197688912457245639>✅</tg-emoji><b> Result:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
-		}
-	}
-
-	errorOrOutputLabel := "output"
-	if errorOccurred {
-		errorOrOutputLabel = "error"
-	}
-
-	msg.Text = formatTrans(
-		transKey,
-		"4994944646242108269",
-		"rust",
-		utils.EscapeHTML(code),
-		errorOrOutputLabel,
-		utils.EscapeHTML(m.censor(output)),
-	)
+	msg.Text = m.evalBlockText(errorOccurred, "4994944646242108269", "rust", code, output)
 
 	if msg.Client != nil {
 		msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text) //nolint:errcheck,gosec

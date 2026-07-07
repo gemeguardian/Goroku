@@ -132,56 +132,67 @@ func (m *Updater) noGit() bool {
 	return os.Getenv("GOROKU_NO_GIT") == "1"
 }
 
+func (m *Updater) gitCommand(args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...) //nolint:gosec
+	cmd.Dir = m.getRepoDir()
+	return cmd
+}
+
+func (m *Updater) gitOutput(args ...string) (string, error) {
+	out, err := m.gitCommand(args...).Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+func (m *Updater) gitCombinedOutput(args ...string) (string, error) {
+	out, err := m.gitCommand(args...).CombinedOutput()
+	return string(out), err
+}
+
+func scheduleGorokuRestart() {
+	go func() {
+		time.Sleep(1 * time.Second)
+		goroku.Restart()
+	}()
+}
+
 func (m *Updater) getLatestHash() string {
 	if m.noGit() {
 		return ""
 	}
-	repoDir := m.getRepoDir()
-	cmd := exec.Command("git", "fetch", "--quiet")
-	cmd.Dir = repoDir
-	_ = cmd.Run()
+	_ = m.gitCommand("fetch", "--quiet").Run()
 
 	branch := goroku.GetVersionBranch()
-	cmd = exec.Command("git", "rev-parse", "origin/"+branch) //nolint:gosec
-	cmd.Dir = repoDir
-	out, err := cmd.Output()
+	out, err := m.gitOutput("rev-parse", "origin/"+branch)
 	if err != nil {
-		cmd = exec.Command("git", "rev-parse", "HEAD")
-		cmd.Dir = repoDir
-		out, err = cmd.Output()
+		out, err = m.gitOutput("rev-parse", "HEAD")
 		if err != nil {
 			return ""
 		}
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 func (m *Updater) getCurrentHash() string {
 	if m.noGit() {
 		return ""
 	}
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = m.getRepoDir()
-	out, err := cmd.Output()
+	out, err := m.gitOutput("rev-parse", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 func (m *Updater) getChangelog() string {
 	if m.noGit() {
 		return ""
 	}
-	repoDir := m.getRepoDir()
 	branch := goroku.GetVersionBranch()
-	cmd := exec.Command("git", "log", "HEAD..origin/"+branch, "--oneline", "--format=<b>%h</b>: <i>%s</i>", "-10") //nolint:gosec
-	cmd.Dir = repoDir
-	out, err := cmd.Output()
-	if err != nil || len(out) == 0 {
+	out, err := m.gitOutput("log", "HEAD..origin/"+branch, "--oneline", "--format=<b>%h</b>: <i>%s</i>", "-10")
+	if err != nil || out == "" {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 func (m *Updater) getTrans(key, def string) string {
@@ -234,17 +245,11 @@ func (m *Updater) pollerTick() error {
 
 	if m.autoupdate {
 		m.notified = latest
-		repoDir := m.getRepoDir()
-		cmd := exec.Command("git", "pull")
-		cmd.Dir = repoDir
-		if out, err := cmd.CombinedOutput(); err == nil && !strings.Contains(string(out), "Already up to date") {
+		if out, err := m.gitCombinedOutput("pull"); err == nil && !strings.Contains(out, "Already up to date") {
 			_, _ = m.client.SendMessage(goroku.ChatRefID(m.client.TGID),
 				fmt.Sprintf("🔄 <b>Auto-updated to</b> <code>%s</code>\n\n%s", latest[:6], changelog))
 			m.db.SetInt64("Updater", "restart_ts", time.Now().Unix())
-			go func() {
-				time.Sleep(1 * time.Second)
-				goroku.Restart()
-			}()
+			scheduleGorokuRestart()
 		}
 		return nil
 	}
@@ -356,16 +361,13 @@ func (m *Updater) UpdateCmd(msg *goroku.Message) error {
 		}
 	}
 
-	cmd := exec.Command("git", "pull")
-	cmd.Dir = repoDir
-	output, err := cmd.CombinedOutput()
+	output, err := m.gitCombinedOutput("pull")
 	if err != nil {
-		_ = msg.Answer(fmt.Sprintf("<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>Update failed:</b>\n<pre>%s</pre>", string(output)))
+		_ = msg.Answer(fmt.Sprintf("<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>Update failed:</b>\n<pre>%s</pre>", output))
 		return nil
 	}
 
-	outStr := string(output)
-	if strings.Contains(outStr, "Already up to date") || strings.Contains(outStr, "Уже обновлено") {
+	if strings.Contains(output, "Already up to date") || strings.Contains(output, "Уже обновлено") {
 		_ = msg.Answer(m.getTrans("no_update", "<tg-emoji emoji-id=5465496001856950230>🌟</tg-emoji> <b>You are on the latest version!</b>"))
 		return nil
 	}
@@ -375,10 +377,7 @@ func (m *Updater) UpdateCmd(msg *goroku.Message) error {
 	m.db.SetString("Updater", "selfupdatemsg", fmt.Sprintf("%d:%d", msg.ChatID, msg.ID))
 	m.db.SetInt64("Updater", "restart_ts", time.Now().Unix())
 
-	go func() {
-		time.Sleep(1 * time.Second)
-		goroku.Restart()
-	}()
+	scheduleGorokuRestart()
 
 	return nil
 }
@@ -402,10 +401,7 @@ func (m *Updater) RestartCmd(msg *goroku.Message) error {
 	m.db.SetString("Updater", "selfupdatemsg", fmt.Sprintf("%d:%d", msg.ChatID, msg.ID))
 	m.db.SetInt64("Updater", "restart_ts", time.Now().Unix())
 
-	go func() {
-		time.Sleep(1 * time.Second)
-		goroku.Restart()
-	}()
+	scheduleGorokuRestart()
 	return nil
 }
 
@@ -415,14 +411,12 @@ func (m *Updater) ChangelogCmd(msg *goroku.Message) error {
 
 	content, err := os.ReadFile(changelogPath) //nolint:gosec
 	if err != nil {
-		cmd := exec.Command("git", "log", "--oneline", "-15", "--pretty=format:%h: %s")
-		cmd.Dir = repoDir
-		output, gitErr := cmd.Output()
+		output, gitErr := m.gitOutput("log", "--oneline", "-15", "--pretty=format:%h: %s")
 		if gitErr != nil {
 			_ = msg.Answer("⚠️ <b>No CHANGELOG.md found and git log failed</b>")
 			return nil
 		}
-		_ = msg.Answer("📋 <b>Recent commits:</b>\n<pre>" + string(output) + "</pre>")
+		_ = msg.Answer("📋 <b>Recent commits:</b>\n<pre>" + output + "</pre>")
 		return nil
 	}
 
@@ -458,15 +452,11 @@ func (m *Updater) AutoupdateCmd(msg *goroku.Message) error {
 }
 
 func (m *Updater) SourceCmd(msg *goroku.Message) error {
-	repoDir := m.getRepoDir()
-	cmd := exec.Command("git", "remote", "get-url", "origin")
-	cmd.Dir = repoDir
-	output, err := cmd.Output()
+	url, err := m.gitOutput("remote", "get-url", "origin")
 	if err != nil {
 		_ = msg.Answer("⚠️ <b>Could not determine source URL</b>")
 		return nil
 	}
-	url := strings.TrimSpace(string(output))
 	sourceTpl := m.getTrans("source", "📦 <b>Source:</b> <a href=\"{}\">{}</a>")
 	text := formatTrans(sourceTpl, url, url)
 	_ = msg.Answer(text)
@@ -500,19 +490,13 @@ func (m *Updater) RollbackCmd(msg *goroku.Message) error {
 
 	_ = msg.Answer(fmt.Sprintf("🔄 <b>Rolling back %d commit(s)...</b>", n))
 
-	repoDir := m.getRepoDir()
-	cmd := exec.Command("git", "reset", "--hard", fmt.Sprintf("HEAD~%d", n)) //nolint:gosec
-	cmd.Dir = repoDir
-	out, err := cmd.CombinedOutput()
+	out, err := m.gitCombinedOutput("reset", "--hard", fmt.Sprintf("HEAD~%d", n))
 	if err != nil {
-		return msg.Answer(fmt.Sprintf("❌ <b>Rollback failed:</b>\n<pre>%s</pre>", string(out)))
+		return msg.Answer(fmt.Sprintf("❌ <b>Rollback failed:</b>\n<pre>%s</pre>", out))
 	}
 
 	_ = msg.Answer("✅ <b>Rollback successful! Restarting...</b>")
-	go func() {
-		time.Sleep(1 * time.Second)
-		goroku.Restart()
-	}()
+	scheduleGorokuRestart()
 	return nil
 }
 

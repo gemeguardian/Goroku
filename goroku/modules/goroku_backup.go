@@ -89,6 +89,15 @@ func (m *GorokuBackup) getTrans(key, def string) string {
 	return getTrans(m.translator, m.Name(), key, def)
 }
 
+func scheduleBackupRestart() {
+	scheduleBackupRestart()
+}
+
+func (m *GorokuBackup) loadedModulesMap() map[string]string {
+	loadedMods := m.loadedModulesMap()
+	return loadedMods
+}
+
 // ClientReady starts the periodic backup goroutine and shows period setups if not set.
 func (m *GorokuBackup) ClientReady() error {
 	periodVal, _ := m.db.Get("GorokuBackup", "period", nil)
@@ -429,13 +438,7 @@ func (m *GorokuBackup) RestoreDBCmd(msg *goroku.Message) error {
 func (m *GorokuBackup) BackupModsCmd(msg *goroku.Message) error {
 	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
-	loadedMods := make(map[string]string)
-	val, _ := m.db.Get("Loader", "loaded_modules", nil)
-	if val != nil {
-		if bytesData, err := json.Marshal(val); err == nil {
-			json.Unmarshal(bytesData, &loadedMods) //nolint:errcheck,gosec
-		}
-	}
+	loadedMods := m.loadedModulesMap()
 
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -521,10 +524,7 @@ func (m *GorokuBackup) RestoreModsCmd(msg *goroku.Message) error {
 			m.db.SetStringMap("Loader", "loaded_modules", dbMods)
 			modsRestoredTrans := m.getTrans("mods_restored", "Modules restored, restarting")
 			_ = msg.Answer(modsRestoredTrans)
-			go func() {
-				time.Sleep(1 * time.Second)
-				goroku.Restart()
-			}()
+			scheduleBackupRestart()
 			return nil
 		}
 
@@ -565,10 +565,7 @@ func (m *GorokuBackup) RestoreModsCmd(msg *goroku.Message) error {
 	modsRestoredTrans := m.getTrans("mods_restored", "Modules restored, restarting")
 	_ = msg.Answer(modsRestoredTrans)
 
-	go func() {
-		time.Sleep(1 * time.Second)
-		goroku.Restart()
-	}()
+	scheduleBackupRestart()
 
 	return nil
 }
@@ -684,10 +681,7 @@ func (m *GorokuBackup) RestoreAllCmd(msg *goroku.Message) error {
 	allRestoredTrans := m.getTrans("all_restored", "Your full backup has been restored, restarting...")
 	_ = msg.Answer(allRestoredTrans)
 
-	go func() {
-		time.Sleep(1 * time.Second)
-		goroku.Restart()
-	}()
+	scheduleBackupRestart()
 
 	return nil
 }
@@ -828,10 +822,7 @@ func (m *GorokuBackup) handleRestoreExecuteFromMessageCallback(call inline.Callb
 	_ = call.Answer(restoredText, true)
 	_ = closeForm(call)
 
-	go func() {
-		time.Sleep(1 * time.Second)
-		goroku.Restart()
-	}()
+	scheduleBackupRestart()
 
 	return nil
 }
