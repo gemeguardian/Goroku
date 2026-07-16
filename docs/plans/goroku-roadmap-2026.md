@@ -51,39 +51,40 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 | M5.3 | **Завершено** | Bounded rate limiter tracked + verified. |
 | M5.4 | **Завершено** | Bounded command/watcher executors + Message ctx tracked + verified. |
 | **M9.1** | **Завершено** | `a07c96a` + clean worktree: parity/tidy/gofmt/vet/build/`go test -race ./...` PASS. CI workflow criteria 1–7. golangci-lint in CI (local binary optional). |
-| **M6.1** | **Частично** | ModuleFactory + lifecycle; uncommitted; core race green. |
-| **M6.2** | **Частично** | DocumentStore + AssetRepository; no DB→full client; uncommitted. |
-| **M6.3** | **Частично** | Dispatch pipeline + reason codes + regex-at-register; uncommitted. |
-| **M6.4** | **Частично** | Web service split; no `web.Instance`; uncommitted. |
-| **M6.5** | **Частично** | Client split files; EntityCache residual; uncommitted. |
-| **M7** | **Частично** | Typed cache/schema/qrLogin; residuals remain; uncommitted. |
-| **M8** | **Частично** | CLI proxy/qr/no-auth, `/health`, honest README; uncommitted. |
-| **M9.2** | **Частично** | `govulncheck@v1.1.4` soft CI; residual SBOM/secret-scan. |
-| **M9.3** | **Частично** | Soft coverage floor 20% + `docs/CI.md`. |
-| **M9.4** | **Частично** | `scripts/test-critical.sh`; E2E residual. |
-| **M10** | **Частично** | SECURITY/QUICKSTART/ARCHITECTURE/OPERATIONS/RELEASE, Dockerfile, goreleaser. |
-| **M1.1** | **Частично** | restore journal + recovery; not joint FS+DB atomic. |
+| **M6.1** | **Завершено** | `4699404` + clean race: factories, lifecycle, sequential SendReady. |
+| **M6.2** | **Завершено** | DocumentStore + AssetRepository; no DB→full client. |
+| **M6.3** | **Завершено** | Dispatch pipeline + reason codes + regex-at-register. |
+| **M6.4** | **Завершено** | Web service split; no `web.Instance`. |
+| **M6.5** | **Завершено** | Client file split; EntityCache ownership residual (non-blocking). |
+| **M7** | **Частично** | Typed cache/schema/qrLogin in tree; full `any` removal residual. |
+| **M8** | **Завершено** | CLI proxy/qr/no-auth, `/health`, honest README (ops UI residual OK). |
+| **M9.2** | **Частично** | Soft govulncheck; residual hard gate/SBOM/secret-scan. |
+| **M9.3** | **Завершено** | Soft coverage floor + policy docs. |
+| **M9.4** | **Завершено** | `test-critical.sh` + critical suites green on clean tree. |
+| **M10** | **Частично** | Docs+Docker+goreleaser present; signed release/canary residual. |
+| **M1.1** | **Частично** | restore journal; not joint FS+DB atomic. |
+| **M1.2** | **Завершено** | limits/validation tracked; M1.1 residual separate. |
 | M4.2 | **Частично** | worker Yaegi deferred. |
 
 ### Следующий порядок исполнения
 
-1. **Commit** full M6–M10 worktree on user ask → clean-clone verify → formal **Завершено** where green.
-2. Free disk before full `./modules` race (plugin tests need space; root was ~97% full).
-3. Residuals: M1.1 joint atomicity, M4.2 worker Yaegi, M0.1 token, hard govulncheck, EntityCache, ops UI.
-4. Push + release tag only on ask; **gotd upgrade** separate.
+1. ~~Commit M6–M10~~ **done** (`4699404`); clean-clone verify **PASS**.
+2. Push `master` only on user ask; optional tag `v1.x` after CHANGELOG review.
+3. Residuals (post-release ok): M0.1 token, M1.1 joint atomicity, M4.2 worker Yaegi, M7 full typing, M9.2 hard gates, M10 signed/canary.
+4. **gotd upgrade** separate PR.
 
 ### Worktree snapshot (для handoff)
 
-- Branch: `master` **ahead 2** (`a07c96a`, `96975c7`); large **uncommitted** M6–M10 tree.
+- Branch: `master` **ahead 3** (`a07c96a`, `96975c7`, `4699404`); clean product tree after commit.
 - Local only (ignored): `user_modules/`, `.goroku_plugins/`, secrets/runtime.
 - `gotd/td` **not** upgraded.
-- Prefer `TMPDIR=/root/.cache/go-tmp`; keep free disk ≥10G for plugin tests.
+- Prefer `TMPDIR=/root/.cache/go-tmp`.
 
 ### Constraints for next orchestrator
 
-- Orchestrator: agents for implement/verify; commit only when user asks; push only on ask.
-- Do **not** rollback/reset; do **not** move `user_modules/` into package path.
-- Next: user **коммить** → clean verify → residuals / release polish.
+- Push/tag only when user asks.
+- Do not rollback; do not move `user_modules/` into package path.
+- Optional polish residuals; release-ready baseline is in `4699404`.
 
 ## 1. Цель документа
 
