@@ -15,8 +15,9 @@ import (
 	"testing"
 	"time"
 
-	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"goroku/goroku/webiface"
+
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 type testInlineProvider struct{}
@@ -1115,16 +1116,19 @@ func TestConcurrentStartContextSharesFailedGeneration(t *testing.T) {
 	}
 }
 
-func TestReleaseInstanceChecksOwnership(t *testing.T) {
+func TestNewWebCoreHasNoGlobalInstance(t *testing.T) {
 	first := NewWebCore(WebConfig{})
 	second := NewWebCore(WebConfig{})
-	ReleaseInstance(first)
-	if Instance != second {
-		t.Fatal("stale WebCore cleared its replacement")
+	if first == nil || second == nil {
+		t.Fatal("NewWebCore returned nil")
 	}
-	ReleaseInstance(second)
-	if Instance != nil {
-		t.Fatal("current WebCore instance was not cleared")
+	if first == second {
+		t.Fatal("NewWebCore must return independent cores")
+	}
+	// Cores must not share mutable server lifecycle state.
+	first.port = 1
+	if second.port == 1 {
+		t.Fatal("WebCore instances share Server state")
 	}
 }
 
@@ -1317,5 +1321,43 @@ func TestRuntimeRegistryConcurrentAccess(t *testing.T) {
 	clients := core.ListClients()
 	if len(clients) != 1 || clients[0].ID != 1000 {
 		t.Fatalf("unexpected final registry snapshot: %#v", clients)
+	}
+}
+
+func TestHealthEndpointsHaveNoSecrets(t *testing.T) {
+	dir := t.TempDir()
+	web := NewWeb(WebConfig{DataRoot: dir})
+	if err := web.RegisterClient(RuntimeClient{ID: 42, Client: testWebClient{tgid: 42}}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	web.HealthHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"status":"ok"`) && !strings.Contains(body, `"status": "ok"`) {
+		t.Fatalf("health body missing status: %q", body)
+	}
+	if !strings.Contains(body, `"clients":1`) && !strings.Contains(body, `"clients": 1`) {
+		t.Fatalf("health body missing clients: %q", body)
+	}
+	for _, secretish := range []string{"token", "password", "api_hash", "session"} {
+		if strings.Contains(strings.ToLower(body), secretish) {
+			t.Fatalf("health body must not contain %q: %q", secretish, body)
+		}
+	}
+
+	hz := httptest.NewRecorder()
+	web.HealthzHandler(hz, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if hz.Code != http.StatusOK || strings.TrimSpace(hz.Body.String()) != "ok" {
+		t.Fatalf("healthz=%d %q", hz.Code, hz.Body.String())
+	}
+	rz := httptest.NewRecorder()
+	web.ReadyzHandler(rz, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rz.Code != http.StatusOK || strings.TrimSpace(rz.Body.String()) != "ok" {
+		t.Fatalf("readyz=%d %q", rz.Code, rz.Body.String())
 	}
 }

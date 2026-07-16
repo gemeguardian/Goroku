@@ -311,6 +311,153 @@ func TestRestoreReducedManifestRemovesOnlyPreviouslyOwnedSource(t *testing.T) {
 	assertFileBody(t, filepath.Join(modsDir, "unrelated.go"), unrelated)
 }
 
+func TestRestoreJournalClearedAfterSuccessfulModulesRestore(t *testing.T) {
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	db := newBackupTestDB(t)
+	m := newBackupTestModule(db)
+	mods := makeZip(t, map[string][]byte{
+		"db_mods.json": []byte(`{"kept":"local"}`),
+		"kept.go":      testModuleSource("Kept", "journal success"),
+	})
+	if err := m.restoreModulesFromData(mods); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(restoreJournalRoot()); !os.IsNotExist(err) {
+		t.Fatalf("restore journal left behind after success: %v", err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "kept.go"), testModuleSource("Kept", "journal success"))
+}
+
+func TestRecoverIncompleteRestoreRollsBackFilesAppliedPhase(t *testing.T) {
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldBody := []byte("package modules\n// old owned\n")
+	newBody := testModuleSource("Owned", "partial restore")
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), newBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate crash after FS apply: journal still at files_applied with previous snapshot.
+	journal := openRestoreJournal()
+	entries := []restoreJournalEntry{{
+		Name:    "owned.go",
+		Install: true,
+		Existed: true,
+		Applied: true,
+		Mode:    0600,
+	}}
+	if err := journal.begin(modsDir, false, entries, map[string][]byte{"owned.go": newBody}); err != nil {
+		t.Fatal(err)
+	}
+	// begin overwrote previous from live (already new); write the true pre-restore body.
+	if err := writeFileDurable(filepath.Join(journal.previousDir(), "owned.go"), oldBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := journal.readState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Entries[0].Applied = true
+	if err := journal.markFilesApplied(state); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recoverIncompleteModuleRestore(); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), oldBody)
+	if _, err := os.Stat(restoreJournalRoot()); !os.IsNotExist(err) {
+		t.Fatalf("journal not cleared after recovery: %v", err)
+	}
+}
+
+func TestRecoverIncompleteRestoreRollsBackUnmarkedAppliedMutation(t *testing.T) {
+	// Crash window: live FS already mutated, journal entry.Applied still false.
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldBody := []byte("package modules\n// pre-crash\n")
+	newBody := testModuleSource("Owned", "mutated without journal mark")
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), newBody, 0640); err != nil {
+		t.Fatal(err)
+	}
+	journal := openRestoreJournal()
+	entries := []restoreJournalEntry{{
+		Name:    "owned.go",
+		Install: true,
+		Existed: true,
+		Applied: false,
+		Mode:    0640,
+	}}
+	if err := journal.begin(modsDir, false, entries, map[string][]byte{"owned.go": newBody}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileDurable(filepath.Join(journal.previousDir(), "owned.go"), oldBody, 0640); err != nil {
+		t.Fatal(err)
+	}
+	state, err := journal.readState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.markApplying(state); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recoverIncompleteModuleRestore(); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), oldBody)
+	if info, err := os.Stat(filepath.Join(modsDir, "owned.go")); err != nil || info.Mode().Perm() != 0640 {
+		t.Fatalf("restored mode = %v, %v", info, err)
+	}
+}
+
+func TestRecoverIncompleteRestoreDropsDBAppliedJournal(t *testing.T) {
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := testModuleSource("Owned", "committed")
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	journal := openRestoreJournal()
+	entries := []restoreJournalEntry{{
+		Name:    "owned.go",
+		Install: true,
+		Existed: false,
+		Applied: true,
+	}}
+	if err := journal.begin(modsDir, false, entries, map[string][]byte{"owned.go": body}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := journal.readState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Entries[0].Applied = true
+	if err := journal.markDBApplied(state); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recoverIncompleteModuleRestore(); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), body)
+	if _, err := os.Stat(restoreJournalRoot()); !os.IsNotExist(err) {
+		t.Fatalf("db_applied journal not cleared: %v", err)
+	}
+}
+
 func TestRestoreReducedManifestRemovalRollsBackOnDatabaseFailure(t *testing.T) {
 	dataRoot, _ := setModuleTestRoots(t)
 	modsDir := filepath.Join(dataRoot, "modules")

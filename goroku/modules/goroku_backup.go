@@ -82,6 +82,12 @@ func (m *GorokuBackup) Init(client *goroku.CustomTelegramClient, db *goroku.Data
 	m.translator.Init()
 	m.stopBackup = make(chan struct{})
 
+	// Recover FS from an interrupted restore before any scheduled backup work.
+	// See restore_journal.go for residual crash-window documentation.
+	if err := recoverIncompleteModuleRestore(); err != nil {
+		return fmt.Errorf("recover incomplete module restore: %w", err)
+	}
+
 	if err := m.reloadBackupPeriod(); err != nil {
 		return fmt.Errorf("load backup period: %w", err)
 	}
@@ -962,19 +968,36 @@ func stageModuleRestore(modsDir string, files map[string][]byte) (*moduleRestore
 	return &moduleRestorePlan{dir: stage, names: names}, nil
 }
 
-type moduleFileSnapshot struct {
-	name    string
-	backup  string
-	existed bool
-	applied bool
-	install bool
-}
-
+// applyRestore mutates module sources then Database.Reset.
+//
+// Crash residual (not jointly atomic): after filesystem apply succeeds and
+// before Database.Reset is durably committed, a crash leaves FS new + DB old.
+// A durable restore journal under BaseDir/.goroku-restore-journal records
+// intended ops and previous file bodies so the next Init rolls FS back to the
+// pre-restore tree (matching the still-old DB). True FS+DB atomicity would
+// need a multi-store coordinator; see restore_journal.go.
 func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *moduleRestorePlan) error {
+	// Clear any leftover incomplete restore before starting a new one.
+	if err := recoverIncompleteModuleRestoreLocked(); err != nil {
+		return fmt.Errorf("recover incomplete module restore: %w", err)
+	}
+
 	oldDB := m.db.GetAll()
 	modsDir := runtimeModuleSourceDir()
 	createdModsDir := false
-	snapshots := make([]moduleFileSnapshot, 0)
+	var journal *restoreJournal
+	var journalState *restoreJournalState
+
+	rollbackFiles := func() error {
+		if journalState == nil || journal == nil {
+			return nil
+		}
+		filesErr := rollbackRestoreJournalState(journalState, journal)
+		_ = journal.remove()
+		journal = nil
+		journalState = nil
+		return filesErr
+	}
 
 	if plan != nil {
 		installNames := make(map[string]struct{}, len(plan.names))
@@ -1027,14 +1050,11 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			return err
 		}
 
-		backupDir := filepath.Join(plan.dir, ".previous")
-		if err := os.Mkdir(backupDir, 0700); err != nil {
-			cleanupCreatedDir()
-			return err
-		}
+		entries := make([]restoreJournalEntry, 0, len(names))
+		stagedSources := make(map[string][]byte)
 		for _, name := range names {
 			_, install := installNames[name]
-			snapshot := moduleFileSnapshot{name: name, install: install}
+			entry := restoreJournalEntry{Name: name, Install: install}
 			destination := filepath.Join(modsDir, name)
 			info, err := os.Lstat(destination)
 			if err == nil {
@@ -1042,82 +1062,101 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 					cleanupCreatedDir()
 					return fmt.Errorf("module destination %q is not a regular file", name)
 				}
-				body, err := os.ReadFile(destination) //nolint:gosec
-				if err != nil {
-					cleanupCreatedDir()
-					return err
-				}
-				snapshot.existed = true
-				snapshot.backup = filepath.Join(backupDir, name)
-				if err := os.WriteFile(snapshot.backup, body, info.Mode().Perm()); err != nil {
-					cleanupCreatedDir()
-					return err
-				}
-				if err := os.Chmod(snapshot.backup, info.Mode().Perm()); err != nil {
-					cleanupCreatedDir()
-					return err
-				}
+				entry.Existed = true
+				entry.Mode = uint32(info.Mode().Perm())
 			} else if !os.IsNotExist(err) {
 				cleanupCreatedDir()
 				return err
 			}
-			snapshots = append(snapshots, snapshot)
-		}
-	}
-
-	rollbackFiles := func() error {
-		var rollbackErr error
-		for i := len(snapshots) - 1; i >= 0; i-- {
-			snapshot := &snapshots[i]
-			if !snapshot.applied {
-				continue
-			}
-			destination := filepath.Join(modsDir, snapshot.name)
-			if snapshot.existed {
-				if err := os.Rename(snapshot.backup, destination); err != nil && rollbackErr == nil {
-					rollbackErr = err
+			if install {
+				body, err := os.ReadFile(filepath.Join(plan.dir, name)) //nolint:gosec
+				if err != nil {
+					cleanupCreatedDir()
+					return err
 				}
-			} else if err := os.Remove(destination); err != nil && !os.IsNotExist(err) && rollbackErr == nil {
-				rollbackErr = err
+				stagedSources[name] = body
 			}
+			entries = append(entries, entry)
 		}
-		if createdModsDir {
-			if err := os.Remove(modsDir); err != nil && !os.IsNotExist(err) && rollbackErr == nil {
-				rollbackErr = err
-			}
-		}
-		return rollbackErr
-	}
 
-	for i := range snapshots {
-		if !snapshots[i].install {
-			if !snapshots[i].existed {
+		journal = openRestoreJournal()
+		if err := journal.begin(modsDir, createdModsDir, entries, stagedSources); err != nil {
+			cleanupCreatedDir()
+			return fmt.Errorf("prepare restore journal: %w", err)
+		}
+		journalState = &restoreJournalState{
+			Phase:          restorePhasePrepared,
+			ModsDir:        modsDir,
+			CreatedModsDir: createdModsDir,
+			Entries:        entries,
+		}
+		if err := journal.markApplying(journalState); err != nil {
+			cleanupCreatedDir()
+			_ = journal.remove()
+			journal = nil
+			journalState = nil
+			return fmt.Errorf("mark restore journal applying: %w", err)
+		}
+
+		for i := range journalState.Entries {
+			entry := &journalState.Entries[i]
+			if !entry.Install {
+				if !entry.Existed {
+					continue
+				}
+				if err := os.Remove(filepath.Join(modsDir, entry.Name)); err != nil {
+					filesErr := rollbackFiles()
+					if filesErr != nil {
+						return errors.Join(fmt.Errorf("module removal failed: %w", err), fmt.Errorf("file rollback failed: %w", filesErr))
+					}
+					return err
+				}
+				if err := journal.markEntryApplied(journalState, i); err != nil {
+					filesErr := rollbackFiles()
+					if filesErr != nil {
+						return errors.Join(fmt.Errorf("journal after removal failed: %w", err), fmt.Errorf("file rollback failed: %w", filesErr))
+					}
+					return err
+				}
 				continue
 			}
-			if err := os.Remove(filepath.Join(modsDir, snapshots[i].name)); err != nil {
+			source := filepath.Join(journal.stagedDir(), entry.Name)
+			destination := filepath.Join(modsDir, entry.Name)
+			var applyErr error
+			if m.restoreApplyFile != nil {
+				applyErr = m.restoreApplyFile(source, destination)
+			} else if renameErr := os.Rename(source, destination); renameErr != nil {
+				// Staged copy remains; fall back to durable write into live path.
+				body, readErr := os.ReadFile(source) //nolint:gosec
+				if readErr != nil {
+					applyErr = renameErr
+				} else {
+					applyErr = writeFileDurable(destination, body, 0600)
+				}
+			}
+			if applyErr != nil {
 				filesErr := rollbackFiles()
 				if filesErr != nil {
-					return errors.Join(fmt.Errorf("module removal failed: %w", err), fmt.Errorf("file rollback failed: %w", filesErr))
+					return errors.Join(fmt.Errorf("module apply failed: %w", applyErr), fmt.Errorf("file rollback failed: %w", filesErr))
+				}
+				return applyErr
+			}
+			if err := journal.markEntryApplied(journalState, i); err != nil {
+				filesErr := rollbackFiles()
+				if filesErr != nil {
+					return errors.Join(fmt.Errorf("journal after apply failed: %w", err), fmt.Errorf("file rollback failed: %w", filesErr))
 				}
 				return err
 			}
-			snapshots[i].applied = true
-			continue
 		}
-		source := filepath.Join(plan.dir, snapshots[i].name)
-		destination := filepath.Join(modsDir, snapshots[i].name)
-		applyFile := m.restoreApplyFile
-		if applyFile == nil {
-			applyFile = os.Rename
-		}
-		if err := applyFile(source, destination); err != nil {
+
+		if err := journal.markFilesApplied(journalState); err != nil {
 			filesErr := rollbackFiles()
 			if filesErr != nil {
-				return errors.Join(fmt.Errorf("module apply failed: %w", err), fmt.Errorf("file rollback failed: %w", filesErr))
+				return errors.Join(fmt.Errorf("journal files_applied failed: %w", err), fmt.Errorf("file rollback failed: %w", filesErr))
 			}
 			return err
 		}
-		snapshots[i].applied = true
 	}
 
 	resetDB := m.restoreDBReset
@@ -1127,6 +1166,11 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 	if dbErr := resetDB(backupData); dbErr != nil {
 		var diagnostic *goroku.DatabaseError
 		if errors.As(dbErr, &diagnostic) && diagnostic.Committed && errors.Is(dbErr, goroku.ErrDatabaseCommitUncertain) {
+			// DB is treated as forward-committed; drop journal like success.
+			if journal != nil && journalState != nil {
+				_ = journal.markDBApplied(journalState)
+				_ = journal.remove()
+			}
 			return &forwardRestoreCommitWarning{err: fmt.Errorf("database restore durability warning: %w", dbErr)}
 		}
 		dbRollbackErr := resetDB(oldDB)
@@ -1139,6 +1183,14 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			err = errors.Join(err, fmt.Errorf("file rollback failed: %w", filesErr))
 		}
 		return err
+	}
+	if journal != nil && journalState != nil {
+		if err := journal.markDBApplied(journalState); err != nil {
+			// FS+DB already match backup; prefer clearing journal best-effort.
+			_ = journal.remove()
+			return nil
+		}
+		_ = journal.remove()
 	}
 	return nil
 }
@@ -1584,7 +1636,12 @@ func (m *GorokuBackup) backupSecretPaths() []backupSecretPath {
 			continue
 		}
 		for key, validator := range withValidators.ConfigValidators() {
-			if _, hidden := validator.(*goroku.HiddenValidator); hidden {
+			if goroku.IsSecretValidator(validator) {
+				paths = append(paths, backupSecretPath{owner: module.Name(), key: key})
+			}
+		}
+		if withSchema, ok := module.(goroku.ModuleWithConfigSchema); ok {
+			for _, key := range goroku.SchemaSecretKeys(withSchema.ConfigSchema()) {
 				paths = append(paths, backupSecretPath{owner: module.Name(), key: key})
 			}
 		}

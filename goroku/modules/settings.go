@@ -426,17 +426,16 @@ func (m *SettingsModule) SetPrefixCmd(msg *goroku.Message) error {
 			return nil
 		}
 
-		if u, ok := entity.(*tg.User); ok {
-			userID = u.ID
-			userName = u.FirstName
-		} else {
-			entityType := strings.TrimPrefix(fmt.Sprintf("%T", entity), "*")
-			if !strings.Contains(strings.ToLower(entityType), "user") {
-				_ = msg.Answer(fmt.Sprintf("The entity %s is not a User", args[1]))
-				return nil
-			}
-			userID = utils.GetEntityID(entity)
+		switch p := entity.(type) {
+		case *tg.InputPeerUser:
+			userID = p.UserID
 			userName = args[1]
+		case *tg.InputPeerSelf:
+			userID = m.client.TGID
+			userName = args[1]
+		default:
+			_ = msg.Answer(fmt.Sprintf("The entity %s is not a User", args[1]))
+			return nil
 		}
 
 		if userID != m.client.TGID {

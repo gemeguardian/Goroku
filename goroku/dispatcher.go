@@ -20,6 +20,8 @@ var (
 	ruRunes       = []rune("ёйцукенгшщзхъфывапролджэячсмитьбю.Ё\"№;%:?ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭ/ЯЧСМИТЬБЮ,")
 	enRunes       = []rune("`qwertyuiop[]asdfghjkl;'zxcvbnm,./~@#$%^&QWERTYUIOP{}ASDFGHJKL:\"|ZXCVBNM<>?")
 	cmdNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9_\p{L}]+$`)
+	grepRegexp    = regexp.MustCompile(`\| ?grep (.+)`)
+	cutRegexp     = regexp.MustCompile(`\| ?cut (\d+)`)
 )
 
 var layoutTranslation = func() map[rune]rune {
@@ -194,6 +196,8 @@ func (c *CustomTelegramClient) GetSecurityManager() inline.SecurityChecker {
 }
 
 func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
+	// Pipeline: ChatPolicy -> RegistryLookup(watchers) -> disabled/module policy
+	//           -> MetadataFilter -> Executor
 	cd.mu.RLock()
 	stopped := cd.stopped
 	cd.mu.RUnlock()
@@ -201,36 +205,15 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 		return
 	}
 
-	// Check blacklists
-	blacklistChats := cd.getBlacklistChats()
-	chatStr := strconv.FormatInt(msg.ChatID, 10)
-	if blacklistChats[chatStr] {
+	reason, blacklistChats, chatStr := cd.chatPolicy(msg)
+	if !reason.Allowed() {
+		cd.logReject("chat_policy", reason, zap.Int64("chat", msg.ChatID))
 		return
 	}
 
-	// Check whitelist chats
-	whitelistChats := cd.db.GetInt64Slice("goroku.main", "whitelist_chats", nil)
-
-	if len(whitelistChats) > 0 {
-		found := false
-		for _, wChat := range whitelistChats {
-			if wChat == msg.ChatID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return
-		}
-	}
-
-	// Check whitelist modules
 	whitelistModules := cd.db.GetStringSlice("goroku.main", "whitelist_modules", nil)
-
-	// Retrieve disabled watchers
 	disabledWatchers := cd.db.GetAnyMap("goroku.main", "disabled_watchers", nil)
 
-	// Dispatch message watchers
 	for _, watcher := range cd.modules.GetWatchers() {
 		if watcher.lease == nil || !watcher.lease.acquire() {
 			continue
@@ -238,69 +221,17 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 		release := watcher.lease.release
 		modName := watcher.ModuleName
 
-		// Check if this module's watchers are disabled
-		if wl, exists := disabledWatchers[modName]; exists {
-			if slice, ok := wl.([]any); ok {
-				disabledHere := false
-				for _, item := range slice {
-					valStr := fmt.Sprintf("%v", item)
-					if valStr == "*" {
-						disabledHere = true
-						break
-					}
-					// Check specific chat blacklist for watcher
-					if valStr == chatStr {
-						disabledHere = true
-						break
-					}
-					if valStr == "only_chats" && msg.IsPrivate {
-						disabledHere = true
-						break
-					}
-					if valStr == "only_pm" && !msg.IsPrivate {
-						disabledHere = true
-						break
-					}
-					if valStr == "out" && !msg.Out {
-						disabledHere = true
-						break
-					}
-					if valStr == "in" && msg.Out {
-						disabledHere = true
-						break
-					}
-				}
-				if disabledHere {
-					release()
-					continue
-				}
-			}
-		}
-
-		// Check blacklist chats with specific module (chat_id.module_name)
-		key1 := fmt.Sprintf("%s.%s", chatStr, modName)
-		key2 := fmt.Sprintf("%s.%s", chatStr, strings.ToLower(modName))
-		if blacklistChats[key1] || blacklistChats[key2] {
+		// Routine watcher rejects stay silent; reason codes are available for
+		// callers/tests and capacity/closed paths still warn.
+		if !cd.watcherDisabledPolicy(msg, modName, chatStr, disabledWatchers).Allowed() {
 			release()
 			continue
 		}
-
-		// Check whitelist modules (chat_id.module_name)
-		if len(whitelistModules) > 0 {
-			found := false
-			for _, wm := range whitelistModules {
-				if wm == key1 || wm == key2 {
-					found = true
-					break
-				}
-			}
-			if !found {
-				release()
-				continue
-			}
+		if !cd.moduleChatPolicy(chatStr, modName, blacklistChats, whitelistModules).Allowed() {
+			release()
+			continue
 		}
-
-		if !cd.watcherTagsMatch(msg, watcher.Meta) {
+		if !cd.watcherMetadataFilter(msg, watcher).Allowed() {
 			release()
 			continue
 		}
@@ -319,7 +250,7 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 		if err != nil {
 			release()
 			if errors.Is(err, ErrExecutorCapacity) {
-				L().Warn("Watcher dropped", zap.String("module", modName), zap.String("reason", "capacity"))
+				L().Warn("Watcher dropped", zap.String("module", modName), zap.String("reason", string(ReasonCapacity)))
 			}
 			if errors.Is(err, ErrExecutorClosed) {
 				return
@@ -329,74 +260,15 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 }
 
 func (cd *CommandDispatcher) watcherTagsMatch(msg *Message, meta CommandMeta) bool {
-	isCommand := cd.isCommandMessage(msg)
-	if meta.NoCommands && isCommand {
-		return false
-	}
-	if meta.OnlyCommands && !isCommand {
-		return false
-	}
-	if meta.OnlyPM && !msg.IsPrivate {
-		return false
-	}
-	if meta.NoPM && msg.IsPrivate {
-		return false
-	}
-	if meta.OnlyChats && msg.IsPrivate {
-		return false
-	}
-	if meta.OnlyGroups && !msg.IsGroup {
-		return false
-	}
-	if meta.OnlyChannels && !msg.IsChannel {
-		return false
-	}
-	if meta.NoForwarded && msg.IsForwarded {
-		return false
-	}
-	if meta.Regex != "" {
-		re, err := regexp.Compile(meta.Regex)
-		if err != nil || !re.MatchString(msg.RawText) {
-			return false
-		}
-	}
-	if meta.StartsWith != "" && !strings.HasPrefix(msg.RawText, meta.StartsWith) {
-		return false
-	}
-	if meta.EndsWith != "" && !strings.HasSuffix(msg.RawText, meta.EndsWith) {
-		return false
-	}
-	if meta.Contains != "" && !strings.Contains(msg.RawText, meta.Contains) {
-		return false
-	}
-	if len(meta.FromID) > 0 {
-		ok := false
-		for _, id := range meta.FromID {
-			if id == msg.SenderID {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
-		}
-	}
-	if len(meta.ChatID) > 0 {
-		ok := false
-		for _, id := range meta.ChatID {
-			if id == msg.ChatID {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
-		}
-	}
-	if meta.Filter != nil && !meta.Filter(msg) {
-		return false
-	}
-	return true
+	return cd.watcherMetadataFilter(msg, RegisteredWatcher{Meta: meta}).Allowed()
+}
+
+func (cd *CommandDispatcher) watcherMetadataFilter(msg *Message, watcher RegisteredWatcher) DispatchReason {
+	return matchMetadata(msg, watcher.Meta, metaFilterOptions{
+		applyCommandOnly: true,
+		isCommand:        cd.isCommandMessage(msg),
+		regex:            watcher.regex,
+	})
 }
 
 func (cd *CommandDispatcher) isCommandMessage(msg *Message) bool {
@@ -420,79 +292,24 @@ func (cd *CommandDispatcher) handleTags(msg *Message, cmdName string) bool {
 }
 
 func (cd *CommandDispatcher) handleRegistrationTags(msg *Message, reg *commandRegistration) bool {
-	meta := reg.Meta
+	return cd.commandMetadataFilter(msg, reg).Allowed()
+}
 
-	if meta.OnlyOwner && !cd.security.IsAccountOwner(msg) {
-		return false
+func (cd *CommandDispatcher) commandMetadataFilter(msg *Message, reg *commandRegistration) DispatchReason {
+	if reg == nil {
+		return ReasonOK
 	}
-	if meta.OnlyPM && !msg.IsPrivate {
-		return false
-	}
-	if meta.NoPM && msg.IsPrivate {
-		return false
-	}
-	if meta.OnlyChats && msg.IsPrivate {
-		return false
-	}
-	if meta.OnlyGroups && !msg.IsGroup {
-		return false
-	}
-	if meta.OnlyChannels && !msg.IsChannel {
-		return false
-	}
-	if meta.NoForwarded && msg.IsForwarded {
-		return false
-	}
-	if meta.NoReply && msg.ReplyToMsgID != 0 {
-		return false
-	}
-	if meta.OnlyReply && msg.ReplyToMsgID == 0 {
-		return false
-	}
-	if len(meta.FromID) > 0 {
-		senderFound := false
-		for _, id := range meta.FromID {
-			if id == msg.SenderID {
-				senderFound = true
-				break
-			}
-		}
-		if !senderFound {
-			return false
-		}
-	}
-	if len(meta.ChatID) > 0 {
-		chatFound := false
-		for _, id := range meta.ChatID {
-			if id == msg.ChatID {
-				chatFound = true
-				break
-			}
-		}
-		if !chatFound {
-			return false
-		}
-	}
-	if meta.Regex != "" {
-		re, err := regexp.Compile(meta.Regex)
-		if err != nil || !re.MatchString(msg.RawText) {
-			return false
-		}
-	}
-	if meta.StartsWith != "" && !strings.HasPrefix(msg.RawText, meta.StartsWith) {
-		return false
-	}
-	if meta.EndsWith != "" && !strings.HasSuffix(msg.RawText, meta.EndsWith) {
-		return false
-	}
-	if meta.Contains != "" && !strings.Contains(msg.RawText, meta.Contains) {
-		return false
-	}
-
-	return true
+	return matchMetadata(msg, reg.Meta, metaFilterOptions{
+		applyOwner: true,
+		isOwner:    cd.security.IsAccountOwner(msg),
+		applyReply: true,
+		regex:      reg.regex,
+	})
 }
 
 func (cd *CommandDispatcher) HandleCommand(msg *Message) {
+	// Pipeline: Parser -> RegistryLookup -> ChatPolicy -> SecurityPolicy
+	//           -> MetadataFilter -> RateLimiter -> Executor
 	cd.mu.RLock()
 	stopped := cd.stopped
 	cd.mu.RUnlock()
@@ -500,113 +317,28 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 		return
 	}
 
-	prefix := cd.getPrefix(msg.SenderID)
-
-	// Layout auto-correction check
-	translatedPrefix := translateLayout(prefix)
-	msgText := msg.Text
-
-	if strings.HasPrefix(msgText, translatedPrefix) && translatedPrefix != prefix {
-		msgText = translateLayout(msgText)
-	}
-
-	if !strings.HasPrefix(msgText, prefix) {
+	parsed, reason := cd.parseCommand(msg)
+	if !reason.Allowed() {
 		return
 	}
 
-	if strings.HasPrefix(msgText, prefix+prefix) {
-		if msg.Out {
-			cleaned := msgText[len(prefix):]
-			shouldEdit := false
-			if strings.HasPrefix(cleaned, prefix) {
-				cmdBody := cleaned[len(prefix):]
-				parts := strings.Fields(cmdBody)
-				if len(parts) > 0 {
-					commandName := parts[0]
-					tagParts := strings.Split(commandName, "@")
-					actualCmd := tagParts[0]
-					if cmdNameRegexp.MatchString(actualCmd) {
-						shouldEdit = true
-					}
-				}
-			}
-			if shouldEdit {
-				// Python: message.edit(message.message[len(prefix):])
-				// — edit the same message, stripping one prefix, do NOT send a new message
-				_, _ = cd.client.EditMessage(ChatRefID(msg.ChatID), msg.ID, cleaned)
-			}
-		}
-		return
-	}
-
-	// Skip stickers, dice, audio messages and via_bot messages (like Python dispatcher)
 	if msg.Media != nil {
 		switch msg.Media.(type) {
 		case *tg.MessageMediaDice, *tg.MessageMediaGame:
 			return
 		}
 	}
-	// Skip forwarded-from-bot messages (via_bot_id equivalent)
-	if msg.IsForwarded {
-		if msg.FwdFrom.FromID != nil {
-			switch msg.FwdFrom.FromID.(type) {
-			case *tg.PeerChannel:
-				// forwarded from channel — allow, it's normal
-			}
-		}
-	}
 
-	// Check blacklisted chats
-	blacklistChats := cd.getBlacklistChats()
-	chatStr := strconv.FormatInt(msg.ChatID, 10)
-	if blacklistChats[chatStr] {
+	reason, blacklistChats, chatStr := cd.chatPolicy(msg)
+	if !reason.Allowed() {
+		cd.logReject("chat_policy", reason, zap.Int64("chat", msg.ChatID))
 		return
 	}
 
-	// Check whitelist chats
-	whitelistChats := cd.db.GetInt64Slice("goroku.main", "whitelist_chats", nil)
-
-	if len(whitelistChats) > 0 {
-		found := false
-		for _, wChat := range whitelistChats {
-			if wChat == msg.ChatID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return
-		}
-	}
-
-	// Extract command name
-	cmdBody := msgText[len(prefix):]
-	parts := strings.Fields(cmdBody)
-	if len(parts) == 0 {
-		return
-	}
-
-	commandName := parts[0]
-	tagParts := strings.Split(commandName, "@")
-
-	// Target check (e.g. .help@my_bot)
-	if len(tagParts) == 2 {
-		target := strings.ToLower(tagParts[1])
-		if target == "me" {
-			if !msg.Out {
-				return
-			}
-		} else if !cd.cachedUsernames[target] {
-			return
-		}
-	}
-
-	actualCmd := tagParts[0]
-	reg, releaseRegistration, exists := cd.modules.resolveCommandLease(actualCmd)
+	reg, releaseRegistration, exists := cd.modules.resolveCommandLease(parsed.actualCmd)
 	if !exists {
-		// Only log debug for owners/whitelisted to avoid spam from other chat members
 		if cd.security.Check(msg, "") {
-			L().Debug("Command not found in registry", zap.String("cmd", actualCmd), zap.Int64("sender", msg.SenderID))
+			cd.logReject("registry_lookup", ReasonCommandNotFound, zap.String("cmd", parsed.actualCmd), zap.Int64("sender", msg.SenderID))
 		}
 		return
 	}
@@ -615,109 +347,35 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 			releaseRegistration()
 		}
 	}()
-	actualCmd = reg.Name
+	actualCmd := reg.Name
 	handler := reg.Handler
 	modName := reg.OwnerName
 
-	// Check blacklist chats with specific module (chat_id.module_name)
-	if modName != "" {
-		key1 := fmt.Sprintf("%s.%s", chatStr, modName)
-		key2 := fmt.Sprintf("%s.%s", chatStr, strings.ToLower(modName))
-		if blacklistChats[key1] || blacklistChats[key2] {
-			return
-		}
-	}
-
-	// Check whitelist modules (chat_id.module_name)
 	whitelistModules := cd.db.GetStringSlice("goroku.main", "whitelist_modules", nil)
-
-	if len(whitelistModules) > 0 && modName != "" {
-		found := false
-		key1 := fmt.Sprintf("%s.%s", chatStr, modName)
-		key2 := fmt.Sprintf("%s.%s", chatStr, strings.ToLower(modName))
-		for _, wm := range whitelistModules {
-			if wm == key1 || wm == key2 {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return
-		}
+	if reason := cd.moduleChatPolicy(chatStr, modName, blacklistChats, whitelistModules); !reason.Allowed() {
+		cd.logReject("module_chat_policy", reason, zap.String("cmd", actualCmd), zap.String("module", modName))
+		return
 	}
 
-	// Nickname check
-	if !msg.Out && !msg.IsPrivate {
-		// Check if mentioned
-		mentioned := false
-		if cd.client.Username != "" && strings.Contains(strings.ToLower(msg.Text), "@"+strings.ToLower(cd.client.Username)) {
-			mentioned = true
+	if reason := cd.nicknamePolicy(msg, reg, actualCmd); !reason.Allowed() {
+		if cd.security.Check(msg, "") {
+			cd.logReject("security_policy", reason, zap.String("cmd", actualCmd), zap.Int64("sender", msg.SenderID))
 		}
-
-		if !mentioned {
-			noNickname := cd.db.GetBool("goroku.main", "no_nickname", false)
-
-			if !noNickname {
-				// Check nonickcmds
-				nonickcmds := cd.db.GetStringSlice("goroku.main", "nonickcmds", nil)
-				cmdWhitelisted := false
-				for _, item := range nonickcmds {
-					if strings.EqualFold(item, actualCmd) {
-						cmdWhitelisted = true
-						break
-					}
-				}
-
-				// Check nonickusers
-				nonickusers := cd.db.GetInt64Slice("goroku.main", "nonickusers", nil)
-				userWhitelisted := false
-				for _, uid := range nonickusers {
-					if uid == msg.SenderID {
-						userWhitelisted = true
-						break
-					}
-				}
-
-				// Check nonickchats
-				nonickchats := cd.db.GetInt64Slice("goroku.main", "nonickchats", nil)
-				chatWhitelisted := false
-				for _, cid := range nonickchats {
-					if cid == msg.ChatID {
-						chatWhitelisted = true
-						break
-					}
-				}
-
-				// Check tsec rules
-				tsecWhitelisted := cd.security.checkTsecRegistration(msg.SenderID, reg)
-
-				if !cmdWhitelisted && !userWhitelisted && !chatWhitelisted && !tsecWhitelisted {
-					// Nickname checks are enabled, and this command is not whitelisted in any way, so ignore it
-					// Only log debug for owners/whitelisted to avoid spam
-					if cd.security.Check(msg, "") {
-						L().Debug("Nickname check failed, ignoring", zap.String("cmd", actualCmd), zap.Int64("sender", msg.SenderID))
-					}
-					return
-				}
-			}
-		}
+		return
 	}
 
-	// Check if the command's module is disabled
 	if cd.isRegistrationDisabled(reg) {
-		L().Warn("Command or its module is disabled, ignoring", zap.String("cmd", actualCmd))
+		L().Warn("Command or its module is disabled, ignoring", zap.String("cmd", actualCmd), zap.String("reason", string(ReasonDisabledModule)))
 		return
 	}
 
-	// Check security level
 	if !cd.security.checkRegistration(msg, reg) {
-		L().Debug("Security check failed, ignoring", zap.String("cmd", actualCmd))
+		cd.logReject("security_policy", ReasonSecurity, zap.String("cmd", actualCmd))
 		return
 	}
 
-	// Check tag filters
-	if !cd.handleRegistrationTags(msg, reg) {
-		L().Debug("Tag filter failed, ignoring", zap.String("cmd", actualCmd))
+	if reason := cd.commandMetadataFilter(msg, reg); !reason.Allowed() {
+		cd.logReject("metadata_filter", reason, zap.String("cmd", actualCmd))
 		return
 	}
 
@@ -726,21 +384,19 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	reservation, err := cd.commands.reserve()
 	if err != nil {
 		if errors.Is(err, ErrExecutorCapacity) {
-			L().Warn("Command rejected", zap.String("cmd", actualCmd), zap.String("reason", "capacity"))
+			L().Warn("Command rejected", zap.String("cmd", actualCmd), zap.String("reason", string(ReasonCapacity)))
 			cd.answerBusy(msg)
 		}
 		return
 	}
 	defer reservation.release()
 	if !cd.handleRegistrationRatelimit(msg, reg) {
-		L().Warn("Rate limit exceeded", zap.String("cmd", actualCmd), zap.Int64("chat", msg.ChatID))
+		L().Warn("Rate limit exceeded", zap.String("cmd", actualCmd), zap.String("reason", string(ReasonRateLimit)), zap.Int64("chat", msg.ChatID))
 		return
 	}
 
-	// Grep pipeline check
 	msg = cd.handleGrep(msg)
 
-	// Execute command handler asynchronously when an executor slot is available.
 	release := releaseRegistration
 	message := *msg
 	reservation.start(func(ctx context.Context) {
@@ -771,6 +427,70 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 		}
 	})
 	releaseRegistration = nil
+}
+
+type parsedCommand struct {
+	actualCmd string
+}
+
+// parseCommand is the Parser stage: prefix, layout correction, target, and cmd name.
+func (cd *CommandDispatcher) parseCommand(msg *Message) (parsedCommand, DispatchReason) {
+	prefix := cd.getPrefix(msg.SenderID)
+	translatedPrefix := translateLayout(prefix)
+	msgText := msg.Text
+
+	if strings.HasPrefix(msgText, translatedPrefix) && translatedPrefix != prefix {
+		msgText = translateLayout(msgText)
+	}
+
+	if !strings.HasPrefix(msgText, prefix) {
+		return parsedCommand{}, ReasonNoPrefix
+	}
+
+	if strings.HasPrefix(msgText, prefix+prefix) {
+		if msg.Out {
+			cleaned := msgText[len(prefix):]
+			shouldEdit := false
+			if strings.HasPrefix(cleaned, prefix) {
+				cmdBody := cleaned[len(prefix):]
+				parts := strings.Fields(cmdBody)
+				if len(parts) > 0 {
+					commandName := parts[0]
+					tagParts := strings.Split(commandName, "@")
+					actualCmd := tagParts[0]
+					if cmdNameRegexp.MatchString(actualCmd) {
+						shouldEdit = true
+					}
+				}
+			}
+			if shouldEdit {
+				_, _ = cd.client.EditMessage(ChatRefID(msg.ChatID), msg.ID, cleaned)
+			}
+		}
+		return parsedCommand{}, ReasonDoublePrefix
+	}
+
+	cmdBody := msgText[len(prefix):]
+	parts := strings.Fields(cmdBody)
+	if len(parts) == 0 {
+		return parsedCommand{}, ReasonEmptyText
+	}
+
+	commandName := parts[0]
+	tagParts := strings.Split(commandName, "@")
+
+	if len(tagParts) == 2 {
+		target := strings.ToLower(tagParts[1])
+		if target == "me" {
+			if !msg.Out {
+				return parsedCommand{}, ReasonTargetMismatch
+			}
+		} else if !cd.cachedUsernames[target] {
+			return parsedCommand{}, ReasonTargetMismatch
+		}
+	}
+
+	return parsedCommand{actualCmd: tagParts[0]}, ReasonOK
 }
 
 func (cd *CommandDispatcher) answerBusy(msg *Message) {
@@ -849,8 +569,7 @@ func (cd *CommandDispatcher) handleRegistrationRatelimit(msg *Message, reg *comm
 
 func (cd *CommandDispatcher) handleGrep(msg *Message) *Message {
 	// Parse python grep filters: message text containing `| grep query` or `| grep -v query`
-	re := regexp.MustCompile(`\| ?grep (.+)`)
-	loc := re.FindStringSubmatch(msg.RawText)
+	loc := grepRegexp.FindStringSubmatch(msg.RawText)
 	if len(loc) == 2 {
 		query := strings.TrimSpace(loc[1])
 		invert := false
@@ -859,8 +578,7 @@ func (cd *CommandDispatcher) handleGrep(msg *Message) *Message {
 			query = strings.TrimSpace(query[3:])
 		}
 
-		// Wipe pipeline arguments from message text representation
-		cleaned := re.ReplaceAllString(msg.Text, "")
+		cleaned := grepRegexp.ReplaceAllString(msg.Text, "")
 		msg.Text = cleaned
 		msg.RawText = cleaned
 
@@ -868,16 +586,13 @@ func (cd *CommandDispatcher) handleGrep(msg *Message) *Message {
 		msg.GrepInvert = invert
 	}
 
-	// Parse | cut N — keep first N lines of output
-	reCut := regexp.MustCompile(`\| ?cut (\d+)`)
-	if loc := reCut.FindStringSubmatch(msg.RawText); len(loc) == 2 {
+	if loc := cutRegexp.FindStringSubmatch(msg.RawText); len(loc) == 2 {
 		n, _ := strconv.Atoi(loc[1])
 		msg.CutLines = n
-		msg.Text = reCut.ReplaceAllString(msg.Text, "")
-		msg.RawText = reCut.ReplaceAllString(msg.RawText, "")
+		msg.Text = cutRegexp.ReplaceAllString(msg.Text, "")
+		msg.RawText = cutRegexp.ReplaceAllString(msg.RawText, "")
 	}
 
-	// Parse | split — send output as multiple messages
 	if strings.Contains(msg.RawText, "| split") {
 		msg.SplitOutput = true
 		msg.Text = strings.ReplaceAll(msg.Text, "| split", "")
@@ -939,24 +654,41 @@ func (cd *CommandDispatcher) getBlacklistChats() map[string]bool {
 	return res
 }
 
-// HandleInlineQuery handles incoming MTProto inline queries for the bot
+// HandleInlineQuery acknowledges MTProto bot inline updates.
+// Production inline routing uses the Bot API InlineManager; MTProto bot
+// sessions are not the supported path, so these updates are intentionally ignored.
 func (cd *CommandDispatcher) HandleInlineQuery(query *tg.UpdateBotInlineQuery) {
-	cd.mu.RLock()
-	defer cd.mu.RUnlock()
-	if cd.stopped {
+	if query == nil {
 		return
 	}
-	L().Debug("Received inline query", zap.String("query", query.Query), zap.Int64("user", query.UserID))
-	// Placeholder for routing to inline handlers
+	cd.mu.RLock()
+	stopped := cd.stopped
+	cd.mu.RUnlock()
+	if stopped {
+		return
+	}
+	L().Debug("MTProto inline query ignored",
+		zap.String("reason", "mtproto_inline_unsupported"),
+		zap.String("query", query.Query),
+		zap.Int64("user", query.UserID),
+	)
 }
 
-// HandleCallbackQuery handles incoming MTProto callback queries for the bot
+// HandleCallbackQuery acknowledges MTProto bot callback updates.
+// Production callbacks use the Bot API InlineManager.
 func (cd *CommandDispatcher) HandleCallbackQuery(query *tg.UpdateBotCallbackQuery) {
-	cd.mu.RLock()
-	defer cd.mu.RUnlock()
-	if cd.stopped {
+	if query == nil {
 		return
 	}
-	L().Debug("Received callback query", zap.String("data", string(query.Data)), zap.Int64("user", query.UserID))
-	// Placeholder for routing to callback handlers
+	cd.mu.RLock()
+	stopped := cd.stopped
+	cd.mu.RUnlock()
+	if stopped {
+		return
+	}
+	L().Debug("MTProto callback query ignored",
+		zap.String("reason", "mtproto_callback_unsupported"),
+		zap.String("data", string(query.Data)),
+		zap.Int64("user", query.UserID),
+	)
 }

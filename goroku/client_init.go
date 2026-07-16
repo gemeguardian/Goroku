@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"reflect"
 	"time"
 
 	"goroku/goroku/inline"
@@ -17,11 +16,11 @@ import (
 	"go.uber.org/zap"
 )
 
-func (h *Goroku) initClient(tgID int64, sessionPath string, customModules []Module) (*CustomTelegramClient, error) {
-	return h.initClientContext(context.Background(), tgID, sessionPath, customModules)
+func (h *Goroku) initClient(tgID int64, sessionPath string, factories []ModuleFactory) (*CustomTelegramClient, error) {
+	return h.initClientContext(context.Background(), tgID, sessionPath, factories)
 }
 
-func (h *Goroku) initClientContext(ctx context.Context, tgID int64, sessionPath string, customModules []Module) (*CustomTelegramClient, error) {
+func (h *Goroku) initClientContext(ctx context.Context, tgID int64, sessionPath string, factories []ModuleFactory) (*CustomTelegramClient, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -52,7 +51,7 @@ func (h *Goroku) initClientContext(ctx context.Context, tgID int64, sessionPath 
 	client.APIHash = h.APIHash
 	client.SessionPath = sessionPath
 	client.GorokuDB = db
-	db.client = client
+	client.Web = h.Web
 
 	connect := h.connectClient
 	if connect == nil {
@@ -68,16 +67,24 @@ func (h *Goroku) initClientContext(ctx context.Context, tgID int64, sessionPath 
 
 	loader := NewModules(client, db)
 	client.Loader = loader
+	// Wire narrow DB hooks only after loader exists (no Database -> full client).
+	db.AttachRuntime(loader, loader, newTelegramAssetTransport(client))
 
 	inlineMgr := inline.NewInlineManager(client, db, NewInlineModulesAdapter(loader))
 	client.GorokuInline = inlineMgr
 
-	h.registerBuiltInModules(loader)
-	for _, mod := range customModules {
+	for _, factory := range factories {
 		if err := ctx.Err(); err != nil {
 			return nil, errors.Join(err, h.cleanupUnregisteredRuntime(client, loader, db))
 		}
-		if err := loader.RegisterModule(cloneModule(mod)); err != nil {
+		if factory == nil {
+			continue
+		}
+		mod := factory()
+		if mod == nil {
+			continue
+		}
+		if err := loader.RegisterModule(mod); err != nil {
 			L().Error("Failed to register module", zap.String("module", mod.Name()), zap.Error(err))
 		}
 	}
@@ -239,17 +246,6 @@ func (h *Goroku) removeAndShutdownRuntime(ctx context.Context, client *CustomTel
 	return cleanupErr
 }
 
-func cloneModule(mod Module) Module {
-	if mod == nil {
-		return nil
-	}
-	t := reflect.TypeOf(mod)
-	if t.Kind() == reflect.Ptr {
-		return reflect.New(t.Elem()).Interface().(Module)
-	}
-	return reflect.New(t).Interface().(Module)
-}
-
 func (h *Goroku) sendBadge(client *CustomTelegramClient, db *Database) {
 	me, err := client.GetMe()
 	if err != nil {
@@ -280,10 +276,6 @@ func (h *Goroku) sendBadge(client *CustomTelegramClient, db *Database) {
 	)
 
 	_, _ = client.SendMessage(ChatRefID(client.TGID), msg)
-}
-
-func (h *Goroku) registerBuiltInModules(loader *Modules) {
-	// Built-in modules registration
 }
 
 func GenerateAppName() string {

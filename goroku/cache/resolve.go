@@ -32,7 +32,12 @@ func TelegramChannelChatID(channelID int64) int64 {
 	return -1000000000000 - channelID
 }
 
-// NormalizeEntityCacheKey converts peers, IDs, and usernames into a typed key.
+// legacyEntity is implemented by chatref.ChatRef (and aliases EntityRef/UserRef/ChannelRef).
+type legacyEntity interface {
+	AsLegacy() any
+}
+
+// NormalizeEntityCacheKey converts peers, IDs, usernames, ChatRef, and EntityCacheKey into a typed key.
 func NormalizeEntityCacheKey(entity any) EntityCacheKey {
 	switch v := entity.(type) {
 	case string:
@@ -50,7 +55,12 @@ func NormalizeEntityCacheKey(entity any) EntityCacheKey {
 	case tg.InputPeerClass:
 		return peerCacheKey(v)
 	case EntityCacheKey:
-		return v
+		if v.Username != "" {
+			return EntityCacheKey{Username: strings.ToLower(strings.TrimPrefix(v.Username, "@"))}
+		}
+		return EntityCacheKey{ID: normalizeID(v.ID)}
+	case legacyEntity:
+		return NormalizeEntityCacheKey(v.AsLegacy())
 	}
 	return EntityCacheKey{}
 }

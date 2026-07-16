@@ -111,7 +111,29 @@ func TestGetEntityCached(t *testing.T) {
 	}
 	peer, ok := res.(*tg.InputPeerUser)
 	if !ok || peer.UserID != 123 {
-		t.Fatalf("expected cached user, got %v", res)
+		t.Fatalf("expected cached user, got %T %v", res, res)
+	}
+
+	// TTL=0 accepts expired cache entries (unified semantics).
+	client.GorokuEntityCache[cache.NormalizeEntityCacheKey(123)] = cache.CacheRecordEntity{
+		Entity: &tg.InputPeerUser{UserID: 123},
+		Exp:    time.Now().Unix() - 10,
+	}
+	res, err = client.GetEntity(int64(123), 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peer, ok = res.(*tg.InputPeerUser); !ok || peer.UserID != 123 {
+		t.Fatalf("TTL=0 should return expired cache entry, got %v", res)
+	}
+
+	// ChatRef / EntityRef path
+	res, err = client.GetEntityRef(ChatRefID(123), 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peer, ok = res.(*tg.InputPeerUser); !ok || peer.UserID != 123 {
+		t.Fatalf("GetEntityRef failed: %v", res)
 	}
 
 	// Force resolve calling resolvePeer
@@ -140,8 +162,7 @@ func TestGetFullUserCached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fu, ok := res.(*tg.UsersUserFull)
-	if !ok || fu.FullUser.About != "about user" {
+	if res == nil || res.FullUser.About != "about user" {
 		t.Fatalf("expected cached full user, got %v", res)
 	}
 
@@ -169,8 +190,7 @@ func TestGetFullUserCached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fu2, ok := res2.(*tg.UsersUserFull)
-	if !ok || fu2.FullUser.About != "retrieved user" {
+	if res2 == nil || res2.FullUser.About != "retrieved user" {
 		t.Fatalf("expected retrieved user, got %v", res2)
 	}
 }
@@ -193,8 +213,7 @@ func TestGetFullChannelCached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cf, ok := res.(*tg.MessagesChatFull)
-	if !ok || cf.FullChat.(*tg.ChannelFull).About != "about chan" {
+	if res == nil || res.FullChat.(*tg.ChannelFull).About != "about chan" {
 		t.Fatalf("expected cached channel, got %v", res)
 	}
 
@@ -220,8 +239,7 @@ func TestGetFullChannelCached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cf2, ok := res2.(*tg.MessagesChatFull)
-	if !ok || cf2.FullChat.(*tg.ChannelFull).About != "retrieved chan" {
+	if res2 == nil || res2.FullChat.(*tg.ChannelFull).About != "retrieved chan" {
 		t.Fatalf("expected retrieved chan, got %v", res2)
 	}
 }
@@ -264,12 +282,11 @@ func TestGetPermsCachedDirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, ok := res2.(map[string]any)
+	m, ok := res2.(cache.PrivateChatPerms)
 	if !ok {
-		t.Fatalf("expected map[string]any, got %T", res2)
+		t.Fatalf("expected PrivateChatPerms, got %T", res2)
 	}
-	isPrivate, exists := m["is_private"].(bool)
-	if !exists || !isPrivate {
+	if !m.IsPrivate {
 		t.Fatalf("expected is_private=true perms, got %v", res2)
 	}
 }

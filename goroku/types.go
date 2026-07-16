@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sync"
 	"time"
 
@@ -19,6 +20,11 @@ import (
 )
 
 var _ = logger.L
+
+// Compile-time consumer-port assertions (M7.2).
+var (
+	_ webiface.TelegramClient = (*CustomTelegramClient)(nil)
+)
 
 type Message struct {
 	ID           int64
@@ -80,8 +86,10 @@ type RegisteredWatcher struct {
 	Handler    WatcherHandler
 	ModuleName string
 	Meta       CommandMeta
-	ownerKey   string
-	lease      *moduleLease
+	// regex is compiled once at registration from Meta.Regex.
+	regex    *regexp.Regexp
+	ownerKey string
+	lease    *moduleLease
 }
 
 type Module interface {
@@ -94,6 +102,10 @@ type Module interface {
 	Commands() map[string]CommandHandler
 	Watchers() []WatcherHandler
 }
+
+// ModuleFactory constructs a fresh Module instance for one client.
+// Factories replace reflect-based cloning so each client owns independent state.
+type ModuleFactory func() Module
 
 type CommandMeta struct {
 	OnlyPM       bool
@@ -162,6 +174,15 @@ type ModuleWithWatcherMetas interface {
 	WatcherMetas() []CommandMeta
 }
 
+// WebRuntime is the narrow web control surface modules use (no package global).
+type WebRuntime interface {
+	Port() int
+	Stop()
+	StartAsync(port int, proxyPass bool)
+	GetURL(proxyPass bool) string
+	ApproveWebAuth(token string) bool
+}
+
 type CustomTelegramClient struct {
 	APIID                  int64
 	APIHash                string
@@ -178,6 +199,7 @@ type CustomTelegramClient struct {
 	GorokuDB               *Database
 	Loader                 *Modules
 	GorokuInline           inlineiface.InlineManager // assigned by goroku package via *inline.InlineManager
+	Web                    WebRuntime
 	phoneCodeHash          string
 	qrLoginSignal          <-chan struct{}
 	SessionPath            string
@@ -338,6 +360,11 @@ type MsgOption func(req any)
 
 // ChatRef is a re-export of the chatref package type for convenience.
 type ChatRef = chatref.ChatRef
+
+// EntityRef / UserRef / ChannelRef re-export chatref aliases for cache callers.
+type EntityRef = chatref.EntityRef
+type UserRef = chatref.UserRef
+type ChannelRef = chatref.ChannelRef
 
 // ChatRefID builds a reference from a numeric chat/user/channel ID.
 func ChatRefID(id int64) ChatRef { return chatref.ID(id) }

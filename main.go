@@ -68,27 +68,27 @@ func run() error {
 		}
 	}
 
-	app := goroku.NewApp([]goroku.Module{
-		&modules.APIProtection{},
-		&modules.Eval{},
-		&modules.Help{},
-		&modules.GorokuBackup{},
-		&modules.GorokuConfig{},
-		&modules.GorokuInfo{},
-		&modules.GorokuPluginSecurity{},
-		&modules.GorokuSecurity{},
-		&modules.GorokuSettings{},
-		&modules.GorokuWeb{},
-		&modules.InlineStuff{},
-		&modules.LoaderModule{},
-		&modules.Presets{},
-		&modules.Quickstart{},
-		&modules.SettingsModule{},
-		&modules.TerminalMod{},
-		&modules.Test{},
-		&modules.Translate{},
-		&modules.TranslationsModule{},
-		&modules.Updater{},
+	app := goroku.NewApp([]goroku.ModuleFactory{
+		func() goroku.Module { return &modules.APIProtection{} },
+		func() goroku.Module { return &modules.Eval{} },
+		func() goroku.Module { return &modules.Help{} },
+		func() goroku.Module { return &modules.GorokuBackup{} },
+		func() goroku.Module { return &modules.GorokuConfig{} },
+		func() goroku.Module { return &modules.GorokuInfo{} },
+		func() goroku.Module { return &modules.GorokuPluginSecurity{} },
+		func() goroku.Module { return &modules.GorokuSecurity{} },
+		func() goroku.Module { return &modules.GorokuSettings{} },
+		func() goroku.Module { return &modules.GorokuWeb{} },
+		func() goroku.Module { return &modules.InlineStuff{} },
+		func() goroku.Module { return &modules.LoaderModule{} },
+		func() goroku.Module { return &modules.Presets{} },
+		func() goroku.Module { return &modules.Quickstart{} },
+		func() goroku.Module { return &modules.SettingsModule{} },
+		func() goroku.Module { return &modules.TerminalMod{} },
+		func() goroku.Module { return &modules.Test{} },
+		func() goroku.Module { return &modules.Translate{} },
+		func() goroku.Module { return &modules.TranslationsModule{} },
+		func() goroku.Module { return &modules.Updater{} },
 	})
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

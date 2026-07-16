@@ -61,7 +61,7 @@
 
 ### VPS/VDS
 > **Note for VPS/VDS Users:**  
-> Add `--ssh-tunnel` to explicitly enable SSH tunneling
+> Add `--ssh-tunnel` to expose the web panel via SSH reverse tunnel (not an MTProto proxy)  
 > Add `--no-web` for console-only setup  
 > Add `--root` for root users (to avoid entering force_insecure)
 <details> <summary><b>Ubuntu / Debian</b></summary>
@@ -118,6 +118,45 @@ The current CLI stores configuration, per-account JSON databases, and session
 files directly in the selected data root. It does not currently create separate
 `sessions/` or `database/` directories.
 
+### CLI flags (product contract)
+
+| Flag | Behavior |
+|------|----------|
+| `--port` | Web panel port (default `8080`) |
+| `--no-web` | Console-only: no web dashboard |
+| `--no-git` | Disable git operations (`GOROKU_NO_GIT=1`) |
+| `--data-root` | Writable runtime root for config/sessions/modules |
+| `--ssh-tunnel` | Publish web panel via SSH reverse tunnel (default off) |
+| `--qr-login` | With `--no-web`, start CLI QR login without the y/N prompt |
+| `--no-auth` | With `--no-web`, skip interactive CLI login when no sessions exist |
+| `--sandbox` | Disable process restarts after lifecycle restart requests |
+| `--root` | Allow running as root (checked in `main`) |
+| `--proxy-host` / `--proxy-port` / `--proxy-secret` | MTProto proxy (all three required together; secret is hex) |
+| `--proxy-pass` | **Deprecated alias** for `--proxy-secret` — **not** SSH tunnel |
+
+Web binds to `127.0.0.1` by default (`GOROKU_IP` / Docker may override).
+
+### Ops / health
+
+When the web panel is enabled:
+
+- `GET /health` — JSON: `status`, `clients`, `setup_completed` (no secrets)
+- `GET /healthz` — liveness (`ok`)
+- `GET /readyz` — readiness (`ok`; onboarding without a Telegram session is still ready)
+
+Full operations dashboard (module trust UI, sanitized log browser, update UI) is **not** shipped yet.
+
+### Docs
+
+| Doc | Contents |
+|-----|----------|
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | Build, first run, production layout |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | High-level code map |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Run, health, backup, restart, Docker |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Flags, env, data-root files |
+| [docs/RELEASE.md](docs/RELEASE.md) | Version ldflags, manual / GoReleaser |
+| [SECURITY.md](SECURITY.md) | Threat model lite + secret rotation (M0.1) |
+
 ### Other
 <details>
   <summary><b>Phone (Termux / Userland)</b></summary>
@@ -162,8 +201,16 @@ files directly in the selected data root. It does not currently create separate
 | 🎨 **UI/UX Improvements** | Modern interface and user experience |
 | 📦 **Core Modules** | Improved and new core functionality |
 | ⏱ **Rapid Bug Fixes** | Faster resolution than Hikka/Heroku/FTG/GeekTG |
-| 🔄 **Backward Compatibility** | Works with FTG, GeekTG and Hikka modules |
+| 🔌 **Go plugins + Yaegi** | Native Go plugins (`.dlmod` / `.loadmod`) and in-process Yaegi `.eval` — **not** a Python module runtime |
 | ▶️ **Inline Elements** | Forms, galleries and lists support |
+
+### Module compatibility (honest)
+
+Goroku is a **Go** userbot. It does **not** load Python Hikka / FTG / GeekTG modules.
+
+- **Native Go plugins**: install/load via owner commands; unsigned installs need `-confirm` or a trusted content SHA-256.
+- **Yaegi `.eval`**: owner-only, in-process; timeout does not cancel running code.
+- **Semantic familiarity**: command style and UX are inspired by Heroku/Hikka; that is **not** binary or Python import compatibility.
 
 ---
 
@@ -171,6 +218,27 @@ files directly in the selected data root. It does not currently create separate
 
 - **Go 1.24.4+** (see `go.mod`)
 - **API Credentials** from [Telegram Apps](https://my.telegram.org/apps)
+
+---
+
+## 🧪 Development / CI tests
+
+Critical race suites (M9.4):
+
+```bash
+export TMPDIR=/root/.cache/go-tmp   # large temp dir recommended for -race
+bash scripts/test-critical.sh
+# packages: ./goroku/ ./goroku/web/ ./goroku/inline/ ./goroku/modules/
+```
+
+Package parity (M9.1) and full suite:
+
+```bash
+bash scripts/check-package-parity.sh
+go test -race ./...
+```
+
+Coverage policy and security-check residuals: [docs/CI.md](docs/CI.md). Soft project coverage floor in CI is **20%** (not a quality target).
 
 ---
 

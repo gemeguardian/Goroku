@@ -13,6 +13,16 @@ type ChatRef struct {
 	peer     tg.InputPeerClass
 }
 
+// EntityRef is the preferred name for a generic peer/entity reference (M7).
+// It is an alias of ChatRef so cache and client APIs share one concrete type.
+type EntityRef = ChatRef
+
+// UserRef is a ChatRef that callers intend as a user identity.
+type UserRef = ChatRef
+
+// ChannelRef is a ChatRef that callers intend as a channel/supergroup identity.
+type ChannelRef = ChatRef
+
 // ID builds a reference from a numeric chat/user/channel ID.
 func ID(id int64) ChatRef { return ChatRef{id: id} }
 

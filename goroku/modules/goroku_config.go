@@ -239,6 +239,13 @@ func answerConfigMessageWriteResult(msg *goroku.Message, err error) error {
 }
 
 func canonicalConfigOption(mod goroku.Module, option string) (string, bool) {
+	if withSchema, ok := mod.(goroku.ModuleWithConfigSchema); ok {
+		for _, field := range withSchema.ConfigSchema() {
+			if strings.EqualFold(field.Key, option) {
+				return field.Key, true
+			}
+		}
+	}
 	if withConfig, ok := mod.(goroku.ModuleWithConfig); ok {
 		for k := range withConfig.ConfigDefaults() {
 			if strings.EqualFold(k, option) {
@@ -442,6 +449,13 @@ func (m *GorokuConfig) getDefaultValue(modName, key string) any {
 	loader := m.client.Loader
 	if loader != nil {
 		if mod := loader.LookupByName(modName); mod != nil {
+			if withSchema, ok := mod.(goroku.ModuleWithConfigSchema); ok {
+				for _, field := range withSchema.ConfigSchema() {
+					if strings.EqualFold(field.Key, key) {
+						return field.Default
+					}
+				}
+			}
 			if withConfig, ok := mod.(goroku.ModuleWithConfig); ok {
 				for cfgKey, value := range withConfig.ConfigDefaults() {
 					if strings.EqualFold(cfgKey, key) {
@@ -1899,6 +1913,14 @@ func (m *GorokuConfig) getValidator(modName, option string) goroku.Validator {
 	if m.client != nil && m.client.Loader != nil {
 		if loader := m.client.Loader; loader != nil {
 			if targetMod := loader.LookupByName(modName); targetMod != nil {
+				if withSchema, ok := targetMod.(goroku.ModuleWithConfigSchema); ok {
+					validators := goroku.SchemaValidators(withSchema.ConfigSchema())
+					for k, v := range validators {
+						if strings.ToLower(k) == option {
+							return v
+						}
+					}
+				}
 				if withValidators, ok := targetMod.(goroku.ModuleWithConfigValidators); ok {
 					for k, v := range withValidators.ConfigValidators() {
 						if strings.ToLower(k) == option {
@@ -1928,27 +1950,34 @@ func (m *GorokuConfig) getValidator(modName, option string) goroku.Validator {
 }
 
 func (m *GorokuConfig) isOptionHidden(modName, option string) bool {
-	val := m.getValidator(modName, option)
-	if val != nil {
-		if _, ok := val.(*goroku.HiddenValidator); ok {
-			return true
-		}
-	}
-	return false
+	return goroku.IsSecretValidator(m.getValidator(modName, option))
 }
 
 func (m *GorokuConfig) validateConfig(modName, option string, value any) (any, error) {
 	modName = strings.ToLower(modName)
 	option = strings.ToLower(option)
+	value = goroku.NormalizeConfigValue(value)
 	if val := m.getValidator(modName, option); val != nil {
-		return val.Validate(value)
+		out, err := val.Validate(value)
+		if err != nil {
+			return nil, goroku.NewConfigError(modName, option, err)
+		}
+		return out, nil
 	}
 	defVal := m.getDefaultValue(modName, option)
 	switch defVal.(type) {
 	case bool:
-		return (&goroku.BooleanValidator{}).Validate(value)
+		out, err := (&goroku.BooleanValidator{}).Validate(value)
+		if err != nil {
+			return nil, goroku.NewConfigError(modName, option, err)
+		}
+		return out, nil
 	case int, int64:
-		return (&goroku.IntegerValidator{}).Validate(value)
+		out, err := (&goroku.IntegerValidator{}).Validate(value)
+		if err != nil {
+			return nil, goroku.NewConfigError(modName, option, err)
+		}
+		return out, nil
 	}
 	return value, nil
 }

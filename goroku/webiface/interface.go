@@ -35,13 +35,3 @@ type InlineProvider interface {
 type Database interface {
 	Get(owner, key string, defaultValue any) (any, error)
 }
-
-// Modules is the subset of *goroku.Modules used by the web package.
-type Modules interface {
-	GetModule(name string) (Module, bool)
-}
-
-// Module is the subset of goroku.Module used by the web package.
-type Module interface {
-	Name() string
-}

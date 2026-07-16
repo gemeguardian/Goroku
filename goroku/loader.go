@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -25,12 +26,14 @@ type moduleLeaseContext struct {
 }
 
 type commandRegistration struct {
-	Name          string
-	Handler       CommandHandler
-	Owner         Module
-	OwnerName     string
-	ownerKey      string
-	Meta          CommandMeta
+	Name      string
+	Handler   CommandHandler
+	Owner     Module
+	OwnerName string
+	ownerKey  string
+	Meta      CommandMeta
+	// regex is compiled once at registration from Meta.Regex.
+	regex         *regexp.Regexp
 	Permission    int
 	hasPermission bool
 	Ratelimited   bool
@@ -158,17 +161,16 @@ func (m *Modules) StopModuleLoops(moduleName string) {
 	}
 }
 
+// RegisterModule lifecycle (per client):
+// inject deps → Init → ConfigReady → prepare → validate → bindLegacyMaskOwners → atomic commit.
+// ClientReady runs later via SendReady. Any error before commit cleans up and keeps
+// the module invisible to the dispatcher.
 func (m *Modules) RegisterModule(mod Module) error {
 	if mod == nil {
 		return fmt.Errorf("module is nil")
 	}
 	ownerName := mod.Name()
 	name := strings.ToLower(ownerName)
-	lease := newModuleLease()
-	prepared, err := prepareModuleRegistration(mod, ownerName, name, lease)
-	if err != nil {
-		return err
-	}
 
 	m.mu.Lock()
 	if m.closed {
@@ -192,11 +194,7 @@ func (m *Modules) RegisterModule(mod Module) error {
 			return fmt.Errorf("module %s: %w", name, ErrModuleUnloadInProgress)
 		}
 	}
-	if err := m.validateRegistrationLocked(prepared); err != nil {
-		m.mu.Unlock()
-		return err
-	}
-	m.reserveRegistrationLocked(name, prepared)
+	m.pendingModules[name] = struct{}{}
 	m.mu.Unlock()
 
 	if withAllModules, ok := mod.(ModuleWithAllModules); ok {
@@ -205,21 +203,52 @@ func (m *Modules) RegisterModule(mod Module) error {
 	if withTranslator, ok := mod.(ModuleWithTranslator); ok {
 		withTranslator.SetTranslator(NewTranslator(m.client, m.db))
 	}
-	if err := m.loadModuleConfig(mod); err != nil {
-		m.mu.Lock()
-		m.releaseReservationLocked(name, prepared)
-		m.mu.Unlock()
-		return fmt.Errorf("failed to prepare config for module %s: %w", name, err)
-	}
 
-	err = mod.Init(m.client, m.db)
-	if err != nil {
+	if err := mod.Init(m.client, m.db); err != nil {
 		initErr := fmt.Errorf("failed to init module %s: %w", name, err)
-		if cleanupErr := m.failRegistration(name, prepared, mod); cleanupErr != nil {
+		if cleanupErr := m.failRegistration(name, nil, mod); cleanupErr != nil {
 			return errors.Join(initErr, fmt.Errorf("failed to clean up module %s: %w", name, cleanupErr))
 		}
 		return initErr
 	}
+
+	if err := m.loadModuleConfig(mod); err != nil {
+		configErr := fmt.Errorf("failed to prepare config for module %s: %w", name, err)
+		if cleanupErr := m.failRegistration(name, nil, mod); cleanupErr != nil {
+			return errors.Join(configErr, fmt.Errorf("failed to clean up module %s: %w", name, cleanupErr))
+		}
+		return configErr
+	}
+
+	lease := newModuleLease()
+	prepared, err := prepareModuleRegistration(mod, ownerName, name, lease)
+	if err != nil {
+		if cleanupErr := m.failRegistration(name, nil, mod); cleanupErr != nil {
+			return errors.Join(err, fmt.Errorf("failed to clean up module %s: %w", name, cleanupErr))
+		}
+		return err
+	}
+
+	m.mu.Lock()
+	if m.closed {
+		m.releaseReservationLocked(name, prepared)
+		m.mu.Unlock()
+		closedErr := errors.New("modules are shut down")
+		if cleanupErr := m.cleanupFailedModule(name, mod); cleanupErr != nil {
+			return errors.Join(closedErr, fmt.Errorf("failed to clean up module %s: %w", name, cleanupErr))
+		}
+		return closedErr
+	}
+	if err := m.validateRegistrationLocked(prepared); err != nil {
+		m.releaseReservationLocked(name, prepared)
+		m.mu.Unlock()
+		if cleanupErr := m.cleanupFailedModule(name, mod); cleanupErr != nil {
+			return errors.Join(err, fmt.Errorf("failed to clean up module %s: %w", name, cleanupErr))
+		}
+		return err
+	}
+	m.reserveRegistrationLocked(name, prepared)
+	m.mu.Unlock()
 
 	// Database owner normalization may consult GetModules, so legacy binding
 	// must run while only the namespace reservation, not m.mu, is held.
@@ -369,6 +398,9 @@ func (m *Modules) reserveRegistrationLocked(name string, prepared *preparedModul
 
 func (m *Modules) releaseReservationLocked(name string, prepared *preparedModuleRegistration) {
 	delete(m.pendingModules, name)
+	if prepared == nil {
+		return
+	}
 	for _, reg := range prepared.commands {
 		delete(m.pendingCommands, reg.Name)
 	}
@@ -436,6 +468,10 @@ func prepareModuleRegistration(mod Module, ownerName, ownerKey string, lease *mo
 			ratelimited = limited
 		}
 		handler := commands[sourceName]
+		compiled, err := compileMetaRegex(meta, "command "+name)
+		if err != nil {
+			return nil, err
+		}
 		reg := &commandRegistration{
 			Name: name,
 			Handler: func(msg *Message) error {
@@ -445,6 +481,7 @@ func prepareModuleRegistration(mod Module, ownerName, ownerKey string, lease *mo
 			OwnerName:     ownerName,
 			ownerKey:      ownerKey,
 			Meta:          meta,
+			regex:         compiled,
 			Permission:    permission,
 			hasPermission: hasPermission,
 			Ratelimited:   ratelimited,
@@ -481,6 +518,10 @@ func prepareModuleRegistration(mod Module, ownerName, ownerKey string, lease *mo
 		if i < len(watcherMetas) {
 			meta = cloneCommandMeta(watcherMetas[i])
 		}
+		compiled, err := compileMetaRegex(meta, fmt.Sprintf("watcher %s[%d]", ownerName, i))
+		if err != nil {
+			return nil, err
+		}
 		handler := watcher
 		prepared.watchers = append(prepared.watchers, RegisteredWatcher{
 			Handler: func(msg *Message) error {
@@ -488,6 +529,7 @@ func prepareModuleRegistration(mod Module, ownerName, ownerKey string, lease *mo
 			},
 			ModuleName: ownerName,
 			Meta:       meta,
+			regex:      compiled,
 			ownerKey:   ownerKey,
 			lease:      lease,
 		})
@@ -600,28 +642,36 @@ func (m *Modules) loadModuleConfig(mod Module) error {
 	moduleName := mod.Name()
 	config := make(map[string]any)
 	defaults := make(map[string]any)
-	if withConfig, ok := mod.(ModuleWithConfig); ok {
-		for key, value := range withConfig.ConfigDefaults() {
-			current, err := m.db.Get(moduleName, key, nil)
-			if err != nil {
-				return fmt.Errorf("read config key %s: %w", key, err)
-			}
-			if current == nil {
-				defaults[key] = value
-				config[key] = value
-			} else {
-				config[key] = current
-			}
+
+	// Prefer typed schema when present; fall back to ConfigDefaults.
+	var defaultMap map[string]any
+	if withSchema, ok := mod.(ModuleWithConfigSchema); ok {
+		defaultMap = SchemaDefaults(withSchema.ConfigSchema())
+	} else if withConfig, ok := mod.(ModuleWithConfig); ok {
+		defaultMap = withConfig.ConfigDefaults()
+	}
+
+	for key, value := range defaultMap {
+		current, err := m.db.Get(moduleName, key, nil)
+		if err != nil {
+			return NewConfigError(moduleName, key, fmt.Errorf("read: %w", err))
+		}
+		if current == nil {
+			defaults[key] = value
+			config[key] = value
+		} else {
+			config[key] = NormalizeConfigValue(current)
 		}
 	}
 	if len(defaults) > 0 {
 		if err := m.db.Update(map[string]map[string]any{moduleName: defaults}); err != nil {
-			return err
+			return NewConfigError(moduleName, "", fmt.Errorf("persist defaults: %w", err))
 		}
 	}
+	config = NormalizeConfigMap(config)
 	if ready, ok := mod.(ModuleWithConfigReady); ok {
 		if err := ready.ConfigReady(config); err != nil {
-			return fmt.Errorf("ConfigReady failed: %w", err)
+			return NewConfigError(moduleName, "", fmt.Errorf("ConfigReady: %w", err))
 		}
 	}
 	return nil
@@ -792,31 +842,42 @@ func (m *Modules) RemoveAlias(alias string) bool {
 }
 
 func (m *Modules) SendReady() {
+	type readyJob struct {
+		mod   Module
+		lease *moduleLease
+	}
+
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	if m.closed {
+		m.mu.RUnlock()
 		return
 	}
+	names := make([]string, 0, len(m.modules))
+	for name := range m.modules {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	jobs := make([]readyJob, 0, len(names))
+	for _, name := range names {
+		jobs = append(jobs, readyJob{mod: m.modules[name], lease: m.leases[name]})
+	}
+	inline := m.client.GorokuInline
+	m.mu.RUnlock()
 
-	if m.client.GorokuInline != nil {
-		go func() {
-			if err := m.client.GorokuInline.RegisterManager(false, false); err != nil {
-				L().Error("Error registering inline manager", zap.Error(err))
-			}
-		}()
+	if inline != nil {
+		if err := inline.RegisterManager(false, false); err != nil {
+			L().Error("Error registering inline manager", zap.Error(err))
+		}
 	}
 
-	for name, mod := range m.modules {
-		lease := m.leases[name]
-		if lease == nil || !lease.acquire() {
+	for _, job := range jobs {
+		if job.lease == nil || !job.lease.acquire() {
 			continue
 		}
-		go func(o Module, release func()) {
-			defer release()
-			if err := o.ClientReady(); err != nil {
-				L().Error("Error calling ClientReady", zap.String("module", o.Name()), zap.Error(err))
-			}
-		}(mod, lease.release)
+		if err := job.mod.ClientReady(); err != nil {
+			L().Error("Error calling ClientReady", zap.String("module", job.mod.Name()), zap.Error(err))
+		}
+		job.lease.release()
 	}
 }
 

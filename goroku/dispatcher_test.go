@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -584,5 +585,109 @@ func TestDispatcherBusyResponseBypassesPipeline(t *testing.T) {
 	}
 	if dispatcher.commands.Active() != 1 {
 		t.Fatalf("busy response changed active commands to %d", dispatcher.commands.Active())
+	}
+}
+
+func TestPipelineSharedMetadataPredicates(t *testing.T) {
+	msgPM := &Message{RawText: "hello", IsPrivate: true, SenderID: 7, ChatID: 7}
+	msgGroup := &Message{RawText: "hello", IsGroup: true, SenderID: 7, ChatID: -1}
+
+	if reason := matchMetadata(msgPM, CommandMeta{OnlyPM: true}, metaFilterOptions{}); !reason.Allowed() {
+		t.Fatalf("OnlyPM private: %s", reason)
+	}
+	if reason := matchMetadata(msgGroup, CommandMeta{OnlyPM: true}, metaFilterOptions{}); reason != ReasonOnlyPM {
+		t.Fatalf("OnlyPM group reason = %s, want %s", reason, ReasonOnlyPM)
+	}
+
+	// Command path: OnlyOwner + reply tags
+	if reason := matchMetadata(msgPM, CommandMeta{OnlyOwner: true}, metaFilterOptions{applyOwner: true, isOwner: false}); reason != ReasonOnlyOwner {
+		t.Fatalf("OnlyOwner deny reason = %s", reason)
+	}
+	if reason := matchMetadata(msgPM, CommandMeta{OnlyReply: true}, metaFilterOptions{applyReply: true}); reason != ReasonOnlyReply {
+		t.Fatalf("OnlyReply deny reason = %s", reason)
+	}
+
+	// Watcher path: NoCommands / OnlyCommands
+	if reason := matchMetadata(msgPM, CommandMeta{NoCommands: true}, metaFilterOptions{applyCommandOnly: true, isCommand: true}); reason != ReasonNoCommands {
+		t.Fatalf("NoCommands reason = %s", reason)
+	}
+	if reason := matchMetadata(msgPM, CommandMeta{OnlyCommands: true}, metaFilterOptions{applyCommandOnly: true, isCommand: false}); reason != ReasonOnlyCommands {
+		t.Fatalf("OnlyCommands reason = %s", reason)
+	}
+}
+
+func TestPipelinePrecompiledRegexAtRegistration(t *testing.T) {
+	modules := newInitializedTestModules(t)
+	module := &registrationTestModule{
+		name:     "regexmod",
+		commands: map[string]CommandHandler{"rx": testHandler("rx")},
+		metas:    map[string]CommandMeta{"rx": {Regex: `^ping\d+$`}},
+		watchers: []WatcherHandler{func(*Message) error { return nil }},
+		watcherMeta: []CommandMeta{
+			{Regex: `^watch\d+$`},
+		},
+	}
+	if err := modules.RegisterModule(module); err != nil {
+		t.Fatal(err)
+	}
+	reg, ok := modules.resolveCommand("rx")
+	if !ok || reg.regex == nil {
+		t.Fatal("command regex was not compiled at registration")
+	}
+	watchers := modules.GetWatchers()
+	if len(watchers) != 1 || watchers[0].regex == nil {
+		t.Fatal("watcher regex was not compiled at registration")
+	}
+
+	db := modules.db
+	client := modules.client
+	cd := NewCommandDispatcher(modules, client, db)
+
+	if reason := cd.commandMetadataFilter(&Message{RawText: "ping42", IsPrivate: true, SenderID: client.TGID}, reg); !reason.Allowed() {
+		t.Fatalf("precompiled command regex should match: %s", reason)
+	}
+	if reason := cd.commandMetadataFilter(&Message{RawText: "pong", IsPrivate: true, SenderID: client.TGID}, reg); reason != ReasonRegex {
+		t.Fatalf("precompiled command regex miss reason = %s", reason)
+	}
+	if reason := cd.watcherMetadataFilter(&Message{RawText: "watch9"}, watchers[0]); !reason.Allowed() {
+		t.Fatalf("precompiled watcher regex should match: %s", reason)
+	}
+}
+
+func TestPipelineRejectsInvalidRegexAtRegistration(t *testing.T) {
+	modules := newInitializedTestModules(t)
+	err := modules.RegisterModule(&registrationTestModule{
+		name:     "badregex",
+		commands: map[string]CommandHandler{"bad": testHandler("bad")},
+		metas:    map[string]CommandMeta{"bad": {Regex: `(`}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid regex") {
+		t.Fatalf("expected invalid regex registration error, got %v", err)
+	}
+}
+
+func TestPipelineChatPolicyReasons(t *testing.T) {
+	db := initializedTestDatabase(t, NewDatabase(42))
+	client := NewCustomTelegramClient(42)
+	modules := NewModules(client, db)
+	cd := NewCommandDispatcher(modules, client, db)
+
+	_ = db.Set("goroku.main", "blacklist_chats", []string{"-100"})
+	reason, _, _ := cd.chatPolicy(&Message{ChatID: -100})
+	if reason != ReasonBlacklistChat {
+		t.Fatalf("blacklist reason = %s", reason)
+	}
+
+	_ = db.Set("goroku.main", "blacklist_chats", []string{})
+	_ = db.Set("goroku.main", "whitelist_chats", []int64{1})
+	reason, blacklist, chatStr := cd.chatPolicy(&Message{ChatID: 2})
+	if reason != ReasonWhitelistChat {
+		t.Fatalf("whitelist reason = %s", reason)
+	}
+	if r := cd.moduleChatPolicy(chatStr, "mod", blacklist, []string{"1.mod"}); r != ReasonWhitelistModule {
+		t.Fatalf("module whitelist reason = %s", r)
+	}
+	if r := cd.moduleChatPolicy("1", "mod", map[string]bool{"1.mod": true}, nil); r != ReasonBlacklistModule {
+		t.Fatalf("module blacklist reason = %s", r)
 	}
 }

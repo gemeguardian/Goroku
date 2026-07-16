@@ -14,12 +14,10 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"goroku/goroku/utils"
 
-	"github.com/gotd/td/tg"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
@@ -99,40 +97,36 @@ func committedDatabaseError(operation, owner, key, backend string, cause error) 
 	}
 }
 
+// Database is the public document + asset façade.
+// DocumentStore holds KV/JSON/Redis state; AssetRepository handles Telegram assets.
 type Database struct {
-	mu          sync.RWMutex
-	persistMu   sync.Mutex
-	redisClient *redis.Client
-	dbFile      string
-	tgID        int64
-	data        map[string]map[string]any
-	revisions   []map[string]map[string]any
-	client      *CustomTelegramClient
-	assetClient databaseAssetClient
-	// Redis batching: mirrors Python's asyncio.sleep(5) before redis save
-	redisDirty    bool
-	generation    uint64
-	lastRedisSave int64
-	flushCancel   context.CancelFunc
-	flushDone     chan struct{}
-	closing       bool
-	closed        bool
-	closeDone     chan struct{}
-	closeErr      error
-	initialized   bool
-	lastRedisErr  error
-	durabilityErr error
-	durabilityGen uint64
-	writeLocal    func(string, []byte) error
+	DocumentStore
+	assets AssetRepository
 }
 
 func NewDatabase(tgID int64) *Database {
-	return &Database{
-		tgID:       tgID,
-		data:       make(map[string]map[string]any),
-		revisions:  make([]map[string]map[string]any, 0),
-		writeLocal: writeFileAtomic,
+	db := &Database{
+		DocumentStore: DocumentStore{
+			tgID:       tgID,
+			data:       make(map[string]map[string]any),
+			revisions:  make([]map[string]map[string]any, 0),
+			writeLocal: writeFileAtomic,
+		},
 	}
+	db.assets.store = &db.DocumentStore
+	return db
+}
+
+// AttachRuntime wires narrow loader/config/asset hooks after the module loader exists.
+// Replaces the former Database.client *CustomTelegramClient back-reference.
+func (db *Database) AttachRuntime(names ModuleNameResolver, reloader ConfigReloader, transport AssetTransport) {
+	if db == nil {
+		return
+	}
+	db.setModuleNameResolver(names)
+	db.setConfigReloader(reloader)
+	db.assets.store = &db.DocumentStore
+	db.assets.SetTransport(transport)
 }
 
 func (db *Database) Init(redisURI string) error {
@@ -938,10 +932,10 @@ func (db *Database) normalizeOwner(owner string) string {
 	}
 
 	// 2. Try case-insensitive match against registered modules
-	if db.client != nil && db.client.Loader != nil {
-		for _, mod := range db.client.Loader.GetModules() {
-			if strings.EqualFold(mod.Name(), owner) {
-				return mod.Name()
+	if resolver := db.moduleNameResolver(); resolver != nil {
+		for _, name := range resolver.ModuleNames() {
+			if strings.EqualFold(name, owner) {
+				return name
 			}
 		}
 	}
@@ -1302,8 +1296,8 @@ func (db *Database) Set(owner, key string, value any) error {
 	}
 	candidate[owner][key] = cloned
 	err = db.commitCandidate("set", owner, key, candidate, true)
-	if err == nil && db.client != nil && db.client.Loader != nil {
-		go db.client.Loader.ReloadModuleConfig(owner)
+	if err == nil {
+		db.scheduleConfigReload(owner)
 	}
 	return err
 }
@@ -1323,8 +1317,8 @@ func (db *Database) Delete(owner, key string) error {
 		delete(mod, key)
 	}
 	err := db.commitCandidate("delete", owner, key, candidate, true)
-	if err == nil && db.client != nil && db.client.Loader != nil {
-		go db.client.Loader.ReloadModuleConfig(owner)
+	if err == nil {
+		db.scheduleConfigReload(owner)
 	}
 	return err
 }
@@ -1668,131 +1662,14 @@ func cloneReflectValue(src reflect.Value, seen map[cloneVisit]reflect.Value) ref
 	}
 }
 
-type databaseAssetClient interface {
-	StoreAsset(message any, targetChatID int64, assetsTopicID int) (int, error)
-	FetchAsset(contentChannelID int64, assetID int) (*Message, error)
-}
-
-type telegramDatabaseAssetClient struct {
-	client *CustomTelegramClient
-}
-
-func (c telegramDatabaseAssetClient) StoreAsset(message any, targetChatID int64, assetsTopicID int) (int, error) {
-	opts := []MsgOption{WithReplyTo(int64(assetsTopicID))}
-	var (
-		res any
-		err error
-	)
-	switch msgVal := message.(type) {
-	case *Message:
-		res, err = c.client.SendMessageWithOptions(ChatRefID(targetChatID), msgVal.Text, opts...)
-	case string:
-		if _, statErr := os.Stat(msgVal); statErr == nil {
-			res, err = c.client.SendFileWithOptions(ChatRefID(targetChatID), msgVal, "", opts...)
-		} else {
-			res, err = c.client.SendMessageWithOptions(ChatRefID(targetChatID), msgVal, opts...)
-		}
-	default:
-		res, err = c.client.SendFileWithOptions(ChatRefID(targetChatID), msgVal, "", opts...)
-	}
-	if err != nil {
-		return 0, err
-	}
-	return int(GetSentMessageID(res)), nil
-}
-
-func (c telegramDatabaseAssetClient) FetchAsset(contentChannelID int64, assetID int) (*Message, error) {
-	peer, err := c.client.ResolvePeer(contentChannelID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve content channel: %v", err)
-	}
-	peerChan, ok := peer.(*tg.InputPeerChannel)
-	if !ok {
-		return nil, fmt.Errorf("content channel is not a channel peer")
-	}
-
-	res, err := c.client.rawAPI.ChannelsGetMessages(c.client.ctx, &tg.ChannelsGetMessagesRequest{
-		Channel: &tg.InputChannel{ChannelID: peerChan.ChannelID, AccessHash: peerChan.AccessHash},
-		ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: assetID}},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var msg *tg.Message
-	switch messages := res.(type) {
-	case *tg.MessagesMessagesSlice:
-		if len(messages.Messages) > 0 {
-			msg, _ = messages.Messages[0].(*tg.Message)
-		}
-	case *tg.MessagesMessages:
-		if len(messages.Messages) > 0 {
-			msg, _ = messages.Messages[0].(*tg.Message)
-		}
-	case *tg.MessagesChannelMessages:
-		if len(messages.Messages) > 0 {
-			msg, _ = messages.Messages[0].(*tg.Message)
-		}
-	}
-	if msg == nil {
-		return nil, ErrNotFound
-	}
-	return &Message{
-		ID:      int64(msg.ID),
-		Text:    entitiesToHTML(msg.Message, msg.Entities),
-		RawText: msg.Message,
-		Out:     msg.Out,
-		Client:  c.client,
-	}, nil
-}
-
-func (db *Database) assetSnapshot() (databaseAssetClient, int, int64) {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	client := db.assetClient
-	if client == nil && db.client != nil {
-		client = telegramDatabaseAssetClient{client: db.client}
-	}
-	var assetsTopicID int
-	if forums := db.data["goroku.forums"]; forums != nil {
-		if forumsCache, ok := forums["forums_cache"].(map[string]any); ok {
-			if hubot, ok := forumsCache["goroku-userbot"].(map[string]any); ok {
-				assetsTopicID = int(asInt64(hubot["Assets"], 0))
-			}
-		}
-		return client, assetsTopicID, asInt64(forums["channel_id"], 0)
-	}
-	return client, assetsTopicID, 0
-}
-
 // StoreAsset stores a message or file to the assets channel.
-// Returns the message ID (asset ID).
+// Thin façade over AssetRepository; does not hold DB locks during Telegram RPC.
 func (db *Database) StoreAsset(message any) (int, error) {
-	client, assetsTopicID, contentChannelID := db.assetSnapshot()
-	if client == nil {
-		return 0, fmt.Errorf("client not initialized in database")
-	}
-	if assetsTopicID == 0 {
-		return 0, fmt.Errorf("Tried to save asset to non-existing asset topic.")
-	}
-	if contentChannelID == 0 {
-		return 0, fmt.Errorf("Tried to save asset with non-existing content channel.")
-	}
-	return client.StoreAsset(message, -1000000000000-contentChannelID, assetsTopicID)
+	return db.assets.StoreAsset(message)
 }
 
-// FetchAsset Fetch previously saved asset by its asset_id
+// FetchAsset fetches a previously saved asset by its asset_id.
+// Thin façade over AssetRepository; does not hold DB locks during Telegram RPC.
 func (db *Database) FetchAsset(assetID int) (*Message, error) {
-	client, assetsTopicID, contentChannelID := db.assetSnapshot()
-	if client == nil {
-		return nil, fmt.Errorf("client not initialized in database")
-	}
-	if assetsTopicID == 0 {
-		return nil, fmt.Errorf("Tried to fetch asset from non-existing asset topic.")
-	}
-	if contentChannelID == 0 {
-		return nil, fmt.Errorf("Tried to fetch asset with non-existing content channel.")
-	}
-	return client.FetchAsset(contentChannelID, assetID)
+	return db.assets.FetchAsset(assetID)
 }

@@ -200,7 +200,7 @@ func TestDatabaseAssetOperationsDoNotHoldDatabaseLockDuringIO(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fake := &databaseAssetFake{started: make(chan struct{}), release: make(chan struct{})}
 			db := NewDatabase(1)
-			db.assetClient = fake
+			db.assets.SetTransport(fake)
 			db.data["goroku.forums"] = map[string]any{
 				"channel_id": int64(99),
 				"forums_cache": map[string]any{
@@ -1659,7 +1659,7 @@ func TestDatabasePostRenameWarningSchedulesConfigReloadExactlyOnce(t *testing.T)
 	client := NewCustomTelegramClient(63)
 	client.GorokuDB = db
 	client.Loader = NewModules(client, db)
-	db.client = client
+	db.AttachRuntime(client.Loader, client.Loader, newTelegramAssetTransport(client))
 	module := &registrationConfigModule{registrationLifecycleModule: &registrationLifecycleModule{name: "ConfigTarget"}}
 	if err := client.Loader.RegisterModule(module); err != nil {
 		t.Fatal(err)

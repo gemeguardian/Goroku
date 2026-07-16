@@ -17,7 +17,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func (h *Goroku) finishWebLogin(pending webiface.TelegramClient, customModules []Module) error {
+func (h *Goroku) finishWebLogin(pending webiface.TelegramClient, factories []ModuleFactory) error {
 	ctx := h.lifecycleContext()
 	if err := ctx.Err(); err != nil {
 		return err
@@ -70,7 +70,7 @@ func (h *Goroku) finishWebLogin(pending webiface.TelegramClient, customModules [
 		}
 	}
 
-	client, err := h.initClientContext(ctx, tgID, newSession, customModules)
+	client, err := h.initClientContext(ctx, tgID, newSession, factories)
 	if err != nil {
 		return err
 	}
@@ -101,7 +101,13 @@ func getTGIDFromSessionPath(path string) (int64, error) {
 	return strconv.ParseInt(idStr, 10, 64)
 }
 
-func (h *Goroku) startCliLogin(ctx context.Context, customModules []Module) error {
+func (h *Goroku) startCliLogin(ctx context.Context, factories []ModuleFactory) error {
+	if h.NoAuth {
+		L().Info("No active sessions and --no-auth set; skipping interactive CLI login")
+		fmt.Println("No active sessions. --no-auth skips interactive login; provide a session or remove --no-auth.")
+		return nil
+	}
+
 	client := NewCustomTelegramClient(0)
 	client.APIID = h.APIID
 	client.APIHash = h.APIHash
@@ -111,14 +117,18 @@ func (h *Goroku) startCliLogin(ctx context.Context, customModules []Module) erro
 		return fmt.Errorf("connect Telegram client: %w", err)
 	}
 
-	fmt.Println("\033[0;96mYou can use QR-code to login from another device (your friend's phone, for example).\033[0m")
-	userChoice := promptInput("\033[0;96mUse QR code? [y/N]: \033[0m")
-	if err := ctx.Err(); err != nil {
-		return err
+	useQR := h.QRLogin
+	if !useQR {
+		fmt.Println("\033[0;96mYou can use QR-code to login from another device (your friend's phone, for example).\033[0m")
+		userChoice := promptInput("\033[0;96mUse QR code? [y/N]: \033[0m")
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		useQR = strings.ToLower(userChoice) == "y"
 	}
 
-	if strings.ToLower(userChoice) != "y" {
-		return h.cliPhoneLogin(ctx, client, customModules)
+	if !useQR {
+		return h.cliPhoneLogin(ctx, client, factories)
 	}
 
 	fmt.Println("\033[0;96mLoading QR code...\033[0m")
@@ -202,10 +212,10 @@ func (h *Goroku) startCliLogin(ctx context.Context, customModules []Module) erro
 		return fmt.Errorf("login failed: authorized Telegram user ID is 0")
 	}
 
-	return h.cliSaveClientSession(ctx, client, customModules)
+	return h.cliSaveClientSession(ctx, client, factories)
 }
 
-func (h *Goroku) cliPhoneLogin(ctx context.Context, client *CustomTelegramClient, customModules []Module) error {
+func (h *Goroku) cliPhoneLogin(ctx context.Context, client *CustomTelegramClient, factories []ModuleFactory) error {
 	phone := promptInput("\033[0;96mEnter phone: \033[0m")
 	if err := ctx.Err(); err != nil {
 		return err
@@ -252,7 +262,7 @@ func (h *Goroku) cliPhoneLogin(ctx context.Context, client *CustomTelegramClient
 		return fmt.Errorf("login failed: authorized Telegram user ID is 0")
 	}
 
-	return h.cliSaveClientSession(ctx, client, customModules)
+	return h.cliSaveClientSession(ctx, client, factories)
 }
 
 func (h *Goroku) cliSetupBot(ctx context.Context, client *CustomTelegramClient, db *Database) error {
@@ -300,7 +310,7 @@ func (h *Goroku) cliSetupBot(ctx context.Context, client *CustomTelegramClient, 
 	return nil
 }
 
-func (h *Goroku) cliSaveClientSession(ctx context.Context, client *CustomTelegramClient, customModules []Module) error {
+func (h *Goroku) cliSaveClientSession(ctx context.Context, client *CustomTelegramClient, factories []ModuleFactory) error {
 	tgID := client.TGID
 	if tgID == 0 {
 		return fmt.Errorf("login failed: authorized Telegram user ID is 0")
@@ -318,7 +328,7 @@ func (h *Goroku) cliSaveClientSession(ctx context.Context, client *CustomTelegra
 	utils.SecureFile(newSession)
 
 	L().Info("Booting userbot", zap.Int64("tg_id", tgID))
-	if _, err := h.initClientContext(ctx, tgID, newSession, customModules); err != nil {
+	if _, err := h.initClientContext(ctx, tgID, newSession, factories); err != nil {
 		return fmt.Errorf("initialize client %d: %w", tgID, err)
 	}
 

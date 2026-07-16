@@ -39,9 +39,8 @@ function auth(c) {
                             },
                         });
                 }),
-                fetch("/web_auth", {
+                csrfFetch("/web_auth", {
                     method: "POST",
-                    credentials: "include",
                     timeout: 25e4,
                 })
                     .then((b) => b.text())

@@ -51,29 +51,39 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 | M5.3 | **Завершено** | Bounded rate limiter tracked + verified. |
 | M5.4 | **Завершено** | Bounded command/watcher executors + Message ctx tracked + verified. |
 | **M9.1** | **Завершено** | `a07c96a` + clean worktree: parity/tidy/gofmt/vet/build/`go test -race ./...` PASS. CI workflow criteria 1–7. golangci-lint in CI (local binary optional). |
-| M6–M8, M9.2–M10 | **Не начато** | Next: **M6.1**. |
+| **M6.1** | **Частично** | ModuleFactory + lifecycle; uncommitted; core race green. |
+| **M6.2** | **Частично** | DocumentStore + AssetRepository; no DB→full client; uncommitted. |
+| **M6.3** | **Частично** | Dispatch pipeline + reason codes + regex-at-register; uncommitted. |
+| **M6.4** | **Частично** | Web service split; no `web.Instance`; uncommitted. |
+| **M6.5** | **Частично** | Client split files; EntityCache residual; uncommitted. |
+| **M7** | **Частично** | Typed cache/schema/qrLogin; residuals remain; uncommitted. |
+| **M8** | **Частично** | CLI proxy/qr/no-auth, `/health`, honest README; uncommitted. |
+| **M9.2** | **Частично** | `govulncheck@v1.1.4` soft CI; residual SBOM/secret-scan. |
+| **M9.3** | **Частично** | Soft coverage floor 20% + `docs/CI.md`. |
+| **M9.4** | **Частично** | `scripts/test-critical.sh`; E2E residual. |
+| **M10** | **Частично** | SECURITY/QUICKSTART/ARCHITECTURE/OPERATIONS/RELEASE, Dockerfile, goreleaser. |
+| **M1.1** | **Частично** | restore journal + recovery; not joint FS+DB atomic. |
+| M4.2 | **Частично** | worker Yaegi deferred. |
 
 ### Следующий порядок исполнения
 
-1. ~~M9.1 track+clean gate~~ **done** (`a07c96a`).
-2. **M6.1** transactional module registration (implement agent).
-3. M6.2–M6.5; **M9.2** deps/gotd отдельно.
-4. Product-deferred: M1.1 crash-atomic, M4.2 worker Yaegi, cgroups, full signer; M0.1 manual.
-5. Push `master` — только по явному запросу.
+1. **Commit** full M6–M10 worktree on user ask → clean-clone verify → formal **Завершено** where green.
+2. Free disk before full `./modules` race (plugin tests need space; root was ~97% full).
+3. Residuals: M1.1 joint atomicity, M4.2 worker Yaegi, M0.1 token, hard govulncheck, EntityCache, ops UI.
+4. Push + release tag only on ask; **gotd upgrade** separate.
 
 ### Worktree snapshot (для handoff)
 
-- Branch: `master` **ahead 1** of `origin/master` (`a07c96a`); product tree clean except roadmap re-status edits if uncommitted.
+- Branch: `master` **ahead 2** (`a07c96a`, `96975c7`); large **uncommitted** M6–M10 tree.
 - Local only (ignored): `user_modules/`, `.goroku_plugins/`, secrets/runtime.
 - `gotd/td` **not** upgraded.
-- Prefer `TMPDIR=/root/.cache/go-tmp` for race suites.
+- Prefer `TMPDIR=/root/.cache/go-tmp`; keep free disk ≥10G for plugin tests.
 
 ### Constraints for next orchestrator
 
-- Orchestrator: launch implement/verify agents; no product hand-edit unless needed.
-- Do **not** rollback/reset; commit only when user asks; push only when user asks.
-- Do **not** move `user_modules/` into `goroku/modules/`.
-- Next implement: **M6.1** (do not start M9.2 gotd with M6).
+- Orchestrator: agents for implement/verify; commit only when user asks; push only on ask.
+- Do **not** rollback/reset; do **not** move `user_modules/` into package path.
+- Next: user **коммить** → clean verify → residuals / release polish.
 
 ## 1. Цель документа
 
@@ -1231,19 +1241,15 @@ Stream E: CI/docs
 
 ## 23. Самая первая задача
 
-**Сделано:** tracking `a07c96a` + clean-clone gate; M9.1 и большинство
-M0.2/M1.3–M5 formal **Завершено**. Не переделывать closed milestones.
+**Сделано formal:** `a07c96a` + M9.1/M0.2/M1.3–M5. **M6.1** implemented in
+worktree (agent verify PASS); needs user commit for formal **Завершено**.
 
-**Сейчас первая задача: M6.1** — транзакционная регистрация module
-(explicit factories, Init/ConfigReady, atomic registry commit, cleanup on
-failure, controlled ClientReady).
-
-Residuals later: M1.1 crash-atomic, M4.2 worker Yaegi, M0.1 token manual, M9.2.
+**Сейчас:** commit M6.1 on ask → then **M6.2** DocumentStore/AssetRepository.
 
 Handoff:
 
 ```text
-Orchestrator. Read docs/plans/goroku-roadmap-2026.md. Next: M6.1 implement
-agent + verify agent. Commit a07c96a is local (ahead 1); push only on ask.
-Do not redo M2–M5/M9.1; do not move user_modules into goroku/modules.
+Orchestrator. Read docs/plans/goroku-roadmap-2026.md. M6.1 code done uncommitted;
+on "коммить" stage product+tests only and commit; then M6.2 agent.
+Do not redo M2–M5/M9.1; no user_modules into package path; push only on ask.
 ```

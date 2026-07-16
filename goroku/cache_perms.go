@@ -9,6 +9,11 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+// GetPermsCached returns participant rights for user in entity, using the perms cache when fresh.
+// requestTTL==0 means accept any present cache entry (see cache.UseCached).
+//
+// Residual return type is any because Telegram participants are interface unions
+// (ChannelParticipantClass / ChatParticipantClass) plus PrivateChatPerms.
 func (c *CustomTelegramClient) GetPermsCached(entity any, user any, exp int64, force bool) (any, error) {
 	entityKey := cache.NormalizeEntityCacheKey(entity)
 	userKey := cache.NormalizeEntityCacheKey(user)
@@ -20,7 +25,7 @@ func (c *CustomTelegramClient) GetPermsCached(entity any, user any, exp int64, f
 			record, ok = subMap[userKey]
 		}
 		c.cacheMu.RUnlock()
-		if ok && (exp == 0 || !record.Expired()) {
+		if ok && cache.UseCached(exp, record.Expired()) {
 			return record.Perms, nil
 		}
 	}
@@ -43,15 +48,18 @@ func (c *CustomTelegramClient) GetPermsCached(entity any, user any, exp int64, f
 		return nil, err
 	}
 
+	now := time.Now().Unix()
 	c.cacheMu.Lock()
+	if c.GorokuPermsCache == nil {
+		c.GorokuPermsCache = make(map[cache.EntityCacheKey]map[cache.EntityCacheKey]cache.CacheRecordPerms)
+	}
 	if _, ok := c.GorokuPermsCache[entityKey]; !ok {
 		c.GorokuPermsCache[entityKey] = make(map[cache.EntityCacheKey]cache.CacheRecordPerms)
 	}
-
 	c.GorokuPermsCache[entityKey][userKey] = cache.CacheRecordPerms{
 		Perms: perms,
-		Exp:   time.Now().Unix() + exp,
-		TS:    time.Now().Unix(),
+		Exp:   cache.CacheExpiryUnix(now, exp),
+		TS:    now,
 	}
 	c.cacheMu.Unlock()
 
@@ -93,7 +101,7 @@ func (c *CustomTelegramClient) fetchPermissions(peer tg.InputPeerClass, userPeer
 		}
 		return nil, fmt.Errorf("participant %d not found", userID)
 	case *tg.InputPeerUser, *tg.InputPeerSelf:
-		return map[string]any{"is_private": true}, nil
+		return cache.PrivateChatPerms{IsPrivate: true}, nil
 	default:
 		return nil, fmt.Errorf("unsupported peer type %T", peer)
 	}

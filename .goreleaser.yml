@@ -1,0 +1,47 @@
+# Optional release automation. Manual flow: docs/RELEASE.md
+version: 2
+
+project_name: goroku
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: goroku
+    main: .
+    binary: goroku
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X goroku/goroku.VersionInfo={{.Version}}
+      - -X goroku/goroku.Commit={{.ShortCommit}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  draft: true

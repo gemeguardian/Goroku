@@ -51,6 +51,32 @@ func TestCacheRecordExpired(t *testing.T) {
 	}
 }
 
+func TestUseCachedTTL(t *testing.T) {
+	if !UseCached(0, true) {
+		t.Error("TTL=0 must accept expired entries")
+	}
+	if !UseCached(0, false) {
+		t.Error("TTL=0 must accept fresh entries")
+	}
+	if UseCached(60, true) {
+		t.Error("positive TTL must reject expired entries")
+	}
+	if !UseCached(60, false) {
+		t.Error("positive TTL must accept fresh entries")
+	}
+	now := time.Now().Unix()
+	if got := CacheExpiryUnix(now, 0); got != now {
+		t.Errorf("CacheExpiryUnix(0) = %d, want %d", got, now)
+	}
+	if got := CacheExpiryUnix(now, 10); got != now+10 {
+		t.Errorf("CacheExpiryUnix(10) = %d, want %d", got, now+10)
+	}
+}
+
+type stubLegacyEntity struct{ v any }
+
+func (s stubLegacyEntity) AsLegacy() any { return s.v }
+
 func TestNormalizeEntityCacheKey(t *testing.T) {
 	// string normalize
 	if got := NormalizeEntityCacheKey("@username"); got != (EntityCacheKey{Username: "username"}) {
@@ -85,6 +111,33 @@ func TestNormalizeEntityCacheKey(t *testing.T) {
 	peerChat := &tg.InputPeerChat{ChatID: 333}
 	if got := NormalizeEntityCacheKey(peerChat); got != (EntityCacheKey{ID: 333}) {
 		t.Errorf("NormalizeEntityCacheKey failed for chat peer: got %v, want 333", got)
+	}
+
+	// ChatRef-like AsLegacy adapter
+	if got := NormalizeEntityCacheKey(stubLegacyEntity{v: int64(555)}); got != (EntityCacheKey{ID: 555}) {
+		t.Errorf("NormalizeEntityCacheKey failed for legacy entity: got %v, want 555", got)
+	}
+	if got := NormalizeEntityCacheKey(stubLegacyEntity{v: "@AliasUser"}); got != (EntityCacheKey{Username: "aliasuser"}) {
+		t.Errorf("NormalizeEntityCacheKey failed for legacy username: got %v", got)
+	}
+}
+
+func TestEntityStoreGetPut(t *testing.T) {
+	s := NewEntityStore()
+	peer := &tg.InputPeerUser{UserID: 9, AccessHash: 1}
+	now := time.Now().Unix()
+	s.Lock()
+	s.PutEntity(EntityCacheKey{ID: 9}, peer, now+100, now)
+	s.Unlock()
+
+	s.RLock()
+	got, ok := s.GetEntity(EntityCacheKey{ID: 9}, 0)
+	s.RUnlock()
+	if !ok {
+		t.Fatal("expected cache hit with TTL=0")
+	}
+	if u, ok := got.(*tg.InputPeerUser); !ok || u.UserID != 9 {
+		t.Fatalf("unexpected peer %T %v", got, got)
 	}
 }
 

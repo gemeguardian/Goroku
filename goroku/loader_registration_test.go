@@ -3,6 +3,7 @@ package goroku
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -438,7 +439,7 @@ func (m *registrationLifecycleModule) OnDlmod() error                      { ret
 func (m *registrationLifecycleModule) Commands() map[string]CommandHandler { return m.commands }
 func (m *registrationLifecycleModule) Watchers() []WatcherHandler          { return m.watchers }
 
-func TestRegistrationCollisionIsRejectedBeforeInit(t *testing.T) {
+func TestRegistrationCollisionCleansUpAfterInit(t *testing.T) {
 	modules := newInitializedTestModules(t)
 	first := &registrationLifecycleModule{name: "first", commands: map[string]CommandHandler{"shared": testHandler("first")}}
 	second := &registrationLifecycleModule{name: "second", commands: map[string]CommandHandler{"shared": testHandler("second")}}
@@ -448,8 +449,14 @@ func TestRegistrationCollisionIsRejectedBeforeInit(t *testing.T) {
 	if err := modules.RegisterModule(second); err == nil {
 		t.Fatal("expected command collision")
 	}
-	if second.initCalls.Load() != 0 || second.unloadCalls.Load() != 0 {
+	if second.initCalls.Load() != 1 || second.unloadCalls.Load() != 1 {
 		t.Fatalf("rejected module lifecycle calls: init=%d unload=%d", second.initCalls.Load(), second.unloadCalls.Load())
+	}
+	if modules.LookupByName(second.Name()) != nil {
+		t.Fatal("colliding module remained visible after cleanup")
+	}
+	if _, ok := modules.Dispatch("shared"); !ok {
+		t.Fatal("first module command was removed by collision cleanup")
 	}
 }
 
@@ -524,7 +531,7 @@ func TestRegisterModuleWithInitializedEmptyDatabaseDoesNotDeadlock(t *testing.T)
 	client.GorokuDB = db
 	loader := NewModules(client, db)
 	client.Loader = loader
-	db.client = client
+	db.AttachRuntime(loader, loader, newTelegramAssetTransport(client))
 	module := &registrationLifecycleModule{name: "initialized", commands: map[string]CommandHandler{"initialized": testHandler("ok")}}
 
 	done := make(chan error, 1)
@@ -581,8 +588,8 @@ func TestRegisterModuleDefaultPersistenceFailureIsAtomic(t *testing.T) {
 	if !errors.Is(err, ErrDatabasePersistence) {
 		t.Fatalf("registration error = %v, want persistence failure", err)
 	}
-	if module.initCalls.Load() != 0 || module.configReady.Load() != 0 || module.unloadCalls.Load() != 0 {
-		t.Fatalf("lifecycle ran after default failure: init=%d config=%d unload=%d", module.initCalls.Load(), module.configReady.Load(), module.unloadCalls.Load())
+	if module.initCalls.Load() != 1 || module.configReady.Load() != 0 || module.unloadCalls.Load() != 1 {
+		t.Fatalf("lifecycle after default failure: init=%d config=%d unload=%d", module.initCalls.Load(), module.configReady.Load(), module.unloadCalls.Load())
 	}
 	if loader.LookupByName("defaults") != nil {
 		t.Fatal("module was registered after default persistence failure")
@@ -648,10 +655,153 @@ func TestRegisterModuleConfigReadyErrorPreservesCauseWithoutLoaderLock(t *testin
 	case <-time.After(time.Second):
 		t.Fatal("ConfigReady callback ran under loader mutex")
 	}
-	if module.initCalls.Load() != 0 || module.unloadCalls.Load() != 0 {
-		t.Fatalf("lifecycle continued after ConfigReady failure: init=%d unload=%d", module.initCalls.Load(), module.unloadCalls.Load())
+	if module.initCalls.Load() != 1 || module.unloadCalls.Load() != 1 {
+		t.Fatalf("lifecycle after ConfigReady failure: init=%d unload=%d", module.initCalls.Load(), module.unloadCalls.Load())
 	}
 	if loader.LookupByName(module.Name()) != nil {
 		t.Fatal("module registered after ConfigReady failure")
+	}
+	if _, ok := loader.Dispatch("config-ready"); ok {
+		t.Fatal("command published after ConfigReady failure")
+	}
+}
+
+func TestRegisterModuleLifecycleOrderInitBeforeConfigReady(t *testing.T) {
+	loader := newInitializedTestModules(t)
+	var order []string
+	var mu sync.Mutex
+	record := func(step string) {
+		mu.Lock()
+		order = append(order, step)
+		mu.Unlock()
+	}
+	module := &registrationConfigModule{registrationLifecycleModule: &registrationLifecycleModule{
+		name:     "order",
+		commands: map[string]CommandHandler{"order": testHandler("ok")},
+		init: func(*CustomTelegramClient) error {
+			record("init")
+			return nil
+		},
+	}}
+	module.ready = func() error {
+		record("config")
+		return nil
+	}
+	if err := loader.RegisterModule(module); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := append([]string(nil), order...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != "init" || got[1] != "config" {
+		t.Fatalf("lifecycle order = %v, want [init config]", got)
+	}
+	if loader.LookupByName("order") == nil {
+		t.Fatal("module not committed after successful lifecycle")
+	}
+}
+
+func TestModuleFactoryConstructsIndependentInstances(t *testing.T) {
+	var constructed atomic.Int32
+	factory := ModuleFactory(func() Module {
+		n := constructed.Add(1)
+		return &registrationLifecycleModule{
+			name:     fmt.Sprintf("factory-%d", n),
+			commands: map[string]CommandHandler{fmt.Sprintf("cmd%d", n): testHandler("ok")},
+		}
+	})
+	first := factory()
+	second := factory()
+	if first == second {
+		t.Fatal("factory returned the same module instance")
+	}
+	loaderA := newInitializedTestModules(t)
+	loaderB := newInitializedTestModules(t)
+	if err := loaderA.RegisterModule(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := loaderB.RegisterModule(second); err != nil {
+		t.Fatal(err)
+	}
+	if loaderA.LookupByName(first.Name()) != first {
+		t.Fatal("loader A missing first factory instance")
+	}
+	if loaderB.LookupByName(second.Name()) != second {
+		t.Fatal("loader B missing second factory instance")
+	}
+	if loaderA.LookupByName(second.Name()) != nil || loaderB.LookupByName(first.Name()) != nil {
+		t.Fatal("factory instances leaked across clients")
+	}
+}
+
+type registrationReadyModule struct {
+	*registrationLifecycleModule
+	ready func() error
+}
+
+func (m *registrationReadyModule) ClientReady() error {
+	if m.ready != nil {
+		return m.ready()
+	}
+	return nil
+}
+
+func TestSendReadyRunsClientReadySynchronouslyUnderLease(t *testing.T) {
+	loader := newInitializedTestModules(t)
+	var concurrent atomic.Int32
+	var maxConcurrent atomic.Int32
+	var readyCalls atomic.Int32
+	started := make(chan struct{})
+	var startedOnce sync.Once
+
+	makeModule := func(name string) *registrationReadyModule {
+		return &registrationReadyModule{
+			registrationLifecycleModule: &registrationLifecycleModule{
+				name:     name,
+				commands: map[string]CommandHandler{name: testHandler(name)},
+			},
+			ready: func() error {
+				cur := concurrent.Add(1)
+				for {
+					prev := maxConcurrent.Load()
+					if cur <= prev || maxConcurrent.CompareAndSwap(prev, cur) {
+						break
+					}
+				}
+				startedOnce.Do(func() { close(started) })
+				time.Sleep(20 * time.Millisecond)
+				concurrent.Add(-1)
+				readyCalls.Add(1)
+				return nil
+			},
+		}
+	}
+	if err := loader.RegisterModule(makeModule("ready-a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := loader.RegisterModule(makeModule("ready-b")); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		loader.SendReady()
+		close(done)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("ClientReady never started")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SendReady returned before ClientReady finished")
+	}
+	if readyCalls.Load() != 2 {
+		t.Fatalf("ClientReady calls = %d, want 2", readyCalls.Load())
+	}
+	if maxConcurrent.Load() != 1 {
+		t.Fatalf("ClientReady max concurrency = %d, want 1 (sequential)", maxConcurrent.Load())
 	}
 }

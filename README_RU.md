@@ -61,7 +61,7 @@
 
 ### VPS/VDS
 > **Примечание для пользователей VPS/VDS:**  
-> Добавьте `--ssh-tunnel` для явного включения SSH-туннелирования
+> Добавьте `--ssh-tunnel`, чтобы открыть веб-панель через SSH reverse tunnel (это **не** MTProto proxy)  
 > Добавьте `--no-web` для настройки только через консоль  
 > Добавьте `--root` для пользователей root (чтобы избежать ввода force_insecure)
 <details> <summary><b>Ubuntu / Debian</b></summary>
@@ -118,6 +118,34 @@ root передавайте через `--data-root /var/lib/goroku`. Загру
 непосредственно в выбранном data root. Отдельные каталоги `sessions/` и
 `database/` пока не создаются.
 
+### CLI-флаги (продуктовый контракт)
+
+| Флаг | Поведение |
+|------|----------|
+| `--port` | Порт веб-панели (по умолчанию `8080`) |
+| `--no-web` | Только консоль: без веб-дашборда |
+| `--no-git` | Отключить git-операции (`GOROKU_NO_GIT=1`) |
+| `--data-root` | Записываемый runtime root для config/sessions/modules |
+| `--ssh-tunnel` | Публикация веб-панели через SSH reverse tunnel (по умолчанию выкл.) |
+| `--qr-login` | С `--no-web`: CLI QR-login без запроса y/N |
+| `--no-auth` | С `--no-web`: не запускать интерактивный CLI login без сессий |
+| `--sandbox` | Не перезапускать процесс после lifecycle restart |
+| `--root` | Разрешить запуск от root (проверяется в `main`) |
+| `--proxy-host` / `--proxy-port` / `--proxy-secret` | MTProto proxy (нужны все три; secret — hex) |
+| `--proxy-pass` | **Устаревший alias** для `--proxy-secret` — **не** SSH tunnel |
+
+Веб по умолчанию слушает `127.0.0.1` (`GOROKU_IP` / Docker могут переопределить).
+
+### Ops / health
+
+При включённой веб-панели:
+
+- `GET /health` — JSON: `status`, `clients`, `setup_completed` (без секретов)
+- `GET /healthz` — liveness (`ok`)
+- `GET /readyz` — readiness (`ok`; onboarding без Telegram-сессии тоже ready)
+
+Полный operations dashboard (trust UI модулей, sanitized logs, update UI) **пока не** поставляется.
+
 ### Другое
 <details>
   <summary><b>На телефоне (Termux / Userland)</b></summary>
@@ -162,8 +190,16 @@ root передавайте через `--data-root /var/lib/goroku`. Загру
 | 🎨 **Улучшения UI/UX** | Современный интерфейс и удобство использования |
 | 📦 **Ядровые модули** | Улучшенный и новый функционал ядра |
 | ⏱ **Быстрое исправление багов** | Более быстрое решение проблем, чем в Hikka/Heroku/FTG/GeekTG |
-| 🔄 **Обратная совместимость** | Работает с модулями FTG, GeekTG и Hikka |
+| 🔌 **Go-плагины + Yaegi** | Нативные Go-плагины (`.dlmod` / `.loadmod`) и in-process Yaegi `.eval` — **не** Python runtime |
 | ▶️ **Инлайн-элементы** | Поддержка форм, галерей и списков |
+
+### Совместимость модулей (честно)
+
+Goroku — **Go** userbot. Он **не** загружает Python-модули Hikka / FTG / GeekTG.
+
+- **Нативные Go-плагины**: установка/загрузка через owner-команды; неподписанные — с `-confirm` или доверенным SHA-256.
+- **Yaegi `.eval`**: только owner, in-process; timeout не отменяет уже запущенный код.
+- **Семантическое сходство**: стиль команд вдохновлён Heroku/Hikka; это **не** бинарная и не Python import-совместимость.
 
 ---
 

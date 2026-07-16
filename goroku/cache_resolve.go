@@ -38,6 +38,10 @@ func (c *CustomTelegramClient) resolvePeerInternal(ctx context.Context, chat any
 	if peer, ok := chat.(tg.InputPeerClass); ok {
 		return peer, nil
 	}
+	// ChatRef / EntityRef / UserRef / ChannelRef
+	if ref, ok := chat.(interface{ AsLegacy() any }); ok {
+		return c.resolvePeerInternal(ctx, ref.AsLegacy())
+	}
 
 	if c.rawAPI == nil {
 		return nil, fmt.Errorf("client not connected")
@@ -50,20 +54,16 @@ func (c *CustomTelegramClient) resolvePeerInternal(ctx context.Context, chat any
 		c.cacheMu.RLock()
 		record, ok := c.GorokuEntityCache[cache.NormalizeEntityCacheKey(id)]
 		c.cacheMu.RUnlock()
-		if ok {
-			if peer, ok := record.Entity.(tg.InputPeerClass); ok {
-				return peer, nil
-			}
+		if ok && record.Entity != nil {
+			return record.Entity, nil
 		}
 	} else if username, ok := chat.(string); ok {
 		usernameLower := strings.ToLower(strings.TrimPrefix(username, "@"))
 		c.cacheMu.RLock()
 		record, ok := c.GorokuEntityCache[cache.EntityCacheKey{Username: usernameLower}]
 		c.cacheMu.RUnlock()
-		if ok {
-			if peer, ok := record.Entity.(tg.InputPeerClass); ok {
-				return peer, nil
-			}
+		if ok && record.Entity != nil {
+			return record.Entity, nil
 		}
 	}
 
@@ -90,10 +90,8 @@ func (c *CustomTelegramClient) resolvePeerInternal(ctx context.Context, chat any
 		c.cacheMu.RLock()
 		record, ok := c.GorokuEntityCache[cache.NormalizeEntityCacheKey(id)]
 		c.cacheMu.RUnlock()
-		if ok {
-			if peer, ok := record.Entity.(tg.InputPeerClass); ok {
-				return peer, nil
-			}
+		if ok && record.Entity != nil {
+			return record.Entity, nil
 		}
 		if peer, err := c.resolvePeerFromTelegram(ctx, id); err == nil {
 			return peer, nil
@@ -186,10 +184,8 @@ func (c *CustomTelegramClient) resolvePeerFromTelegram(ctx context.Context, id i
 			c.cacheMu.RLock()
 			record, ok := c.GorokuEntityCache[cache.NormalizeEntityCacheKey(id)]
 			c.cacheMu.RUnlock()
-			if ok {
-				if peer, ok := record.Entity.(tg.InputPeerClass); ok {
-					return peer, nil
-				}
+			if ok && record.Entity != nil {
+				return record.Entity, nil
 			}
 		}
 	} else if id < 0 {
@@ -215,10 +211,8 @@ func (c *CustomTelegramClient) resolvePeerFromTelegram(ctx context.Context, id i
 			c.cacheMu.RLock()
 			record, ok := c.GorokuEntityCache[cache.NormalizeEntityCacheKey(id)]
 			c.cacheMu.RUnlock()
-			if ok {
-				if peer, ok := record.Entity.(tg.InputPeerClass); ok {
-					return peer, nil
-				}
+			if ok && record.Entity != nil {
+				return record.Entity, nil
 			}
 		}
 	} else {
@@ -237,10 +231,8 @@ func (c *CustomTelegramClient) resolvePeerFromTelegram(ctx context.Context, id i
 			c.cacheMu.RLock()
 			record, ok := c.GorokuEntityCache[cache.NormalizeEntityCacheKey(id)]
 			c.cacheMu.RUnlock()
-			if ok {
-				if peer, ok := record.Entity.(tg.InputPeerClass); ok {
-					return peer, nil
-				}
+			if ok && record.Entity != nil {
+				return record.Entity, nil
 			}
 		}
 	}

@@ -8,6 +8,9 @@ on:
 
 # M9.1: checkout before setup-go, pin Go patch, pin actions by SHA,
 # pin golangci-lint, go mod tidy diff, clean binary build, package parity.
+# M9.2: pinned govulncheck (advisory).
+# M9.3: soft coverage floor 20% on critical packages.
+# M9.4: critical suites via scripts/test-critical.sh (also covered by go test -race ./...).
 
 jobs:
   build:
@@ -57,5 +60,29 @@ jobs:
     - name: Build main binary
       run: go build -o "${TMPDIR:-/tmp}/goroku_bin" .
 
+    # M9.2: pin govulncheck; advisory while residual stdlib/transitive findings
+    # need deliberate Go/x/* bumps (gotd/td mass upgrade is out of scope).
+    # Secret scanning / SBOM / dependency-review: residual — see docs/CI.md.
+    - name: govulncheck (advisory)
+      continue-on-error: true
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        "$(go env GOPATH)/bin/govulncheck" -show version ./...
+        "$(go env GOPATH)/bin/govulncheck" ./...
+
+    # M9.3: soft floor 20% on critical packages — avoid flaky high gates.
+    # Targets for critical flows are documented in docs/CI.md (not hard CI gates).
+    - name: Coverage soft floor (20% critical packages)
+      run: |
+        profile="${TMPDIR:-/tmp}/coverage-critical.out"
+        go test -count=1 -covermode=atomic -coverprofile="$profile" \
+          ./goroku/ ./goroku/web/ ./goroku/inline/ ./goroku/utils/ ./goroku/cache/
+        go tool cover -func="$profile" | tail -5
+        total=$(go tool cover -func="$profile" | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
+        echo "Critical-package statement coverage: ${total}%"
+        awk -v t="$total" 'BEGIN { if (t+0 < 20) { print "coverage below soft floor 20%"; exit 1 } }'
+
+    # Full race suite (includes M9.4 critical packages). Local equivalent of
+    # the required subset: bash scripts/test-critical.sh
     - name: Run tests
       run: go test -race ./...

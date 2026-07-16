@@ -177,3 +177,22 @@ heroku.log.*
 unknown_errors.txt
 
 *.sock
+
+# Goroku runtime / build noise
+.git
+.github
+.goroku_go
+.goroku_plugins
+.kimchi
+goroku_bin
+goroku_bin.*
+*.session
+config.json
+config-*.json
+*.log
+coverage.out
+cover.out
+user_modules
+docs/plans
+assets
+*.db

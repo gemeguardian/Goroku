@@ -5,7 +5,6 @@ import (
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
-	"goroku/goroku/web"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,20 +64,27 @@ func (m *GorokuWeb) Watchers() []goroku.WatcherHandler {
 	return []goroku.WatcherHandler{}
 }
 
+func (m *GorokuWeb) webRuntime() goroku.WebRuntime {
+	if m == nil || m.client == nil {
+		return nil
+	}
+	return m.client.Web
+}
+
 func (m *GorokuWeb) WebrestartCmd(msg *goroku.Message) error {
-	if web.Instance == nil {
+	if m.webRuntime() == nil {
 		msg.Text = "❌ <b>Web server is not running or disabled.</b>"
 		_ = msg.Answer(msg.Text)
 		return nil
 	}
 
 	port := 8080
-	if currentPort := web.Instance.Port(); currentPort != 0 {
+	if currentPort := m.webRuntime().Port(); currentPort != 0 {
 		port = currentPort
 	}
 
-	web.Instance.Stop()
-	web.Instance.StartAsync(port, true)
+	m.webRuntime().Stop()
+	m.webRuntime().StartAsync(port, true)
 
 	msg.Text = "🔄 <b>Web server restarted.</b>"
 	_ = msg.Answer(msg.Text)
@@ -90,7 +96,7 @@ func (m *GorokuWeb) getTrans(key, def string) string {
 }
 
 func (m *GorokuWeb) WebpanelCmd(msg *goroku.Message) error {
-	if web.Instance == nil {
+	if m.webRuntime() == nil {
 		msg.Text = "❌ <b>Web server is not running or disabled.</b>"
 		_ = msg.Answer(msg.Text)
 		return nil
@@ -151,7 +157,7 @@ func (m *GorokuWeb) showWebpanelTunnel(call any, isCallback bool) error {
 
 	if !hasInline {
 		_ = call.(*goroku.Message).Answer(openingText)
-		url := web.Instance.GetURL(true)
+		url := m.webRuntime().GetURL(true)
 		openedText := m.getTrans("tunnel_opened", "✅ <b>Tunnel opened successfully!</b>")
 		webBtnText := m.getTrans("web_btn", "🔗 Web Panel")
 		return call.(*goroku.Message).Answer(fmt.Sprintf("%s\n\n<a href=\"%s\">%s</a>", openedText, url, webBtnText))
@@ -178,7 +184,7 @@ func (m *GorokuWeb) showWebpanelTunnel(call any, isCallback bool) error {
 	}
 
 	go func() {
-		url := web.Instance.GetURL(true)
+		url := m.webRuntime().GetURL(true)
 		openedText := m.getTrans("tunnel_opened", "✅ <b>Tunnel opened successfully!</b>")
 		webBtnText := m.getTrans("web_btn", "🔗 Web Panel")
 		linkBtn := inline.Button{
@@ -198,20 +204,20 @@ func (m *GorokuWeb) showWebpanelTunnel(call any, isCallback bool) error {
 }
 
 func (m *GorokuWeb) WebstopCmd(msg *goroku.Message) error {
-	if web.Instance == nil {
+	if m.webRuntime() == nil {
 		msg.Text = "❌ <b>Web server is not running or disabled.</b>"
 		_ = msg.Answer(msg.Text)
 		return nil
 	}
 
-	web.Instance.Stop()
+	m.webRuntime().Stop()
 	msg.Text = "🛑 <b>Web server stopped.</b>"
 	_ = msg.Answer(msg.Text)
 	return nil
 }
 
 func (m *GorokuWeb) ApproveWebCmd(msg *goroku.Message) error {
-	if web.Instance == nil {
+	if m.webRuntime() == nil {
 		return msg.Answer("❌ <b>Web server is not running or disabled.</b>")
 	}
 
@@ -221,7 +227,7 @@ func (m *GorokuWeb) ApproveWebCmd(msg *goroku.Message) error {
 	}
 
 	token := parts[1]
-	if web.Instance.ApproveWebAuth(token) {
+	if m.webRuntime().ApproveWebAuth(token) {
 		return msg.Answer("✅ <b>Web Dashboard Authorization Approved!</b>")
 	}
 
@@ -234,9 +240,8 @@ func (m *GorokuWeb) AddaccCmd(msg *goroku.Message) error {
 
 	args := utils.GetArgs(msg.Text)
 	if len(args) > 0 {
-		entity, err := m.client.GetEntity(args[0], 0, false)
-		if err == nil {
-			if u, ok := entity.(*tg.User); ok {
+		if full, err := m.client.GetFullUser(args[0], 0, false); err == nil {
+			if u, ok := userClassFromFull(full).(*tg.User); ok {
 				targetUser = u
 				targetID = u.ID
 			}
@@ -245,9 +250,8 @@ func (m *GorokuWeb) AddaccCmd(msg *goroku.Message) error {
 		reply, err := msg.GetReplyMessage()
 		if err == nil && reply != nil {
 			targetID = reply.SenderID
-			entity, err := m.client.GetEntity(targetID, 0, false)
-			if err == nil {
-				if u, ok := entity.(*tg.User); ok {
+			if full, err := m.client.GetFullUser(targetID, 0, false); err == nil {
+				if u, ok := userClassFromFull(full).(*tg.User); ok {
 					targetUser = u
 				}
 			}

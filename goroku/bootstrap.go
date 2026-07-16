@@ -126,9 +126,10 @@ func NewGoroku() *Goroku {
 }
 
 // NewApp creates the production application. Startup is performed by Run.
-func NewApp(customModules []Module) *Goroku {
+// factories construct a fresh Module per client (no shared/reflected clones).
+func NewApp(factories []ModuleFactory) *Goroku {
 	h := NewGoroku()
-	h.start = func(ctx context.Context) error { return h.startup(ctx, customModules) }
+	h.start = func(ctx context.Context) error { return h.startup(ctx, factories) }
 	return h
 }
 
@@ -459,9 +460,6 @@ func (h *Goroku) finishShutdown() {
 			recordError(fmt.Errorf("close Telegram log poller: %w", err))
 		}
 	}
-	if webCore != nil {
-		web.ReleaseInstance(webCore)
-	}
 	for _, client := range clients {
 		if client == nil {
 			continue
@@ -639,15 +637,15 @@ func (h *Goroku) ParseArguments() {
 	portFlag := flag.Int("port", 8080, "Port for web panel")
 	noWebFlag := flag.Bool("no-web", false, "Disable web setup dashboard")
 	noGitFlag := flag.Bool("no-git", false, "Disable git operations")
-	qrLoginFlag := flag.Bool("qr-login", false, "Use QR code login")
-	noAuthFlag := flag.Bool("no-auth", false, "Skip interactive auth")
-	sandboxFlag := flag.Bool("sandbox", false, "Sandbox mode: disable restarts")
-	sshTunnelFlag := flag.Bool("ssh-tunnel", false, "Expose the web panel through an SSH tunnel")
+	qrLoginFlag := flag.Bool("qr-login", false, "CLI login: use QR code (skip y/N prompt; requires --no-web)")
+	noAuthFlag := flag.Bool("no-auth", false, "Skip interactive CLI auth when no sessions exist (requires --no-web)")
+	sandboxFlag := flag.Bool("sandbox", false, "Sandbox mode: disable process restarts")
+	sshTunnelFlag := flag.Bool("ssh-tunnel", false, "Expose the web panel through an SSH reverse tunnel (not MTProto proxy)")
 	dataRootFlag := flag.String("data-root", "", "Custom path to data directory")
-	proxyHostFlag := flag.String("proxy-host", "", "MTProto proxy host")
+	proxyHostFlag := flag.String("proxy-host", "", "MTProto proxy host (requires --proxy-port and --proxy-secret)")
 	proxyPortFlag := flag.Int("proxy-port", 0, "MTProto proxy port")
-	proxySecretFlag := flag.String("proxy-secret", "", "MTProto proxy secret")
-	proxyPassFlag := flag.String("proxy-pass", "", "MTProto proxy password")
+	proxySecretFlag := flag.String("proxy-secret", "", "MTProto proxy secret (hex)")
+	proxyPassFlag := flag.String("proxy-pass", "", "Deprecated alias for --proxy-secret (not SSH tunnel)")
 	flag.Parse()
 
 	h.Port = *portFlag
@@ -657,10 +655,10 @@ func (h *Goroku) ParseArguments() {
 	h.NoAuth = *noAuthFlag
 	h.Sandbox = *sandboxFlag
 	h.SSHTunnel = *sshTunnelFlag
-	h.ProxyHost = *proxyHostFlag
+	h.ProxyHost = strings.TrimSpace(*proxyHostFlag)
 	h.ProxyPort = *proxyPortFlag
-	h.ProxySecret = *proxySecretFlag
-	h.ProxyPass = *proxyPassFlag
+	h.ProxySecret = NormalizeProxySecret(*proxySecretFlag, *proxyPassFlag)
+	h.ProxyPass = strings.TrimSpace(*proxyPassFlag)
 
 	if *dataRootFlag != "" {
 		BaseDir = *dataRootFlag
@@ -672,11 +670,22 @@ func (h *Goroku) ParseArguments() {
 	}
 }
 
-func (h *Goroku) startup(ctx context.Context, customModules []Module) error {
+func (h *Goroku) applyProxyConfig() error {
+	return ConfigureMTProxy(MTProxyConfig{
+		Host:   h.ProxyHost,
+		Port:   h.ProxyPort,
+		Secret: h.ProxySecret,
+	})
+}
+
+func (h *Goroku) startup(ctx context.Context, factories []ModuleFactory) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	h.ParseArguments()
+	if err := h.applyProxyConfig(); err != nil {
+		return fmt.Errorf("invalid MTProto proxy flags: %w", err)
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -787,7 +796,7 @@ func (h *Goroku) startup(ctx context.Context, customModules []Module) error {
 			SaveConfig: SaveConfigKey,
 			Restart:    func() { h.RequestRestart() },
 			OnLogin: func(client webiface.TelegramClient) error {
-				return h.finishWebLogin(client, customModules)
+				return h.finishWebLogin(client, factories)
 			},
 			GetClient: func() webiface.TelegramClient {
 				apiID := h.APIID
@@ -866,7 +875,7 @@ func (h *Goroku) startup(ctx context.Context, customModules []Module) error {
 
 	if len(activeSessions) == 0 {
 		if h.DisableWeb {
-			if err := h.startCliLogin(ctx, customModules); err != nil {
+			if err := h.startCliLogin(ctx, factories); err != nil {
 				return err
 			}
 		} else {
@@ -883,7 +892,7 @@ func (h *Goroku) startup(ctx context.Context, customModules []Module) error {
 				continue
 			}
 			L().Info("Booting userbot", zap.Int64("tg_id", tgID))
-			client, err := h.initClientContext(ctx, tgID, sessionFile, customModules)
+			client, err := h.initClientContext(ctx, tgID, sessionFile, factories)
 			if err != nil {
 				L().Error("Failed to init client", zap.Int64("tg_id", tgID), zap.Error(err))
 				if strings.Contains(err.Error(), "AUTH_KEY_UNREGISTERED") {
@@ -902,10 +911,10 @@ func (h *Goroku) startup(ctx context.Context, customModules []Module) error {
 }
 
 // Main is retained for source compatibility. New programs should use
-// NewApp(customModules).Run(ctx); signal policy belongs to the caller.
+// NewApp(factories).Run(ctx); signal policy belongs to the caller.
 // Deprecated: use NewApp and Run.
-func Main(customModules []Module) {
-	if err := NewApp(customModules).Run(context.Background()); err != nil {
+func Main(factories []ModuleFactory) {
+	if err := NewApp(factories).Run(context.Background()); err != nil {
 		L().Error("Goroku stopped with an error", zap.Error(err))
 	}
 }

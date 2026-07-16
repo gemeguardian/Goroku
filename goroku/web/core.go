@@ -20,8 +20,8 @@ import (
 
 var _ = zap.NewNop
 
-type WebCore struct {
-	*Web
+// Server owns HTTP listener lifecycle (bind, serve, stop, URL).
+type Server struct {
 	serverMu        sync.RWMutex
 	server          *http.Server
 	listen          func(context.Context, string, string) (net.Listener, error)
@@ -29,7 +29,7 @@ type WebCore struct {
 	running         bool
 	ready           bool
 	proxyPass       bool
-	proxypasser     *ProxyPasser
+	proxypasser     *TunnelManager
 	url             string
 	state           webLifecycleState
 	startCancel     context.CancelFunc
@@ -61,29 +61,19 @@ const (
 // Deprecated: register a RuntimeClient with its real Telegram ID.
 const DefaultFallbackTGID = 123456789
 
-var (
-	Instance   *WebCore
-	instanceMu sync.Mutex
-)
-
-func NewWebCore(cfg WebConfig) *WebCore {
-	wc := &WebCore{
-		Web:    NewWeb(cfg),
-		listen: (&net.ListenConfig{}).Listen,
-	}
-	instanceMu.Lock()
-	Instance = wc
-	instanceMu.Unlock()
-	return wc
+// WebCore composes Web services with Server lifecycle.
+type WebCore struct {
+	*Web
+	Server
 }
 
-// ReleaseInstance clears the compatibility singleton only if wc still owns it.
-func ReleaseInstance(wc *WebCore) {
-	instanceMu.Lock()
-	if Instance == wc {
-		Instance = nil
+func NewWebCore(cfg WebConfig) *WebCore {
+	return &WebCore{
+		Web: NewWeb(cfg),
+		Server: Server{
+			listen: (&net.ListenConfig{}).Listen,
+		},
 	}
-	instanceMu.Unlock()
 }
 
 // AddLoader preserves the historical API as a strict typed-registry wrapper.
@@ -318,7 +308,7 @@ func (wc *WebCore) runStart(ctx context.Context, done chan struct{}, generation 
 		}
 	}
 	server := newHTTPServer(net.JoinHostPort(bindHost, strconv.Itoa(runningPort)), secureHandler)
-	var proxypasser *ProxyPasser
+	var proxypasser *TunnelManager
 	if proxyPass {
 		proxypasser = NewProxyPasser(runningPort, func(url string) {
 			wc.serverMu.Lock()
@@ -497,7 +487,7 @@ func (wc *WebCore) Close(ctx context.Context) error {
 	return wc.waitForStop(ctx, stopDone)
 }
 
-func (wc *WebCore) completeStop(server *http.Server, proxypasser *ProxyPasser, startDone, stopDone chan struct{}) {
+func (wc *WebCore) completeStop(server *http.Server, proxypasser *TunnelManager, startDone, stopDone chan struct{}) {
 	if proxypasser != nil {
 		proxypasser.Stop()
 	}
