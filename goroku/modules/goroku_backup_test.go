@@ -1143,6 +1143,203 @@ func TestRestoreJournalDBApplyingNilDBUsesLastValidMarker(t *testing.T) {
 	assertFileBody(t, filepath.Join(modsDir, "owned.go"), newBody)
 }
 
+func TestRestoreJournalDBApplyingUnreadablePrimaryCommitsFromStaged(t *testing.T) {
+	// Residual close: primary unreadable, no markers, retained staged present →
+	// forward-commit DB from staged and keep FS new (not FS-old+DB-new).
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldBody := []byte("package modules\n// old owned\n")
+	newBody := testModuleSource("Owned", "staged forward commit")
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), oldBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	db := newBackupTestDB(t)
+	dbFile := db.LocalPath()
+	if err := db.Reset(map[string]map[string]any{
+		"goroku.main": {"command_prefix": "old"},
+		"Loader":      {"loaded_modules": map[string]any{"owned": "local"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	journal, state := seedOwnedRestoreJournal(t, modsDir, newBody, oldBody)
+	// Live FS already new (post files_applied crash window).
+	if err := writeFileDurable(filepath.Join(modsDir, "owned.go"), newBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state.DBFile = dbFile
+	stagedPayload := stampRestoreCommitMetadata(map[string]map[string]any{
+		"goroku.main": {"command_prefix": "new"},
+		"Loader":      {"loaded_modules": map[string]any{"owned": "local"}},
+	}, state.RestoreID, state.PayloadHash)
+	stagedBody, err := json.MarshalIndent(stagedPayload, "", "    ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained := filepath.Join(journal.dir, restoreJournalStagedDB)
+	if err := writeFileDurable(retained, stagedBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state.StagedDBPath = retained
+	if err := journal.markDBApplying(state); err != nil {
+		t.Fatal(err)
+	}
+	// Unreadable primary + no markers + no last-valid proof.
+	if err := os.WriteFile(dbFile, []byte("not-json{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(goroku.LastValidPath(dbFile))
+	_ = os.Remove(dbFile + ".restore-id")
+	_ = os.Remove(goroku.LastValidPath(dbFile) + ".restore-id")
+
+	wantRestoreID := state.RestoreID
+	// Offline recovery (nil live DB): must commit from staged and keep FS new.
+	if err := recoverIncompleteModuleRestore(nil); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), newBody)
+	data := mustReadDBFile(t, dbFile)
+	if got := restoreIDFromDocument(data); got != wantRestoreID {
+		t.Fatalf("primary restore_id = %q, want %q", got, wantRestoreID)
+	}
+	if got := goroku.DocumentString(data, "goroku.main", "command_prefix", ""); got != "new" {
+		t.Fatalf("command_prefix = %q, want new", got)
+	}
+	if _, err := os.Stat(restoreJournalRoot()); !os.IsNotExist(err) {
+		t.Fatalf("journal not cleared after staged forward: %v", err)
+	}
+}
+
+func TestRestoreJournalDBApplyingUnreadablePrimaryLiveDBCommitsFromStaged(t *testing.T) {
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldBody := []byte("package modules\n// old owned\n")
+	newBody := testModuleSource("Owned", "live staged forward")
+	db := newBackupTestDB(t)
+	dbFile := db.LocalPath()
+	if err := db.Reset(map[string]map[string]any{
+		"goroku.main": {"command_prefix": "old"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	journal, state := seedOwnedRestoreJournal(t, modsDir, newBody, oldBody)
+	if err := writeFileDurable(filepath.Join(modsDir, "owned.go"), newBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state.DBFile = dbFile
+	stagedPayload := stampRestoreCommitMetadata(map[string]map[string]any{
+		"goroku.main": {"command_prefix": "new"},
+	}, state.RestoreID, state.PayloadHash)
+	stagedBody, err := json.MarshalIndent(stagedPayload, "", "    ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained := filepath.Join(journal.dir, restoreJournalStagedDB)
+	if err := writeFileDurable(retained, stagedBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state.StagedDBPath = retained
+	if err := journal.markDBApplying(state); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt on-disk primary; live handle still has old memory / no restore_id.
+	if err := os.WriteFile(dbFile, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	wantRestoreID := state.RestoreID
+	if err := recoverIncompleteModuleRestore(db); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), newBody)
+	if got := db.GetString("goroku.main", "command_prefix", ""); got != "new" {
+		t.Fatalf("live db prefix = %q, want new", got)
+	}
+	if got := db.GetString(restoreDBOwner, restoreDBIDKey, ""); got != wantRestoreID {
+		t.Fatalf("live restore_id = %q, want %q", got, wantRestoreID)
+	}
+}
+
+func mustReadDBFile(t *testing.T, path string) map[string]map[string]any {
+	t.Helper()
+	data, err := goroku.ReadLocalDatabaseFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestApplyRestoreRetainsStagedDBUntilJournalCleared(t *testing.T) {
+	// Journal-retained staged-db must still exist at CommitStagedReset time.
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), []byte("package modules\n// old\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	db := newBackupTestDB(t)
+	if err := db.Reset(map[string]map[string]any{
+		"Loader":      {"loaded_modules": map[string]any{"owned": "local"}},
+		"goroku.main": {"command_prefix": "old"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var retainedAtCommit string
+	var retainedExisted bool
+	m := newBackupTestModule(db)
+	m.restoreDBReset = func(data map[string]map[string]any) error {
+		journal := openRestoreJournal()
+		state, err := journal.readState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		retainedAtCommit = state.StagedDBPath
+		if state.StagedDBPath == "" {
+			t.Fatal("expected journal-retained staged db at commit")
+		}
+		if _, err := os.Stat(state.StagedDBPath); err != nil {
+			t.Fatalf("retained staged missing at commit: %v", err)
+		}
+		retainedExisted = true
+		if restoreIDFromFile(state.StagedDBPath) != state.RestoreID {
+			t.Fatalf("retained staged restore_id mismatch")
+		}
+		return db.Reset(data)
+	}
+
+	mods := makeZip(t, map[string][]byte{
+		"db_mods.json": []byte(`{"owned":"local"}`),
+		"owned.go":     testModuleSource("Owned", "retain staged"),
+	})
+	backup := makeZip(t, map[string][]byte{
+		"db.json":  []byte(`{"Loader":{"loaded_modules":{"owned":"local"}},"goroku.main":{"command_prefix":"new"}}`),
+		"mods.zip": mods,
+	})
+	if err := m.restoreAllFromZip(backup); err != nil {
+		t.Fatal(err)
+	}
+	if !retainedExisted || retainedAtCommit == "" {
+		t.Fatal("retained staged checks did not run")
+	}
+	if _, err := os.Stat(restoreJournalRoot()); !os.IsNotExist(err) {
+		t.Fatalf("journal left after success: %v", err)
+	}
+	if got := goroku.ReadRestoreCommitMarker(db.LocalPath()); got == "" {
+		t.Fatal("expected restore_id markers after success")
+	}
+	if _, err := os.Stat(db.LocalPath() + ".restore-id"); err != nil {
+		t.Fatalf("primary-adjacent marker missing: %v", err)
+	}
+}
+
 func TestRestoreJournalDBApplyingNilDBUsesLastValidDocument(t *testing.T) {
 	// last-valid document itself may carry restore_id after a later generation.
 	dataRoot, _ := setModuleTestRoots(t)
@@ -1307,6 +1504,7 @@ func TestRestoreJournalCrashWindowsMatrix(t *testing.T) {
 		{name: "db_applying_primary", phase: restorePhaseDBApplying, offline: "primary", want: wantFSNew},
 		{name: "db_applying_marker", phase: restorePhaseDBApplying, offline: "marker", want: wantFSNew},
 		{name: "db_applying_last_valid", phase: restorePhaseDBApplying, offline: "last-valid", want: wantFSNew},
+		{name: "db_applying_staged", phase: restorePhaseDBApplying, offline: "staged", want: wantFSNew},
 		{name: "db_applied", phase: restorePhaseDBApplied, want: wantFSNew},
 		{name: "empty_no_proof", phase: "", want: wantFSOld},
 		{name: "empty_with_db", phase: "", withDB: true, want: wantFSNew},
@@ -1382,6 +1580,23 @@ func TestRestoreJournalCrashWindowsMatrix(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(goroku.LastValidPath(db.LocalPath()), body, 0600); err != nil {
+					t.Fatal(err)
+				}
+			case tc.offline == "staged":
+				// Unreadable primary, no markers; retained staged carries restore_id.
+				if err := os.WriteFile(db.LocalPath(), []byte("{"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				body, err := json.MarshalIndent(stamped, "", "    ")
+				if err != nil {
+					t.Fatal(err)
+				}
+				retained := filepath.Join(journal.dir, restoreJournalStagedDB)
+				if err := writeFileDurable(retained, body, 0600); err != nil {
+					t.Fatal(err)
+				}
+				state.StagedDBPath = retained
+				if err := journal.writeState(state); err != nil {
 					t.Fatal(err)
 				}
 			}

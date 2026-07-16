@@ -1924,9 +1924,49 @@ func TestWriteAndReadRestoreCommitMarker(t *testing.T) {
 	if got := ReadRestoreCommitMarker(dbFile); got != "abc123" {
 		t.Fatalf("marker = %q, want abc123", got)
 	}
-	markerPath := lastValidPath(dbFile) + ".restore-id"
-	if _, err := os.Stat(markerPath); err != nil {
-		t.Fatalf("marker path missing: %v", err)
+	primaryMarker := dbFile + ".restore-id"
+	lastValidMarker := lastValidPath(dbFile) + ".restore-id"
+	if _, err := os.Stat(primaryMarker); err != nil {
+		t.Fatalf("primary marker path missing: %v", err)
+	}
+	if _, err := os.Stat(lastValidMarker); err != nil {
+		t.Fatalf("last-valid marker path missing: %v", err)
+	}
+	// Primary marker alone is enough when last-valid sibling is gone.
+	if err := os.Remove(lastValidMarker); err != nil {
+		t.Fatal(err)
+	}
+	if got := ReadRestoreCommitMarker(dbFile); got != "abc123" {
+		t.Fatalf("primary-only marker = %q, want abc123", got)
+	}
+}
+
+func TestCommitStagedDatabaseFilePreservesSource(t *testing.T) {
+	dir := t.TempDir()
+	dbFile := filepath.Join(dir, "database.json")
+	if err := os.WriteFile(dbFile, []byte(`{"owner":{"key":"old"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(dir, "retained-staged.json")
+	body := []byte(`{"owner":{"key":"new"},"goroku.restore":{"restore_id":"rid-1"}}`)
+	if err := os.WriteFile(staged, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CommitStagedDatabaseFile(dbFile, staged); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("retained staged removed: %v", err)
+	}
+	got, err := os.ReadFile(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(got, []byte(`"key": "new"`)) && !bytes.Contains(got, []byte(`"key":"new"`)) {
+		// Marshal from stageLocalCandidate re-encodes via commit of raw body.
+		if !bytes.Contains(got, []byte("new")) {
+			t.Fatalf("primary after offline commit = %s", got)
+		}
 	}
 }
 

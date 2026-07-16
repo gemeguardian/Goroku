@@ -3,6 +3,8 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+
+	"goroku/goroku/utils"
 )
 
 // healthPayload is the typed /health JSON body (no secrets).
@@ -10,6 +12,7 @@ type healthPayload struct {
 	Status         string `json:"status"`
 	Clients        int    `json:"clients"`
 	SetupCompleted bool   `json:"setup_completed"`
+	Version        string `json:"version"`
 }
 
 // HealthHandler returns a minimal ops snapshot without secrets.
@@ -23,6 +26,7 @@ func (w *Web) HealthHandler(wr http.ResponseWriter, r *http.Request) {
 		Status:         "ok",
 		Clients:        w.clientCount(),
 		SetupCompleted: SetupCompleted(w.dataRoot),
+		Version:        utils.GetVersionRaw(),
 	}
 	wr.Header().Set("Content-Type", "application/json; charset=utf-8")
 	wr.Header().Set("Cache-Control", "no-store")

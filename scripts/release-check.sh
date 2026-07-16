@@ -69,6 +69,27 @@ if [[ "${RELEASE_CHECK_SBOM:-1}" == "1" ]]; then
   GOROKU_BIN="${OUT_BIN}" bash scripts/generate-sbom.sh "${OUT_DIR}/sbom"
 fi
 
+# Optional cosign sign (off by default). Requires cosign on PATH and COSIGN_YES=1.
+# Static key: set COSIGN_KEY (and COSIGN_PASSWORD if encrypted). Keyless OIDC if unset.
+COSIGN_SIG=""
+COSIGN_BUNDLE=""
+if [[ "${COSIGN_YES:-0}" == "1" ]]; then
+  if command -v cosign >/dev/null 2>&1; then
+    echo "==> cosign sign-blob (${OUT_BIN})"
+    if [[ -n "${COSIGN_KEY:-}" ]]; then
+      COSIGN_SIG="${OUT_BIN}.sig"
+      cosign sign-blob --yes --key "${COSIGN_KEY}" --output-signature "${COSIGN_SIG}" "${OUT_BIN}"
+      echo "COSIGN_SIGNATURE=${COSIGN_SIG}"
+    else
+      COSIGN_BUNDLE="${OUT_BIN}.sigbundle"
+      cosign sign-blob --yes --bundle "${COSIGN_BUNDLE}" "${OUT_BIN}"
+      echo "COSIGN_BUNDLE=${COSIGN_BUNDLE}"
+    fi
+  else
+    echo "COSIGN_YES=1 but cosign not installed; skip signing" >&2
+  fi
+fi
+
 # Canary checklist (printed for operators; not auto-executed against a live host).
 CANARY_FILE="${OUT_DIR}/CANARY_CHECKLIST.txt"
 {
@@ -82,7 +103,7 @@ CANARY_FILE="${OUT_DIR}/CANARY_CHECKLIST.txt"
   echo "[ ] 4. Prefer --no-git / GOROKU_NO_GIT=1 on production binary hosts"
   echo "[ ] 5. Smoke: curl -fsS http://127.0.0.1:\${PORT:-8080}/healthz"
   echo "[ ] 6. Smoke: curl -fsS http://127.0.0.1:\${PORT:-8080}/readyz"
-  echo "[ ] 7. Smoke: GET /health JSON has status=ok and no secrets"
+  echo "[ ] 7. Smoke: GET /health JSON has status=ok, version, and no secrets"
   echo "[ ] 8. Owner .info / critical modules; watch logs for panic/auth loops"
   echo "[ ] 9. Soak window (minutes–hours) before promoting other hosts"
   echo "[ ] 10. On failure: stop → restore binary (+ data snapshot if needed) → re-check healthz"
@@ -98,5 +119,7 @@ echo "BINARY=${OUT_BIN}"
 echo "STABLE_BINARY=${STABLE_BIN}"
 [[ -n "${SUM_FILE}" ]] && echo "CHECKSUMS=${SUM_FILE}" && cat "${SUM_FILE}"
 echo "CANARY_CHECKLIST=${CANARY_FILE}"
+[[ -n "${COSIGN_SIG}" ]] && echo "COSIGN_SIGNATURE=${COSIGN_SIG}"
+[[ -n "${COSIGN_BUNDLE}" ]] && echo "COSIGN_BUNDLE=${COSIGN_BUNDLE}"
 ./"${STABLE_BIN}" -h >/dev/null 2>&1 || true
 echo "ldflags VersionInfo=${VERSION} Commit=${COMMIT}"

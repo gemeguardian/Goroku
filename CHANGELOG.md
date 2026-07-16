@@ -37,10 +37,11 @@
 ### M10 — Release packaging
 - `VersionInfo` / `Commit` via `-ldflags`; `GetVersionString` surfaces VersionInfo
 - Multi-stage non-root `Dockerfile` + `HEALTHCHECK` on `/healthz` (port 8080)
-- `scripts/release-check.sh` + canary checklist output (`dist/CANARY_CHECKLIST.txt`)
-- Optional cosign verify docs in `docs/RELEASE.md`
+- `scripts/release-check.sh` + canary checklist + optional `COSIGN_YES=1` cosign sign-blob
+- `/health` JSON includes `version`; README ops one-liner
+- CI: required `generate-sbom.sh` artifact upload; optional pinned Syft (continue-on-error)
+- Cosign sign+verify binary examples in `docs/RELEASE.md`
 - Optional `.goreleaser.yml`; docs: SECURITY, QUICKSTART, ARCHITECTURE, OPERATIONS, CONFIGURATION, RELEASE
-- Residuals: mandatory signed release pipeline, full Syft in CI
 
 ### M0.1 — Secret rotation docs
 - `SECURITY.md` threat model + BotFather token rotation checklist (manual)

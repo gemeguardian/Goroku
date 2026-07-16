@@ -140,9 +140,15 @@ root передавайте через `--data-root /var/lib/goroku`. Загру
 
 При включённой веб-панели:
 
-- `GET /health` — JSON: `status`, `clients`, `setup_completed` (без секретов)
+- `GET /health` — JSON: `status`, `clients`, `setup_completed`, `version` (без секретов)
 - `GET /healthz` — liveness (`ok`)
 - `GET /readyz` — readiness (`ok`; onboarding без Telegram-сессии тоже ready)
+
+```bash
+curl -fsS "http://127.0.0.1:${PORT:-8080}/health"   # {"status":"ok",...,"version":"1.0.0"}
+curl -fsS "http://127.0.0.1:${PORT:-8080}/healthz"  # ok
+curl -fsS "http://127.0.0.1:${PORT:-8080}/readyz"   # ok
+```
 
 Полный operations dashboard (trust UI модулей, sanitized logs, update UI) **пока не** поставляется.
 

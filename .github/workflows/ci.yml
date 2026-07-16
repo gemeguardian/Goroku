@@ -92,6 +92,51 @@ jobs:
     - name: Run tests
       run: go test -race ./...
 
+    # M10: required lightweight SBOM (no Syft). Upload as release-style artifact.
+    - name: Generate SBOM (generate-sbom.sh)
+      run: |
+        GOROKU_BIN="${TMPDIR:-/tmp}/goroku_bin" bash scripts/generate-sbom.sh dist/sbom
+        test -f dist/sbom/sbom.cdx.json
+        test -f dist/sbom/SBOM_ARTIFACTS.txt
+
+    - name: Upload SBOM artifacts
+      uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+      with:
+        name: sbom
+        path: |
+          dist/sbom/
+          dist/SBOM_LATEST_PATH.txt
+        if-no-files-found: error
+
+    # Optional richer Syft SBOM: install pinned binary; never hard-fail main job.
+    - name: Optional Syft SBOM (continue-on-error)
+      continue-on-error: true
+      env:
+        SYFT_VERSION: v1.18.1
+      run: |
+        set -euo pipefail
+        install_dir="${RUNNER_TEMP:-/tmp}/syft-${SYFT_VERSION}"
+        mkdir -p "$install_dir"
+        # install.sh from the pinned tag; version arg selects the Syft release.
+        curl -sSfL "https://raw.githubusercontent.com/anchore/syft/${SYFT_VERSION}/install.sh" \
+          | sh -s -- -b "$install_dir" "${SYFT_VERSION}"
+        export PATH="${install_dir}:${PATH}"
+        syft version
+        mkdir -p dist/syft
+        syft dir:. \
+          -o "cyclonedx-json=dist/syft/syft.cdx.json" \
+          -o "spdx-json=dist/syft/syft.spdx.json"
+        ls -la dist/syft
+
+    - name: Upload optional Syft SBOM
+      if: success() || failure()
+      continue-on-error: true
+      uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+      with:
+        name: sbom-syft
+        path: dist/syft/
+        if-no-files-found: ignore
+
   # Hard gate: fails only when the vulnerable module is a direct go.mod require.
   # Stdlib and transitive findings are ignored (filtered from govulncheck -json).
   # Does not block on residual stdlib noise; main job stays advisory for full scan.

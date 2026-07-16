@@ -916,15 +916,19 @@ func (db *Database) AbortStagedReset(stagedPath string) error {
 	return nil
 }
 
-// WriteRestoreCommitMarker stores restore_id next to the last-valid sibling so
-// recovery can detect a completed DB rename even when the primary is unreadable
-// and the live Database handle is unavailable.
-func WriteRestoreCommitMarker(dbFile, restoreID string) error {
-	if dbFile == "" || restoreID == "" {
+// restoreCommitMarkerPaths returns durable restore_id marker locations next to
+// the primary and last-valid siblings. Either alone is enough for offline recovery.
+func restoreCommitMarkerPaths(dbFile string) []string {
+	if dbFile == "" {
 		return nil
 	}
-	// Prefer last-valid path as the durable anchor for the pre-image of this commit.
-	marker := lastValidPath(dbFile) + ".restore-id"
+	return []string{
+		dbFile + ".restore-id",
+		lastValidPath(dbFile) + ".restore-id",
+	}
+}
+
+func writeRestoreCommitMarkerAt(marker, restoreID string) error {
 	dir := filepath.Dir(marker)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -960,16 +964,71 @@ func WriteRestoreCommitMarker(dbFile, restoreID string) error {
 	return syncDirectory(dir, defaultAtomicFileOps)
 }
 
-// ReadRestoreCommitMarker returns the restore_id recorded beside last-valid, if any.
+// WriteRestoreCommitMarker stores restore_id next to the primary database file
+// and the last-valid sibling so recovery can detect a completed DB rename even
+// when the primary document is unreadable and the live Database is unavailable.
+func WriteRestoreCommitMarker(dbFile, restoreID string) error {
+	if dbFile == "" || restoreID == "" {
+		return nil
+	}
+	var firstErr error
+	wrote := false
+	for _, marker := range restoreCommitMarkerPaths(dbFile) {
+		if err := writeRestoreCommitMarkerAt(marker, restoreID); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		wrote = true
+	}
+	if wrote {
+		return nil
+	}
+	return firstErr
+}
+
+// ReadRestoreCommitMarker returns the restore_id recorded beside the primary or
+// last-valid sibling, if any.
 func ReadRestoreCommitMarker(dbFile string) string {
 	if dbFile == "" {
 		return ""
 	}
-	body, err := os.ReadFile(lastValidPath(dbFile) + ".restore-id") //nolint:gosec
-	if err != nil {
-		return ""
+	for _, marker := range restoreCommitMarkerPaths(dbFile) {
+		body, err := os.ReadFile(marker) //nolint:gosec
+		if err != nil {
+			continue
+		}
+		if id := strings.TrimSpace(string(body)); id != "" {
+			return id
+		}
 	}
-	return strings.TrimSpace(string(body))
+	return ""
+}
+
+// CommitStagedDatabaseFile publishes a previously staged database candidate onto
+// dbFile without a live Database handle. The staged source is preserved: a
+// same-directory candidate is materialized and renamed so recovery can retry.
+func CommitStagedDatabaseFile(dbFile, stagedPath string) error {
+	if dbFile == "" {
+		return errors.New("empty database path")
+	}
+	if stagedPath == "" {
+		return errors.New("empty staged path")
+	}
+	body, err := os.ReadFile(stagedPath) //nolint:gosec
+	if err != nil {
+		return err
+	}
+	candidate, err := stageLocalCandidate(dbFile, body)
+	if err != nil {
+		return err
+	}
+	if err := syncDirectory(filepath.Dir(dbFile), defaultAtomicFileOps); err != nil {
+		_ = os.Remove(candidate)
+		return err
+	}
+	return commitLocalCandidate(dbFile, candidate)
 }
 
 // copyFileContents copies src to dst via a same-directory temp + rename so a

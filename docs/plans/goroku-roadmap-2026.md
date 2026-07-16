@@ -30,7 +30,7 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 |---|---|---|
 | M0.1 | **Завершено** | Operator confirmed token never exposed; local config storage OK; git ignore + scan-secrets in place. No rotation required. |
 | M0.2 | **Завершено** | Samples вне package path (`/user_modules/` ignored); runtime `dataRoot/modules`; parity clean on tracked tree (`a07c96a`). |
-| M1.1 | **Частично** | StageReset→FS→CommitStaged + journal/restore_id (`30958a7`). Residual: not single multi-store atomic; rare nil-DB window. |
+| M1.1 | **Завершено** | StageReset→FS→CommitStaged + journal/restore_id + retained staged-db + primary/last-valid markers. Residual: theoretical only (true multi-store single-rename impossible; FS-old+DB-new only if journal destroyed after rename). |
 | M1.2 | **Завершено** | limits/validation/redaction; M1.1 residual separate. |
 | M1.3 | **Завершено** | Account-scoped AssetChannel + race tests in `a07c96a` + clean race suite. |
 | M1.4 | **Завершено** | Typed web runtime registry/lifecycle tracked + verified. |
@@ -61,13 +61,13 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 | **M9.2** | **Завершено** | direct govulncheck hard + scan-secrets + CycloneDX. Org gitleaks/Syft residual OK. |
 | **M9.3** | **Завершено** | Soft coverage floor + policy docs. |
 | **M9.4** | **Завершено** | `test-critical.sh` + critical suites green on clean tree. |
-| **M10** | **Завершено** | Docs/Docker/release-check/canary; cosign optional residual OK. |
+| **M10** | **Завершено** | Docs/Docker/release-check/canary/SBOM CI artifact; optional cosign (`COSIGN_YES=1`) + Syft residual **closed**. |
 
 ### Следующий порядок исполнения
 
 1. ~~M6–M10 backlog~~ `4699404`; ~~residuals M4.2/M1.1 polish/M7-M10~~ `aed650e`.
 2. Push only on user ask; optional tag after CHANGELOG review.
-3. True leftovers: M0.1 token, M1.1 residual (nil-DB recovery / true multi-store rename), M7 full typing, M9.2 hard gate, M10 signed/canary.
+  3. True leftovers: M0.1 token, M1.1 theoretical multi-store residual only, M7 full typing, M9.2 hard gate. M10 residuals (SBOM CI, cosign optional, canary) closed.
 4. **gotd upgrade** separate PR.
 
 ### Worktree snapshot (для handoff)

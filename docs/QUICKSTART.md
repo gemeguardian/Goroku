@@ -49,7 +49,7 @@ install -d -m 700 /var/lib/goroku
 ```bash
 curl -sS http://127.0.0.1:8080/healthz   # liveness: ok
 curl -sS http://127.0.0.1:8080/readyz    # readiness: ok
-curl -sS http://127.0.0.1:8080/health    # JSON: status, clients, setup_completed
+curl -sS http://127.0.0.1:8080/health    # JSON: status, clients, setup_completed, version
 ```
 
 ## Honest compatibility

@@ -30,7 +30,8 @@ What it does:
 2. Runs critical tests: `go test -race -count=1 ./goroku/ ./goroku/web/`
 3. Writes `dist/SHA256SUMS`
 4. Optionally generates SBOM under `dist/sbom` (`RELEASE_CHECK_SBOM=0` to skip)
-5. Writes `dist/CANARY_CHECKLIST.txt` (operator canary / rollback smoke steps)
+5. Optionally signs the binary when `COSIGN_YES=1` and `cosign` is on `PATH` (see Cosign below)
+6. Writes `dist/CANARY_CHECKLIST.txt` (operator canary / rollback smoke steps)
 
 ## Manual release checklist
 
@@ -112,36 +113,76 @@ For richer Syft/CDX tooling, install those separately and attach artifacts at pu
 ## Cosign (optional)
 
 Artifact signing with [cosign](https://github.com/sigstore/cosign) is **optional** and not required for a Goroku release.
+Install cosign (any recent 2.x), then sign the **binary blob** (not a container image).
+
+### Sign + verify (static key pair)
 
 ```bash
-# keyless (OIDC) example — requires cosign + identity provider setup
-cosign sign-blob --bundle dist/goroku.sigbundle dist/goroku_1.0.0_linux_amd64
-cosign verify-blob --bundle dist/goroku.sigbundle \
-  --certificate-identity-regexp '.*' \
-  --certificate-oidc-issuer-regexp '.*' \
-  dist/goroku_1.0.0_linux_amd64
+# one-time keygen (protect cosign.key; never commit private keys)
+cosign generate-key-pair
 
-# or static key pair
-cosign sign-blob --key cosign.key dist/goroku_1.0.0_linux_amd64 > dist/goroku.sig
-cosign verify-blob --key cosign.pub --signature dist/goroku.sig dist/goroku_1.0.0_linux_amd64
+BIN=dist/goroku_1.0.0_linux_amd64   # path from release-check or manual build
+
+# sign → detached signature next to the binary
+cosign sign-blob --yes --key cosign.key \
+  --output-signature "${BIN}.sig" \
+  "${BIN}"
+
+# verify (publisher or operator)
+cosign verify-blob --key cosign.pub \
+  --signature "${BIN}.sig" \
+  "${BIN}"
 ```
 
-Operator verify (after download):
+Via release-check (same static key path):
+
+```bash
+COSIGN_YES=1 COSIGN_KEY=cosign.key bash scripts/release-check.sh
+# writes: dist/goroku_<ver>_<os>_<arch>.sig when cosign is installed
+```
+
+### Sign + verify (keyless OIDC)
+
+Requires interactive OIDC (or CI workload identity). Example for a local publisher:
+
+```bash
+BIN=dist/goroku_1.0.0_linux_amd64
+
+cosign sign-blob --yes --bundle "${BIN}.sigbundle" "${BIN}"
+
+# tighten identity/issuer to the publisher's GitHub/Google identity in production
+cosign verify-blob --bundle "${BIN}.sigbundle" \
+  --certificate-identity-regexp 'https://github.com/<org>/Goroku/.*' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  "${BIN}"
+```
+
+Via release-check (keyless when `COSIGN_KEY` is unset):
+
+```bash
+COSIGN_YES=1 bash scripts/release-check.sh
+# writes: dist/goroku_<ver>_<os>_<arch>.sigbundle when cosign is installed
+```
+
+### Operator verify (after download)
 
 ```bash
 # 1) always check SHA-256 first
 sha256sum -c SHA256SUMS
 
-# 2) if the publisher attached a cosign bundle / signature:
-cosign verify-blob --key cosign.pub --signature goroku.sig goroku_1.0.0_linux_amd64
-# or keyless bundle (identity/issuer must match the publisher's policy):
-cosign verify-blob --bundle goroku.sigbundle \
+# 2) static key signature (if published)
+cosign verify-blob --key cosign.pub \
+  --signature goroku_1.0.0_linux_amd64.sig \
+  goroku_1.0.0_linux_amd64
+
+# 3) or keyless bundle (identity/issuer must match the publisher's policy)
+cosign verify-blob --bundle goroku_1.0.0_linux_amd64.sigbundle \
   --certificate-identity-regexp '<publisher-identity>' \
   --certificate-oidc-issuer-regexp '<issuer>' \
   goroku_1.0.0_linux_amd64
 ```
 
-Publish `SHA256SUMS` either way; cosign bundles are additive. CI does not hard-require cosign.
+Publish `SHA256SUMS` either way; cosign signatures/bundles are additive. CI does not hard-require cosign.
 `scripts/release-check.sh` prints a canary checklist (`dist/CANARY_CHECKLIST.txt`) that includes optional cosign verify.
 
 ## gotd/td pin (do not casual-upgrade)
@@ -167,6 +208,7 @@ Routine `govulncheck` / SBOM work must not force a gotd upgrade.
 
 ## Out of scope for this subset
 
-- Mandatory cosign / full Syft SBOM pipeline in CI
+- Mandatory cosign hard-gate in CI (optional sign via `COSIGN_YES=1` only)
+- Mandatory Syft hard-gate (lightweight `generate-sbom.sh` is required in CI; Syft is optional continue-on-error)
 - Hardened systemd unit (see ops residual)
 - Automatic multi-region promotion

@@ -140,9 +140,15 @@ Web binds to `127.0.0.1` by default (`GOROKU_IP` / Docker may override).
 
 When the web panel is enabled:
 
-- `GET /health` — JSON: `status`, `clients`, `setup_completed` (no secrets)
+- `GET /health` — JSON: `status`, `clients`, `setup_completed`, `version` (no secrets)
 - `GET /healthz` — liveness (`ok`)
 - `GET /readyz` — readiness (`ok`; onboarding without a Telegram session is still ready)
+
+```bash
+curl -fsS "http://127.0.0.1:${PORT:-8080}/health"   # {"status":"ok",...,"version":"1.0.0"}
+curl -fsS "http://127.0.0.1:${PORT:-8080}/healthz"  # ok
+curl -fsS "http://127.0.0.1:${PORT:-8080}/readyz"   # ok
+```
 
 Full operations dashboard (module trust UI, sanitized log browser, update UI) is **not** shipped yet.
 

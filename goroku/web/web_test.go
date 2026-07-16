@@ -1365,6 +1365,9 @@ func TestHealthEndpointsHaveNoSecrets(t *testing.T) {
 	if !strings.Contains(body, `"clients":1`) && !strings.Contains(body, `"clients": 1`) {
 		t.Fatalf("health body missing clients: %q", body)
 	}
+	if !strings.Contains(body, `"version"`) {
+		t.Fatalf("health body missing version: %q", body)
+	}
 	for _, secretish := range []string{"token", "password", "api_hash", "session"} {
 		if strings.Contains(strings.ToLower(body), secretish) {
 			t.Fatalf("health body must not contain %q: %q", secretish, body)

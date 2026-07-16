@@ -33,13 +33,14 @@ When web is enabled (not `--no-web`):
 |----------|----------|
 | `GET /healthz` | `200` + plain `ok` (liveness) |
 | `GET /readyz` | `200` + plain `ok` (readiness; setup-without-client is ready) |
-| `GET /health` | `200` JSON: `status`, `clients`, `setup_completed` — **no secrets** |
+| `GET /health` | `200` JSON: `status`, `clients`, `setup_completed`, `version` — **no secrets** |
 
 HEAD is accepted on these routes. Example probe:
 
 ```bash
 curl -fsS "http://127.0.0.1:${PORT:-8080}/healthz"
 curl -fsS "http://127.0.0.1:${PORT:-8080}/readyz"
+curl -fsS "http://127.0.0.1:${PORT:-8080}/health"    # includes version string
 ```
 
 ## Restart

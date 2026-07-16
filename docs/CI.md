@@ -72,7 +72,7 @@ go test -race ./...
 | `govulncheck` full strict | Optional job (schedule / dispatch) |
 | Secret scanning (tracked tree) | Done — `scripts/scan-secrets.sh` in main CI job |
 | Host GitHub secret scanning / gitleaks org policy | **Residual** (repo-host feature; still do not commit runtime secrets) |
-| SBOM generation | Helper: `bash scripts/generate-sbom.sh` → minimal CycloneDX `sbom.cdx.json`, `SBOM_ARTIFACT_PATH`, `dist/SBOM_LATEST_PATH.txt`. Full Syft + cosign still **optional residual** |
+| SBOM generation | **Required in CI:** `bash scripts/generate-sbom.sh` → CycloneDX `sbom.cdx.json` uploaded as `sbom` artifact. **Optional:** pinned Syft (`SYFT_VERSION`, continue-on-error) uploads `sbom-syft` when install succeeds. Cosign remains optional local (`COSIGN_YES=1`) |
 | Dependency review action on PRs | **Residual** |
 | License policy automation | **Residual** |
 | Mass `gotd/td` upgrade | **Out of scope** — see `docs/RELEASE.md` pin notes |
