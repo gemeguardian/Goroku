@@ -30,8 +30,8 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 |---|---|---|
 | M0.1 | **Ручной блокер** | Ротация действующего token остаётся внешним ручным действием. |
 | M0.2 | **Завершено** | Samples вне package path (`/user_modules/` ignored); runtime `dataRoot/modules`; parity clean on tracked tree (`a07c96a`). |
-| M1.1 | **Частично** | prepare/apply + validation tracked; residual FS+DB не crash-atomic. |
-| M1.2 | **Частично** | limits/validation/redaction tracked; blocked by M1.1 residual. |
+| M1.1 | **Частично** | journal phases + recovery (`aed650e`); still not joint FS+DB atomic. |
+| M1.2 | **Завершено** | limits/validation/redaction; M1.1 residual separate. |
 | M1.3 | **Завершено** | Account-scoped AssetChannel + race tests in `a07c96a` + clean race suite. |
 | M1.4 | **Завершено** | Typed web runtime registry/lifecycle tracked + verified. |
 | M1.5 | **Завершено** | Owner-aware registrations/leases tracked + verified. |
@@ -56,26 +56,23 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 | **M6.3** | **Завершено** | Dispatch pipeline + reason codes + regex-at-register. |
 | **M6.4** | **Завершено** | Web service split; no `web.Instance`. |
 | **M6.5** | **Завершено** | Client file split; EntityCache ownership residual (non-blocking). |
-| **M7** | **Частично** | Typed cache/schema/qrLogin in tree; full `any` removal residual. |
+| **M7** | **Частично** | Loader typed + Settings schema (`aed650e`); more modules still ConfigDefaults. |
 | **M8** | **Завершено** | CLI proxy/qr/no-auth, `/health`, honest README (ops UI residual OK). |
-| **M9.2** | **Частично** | Soft govulncheck; residual hard gate/SBOM/secret-scan. |
+| **M9.2** | **Частично** | soft+optional strict govulncheck, SBOM script; hard gate residual. |
 | **M9.3** | **Завершено** | Soft coverage floor + policy docs. |
 | **M9.4** | **Завершено** | `test-critical.sh` + critical suites green on clean tree. |
-| **M10** | **Частично** | Docs+Docker+goreleaser present; signed release/canary residual. |
-| **M1.1** | **Частично** | restore journal; not joint FS+DB atomic. |
-| **M1.2** | **Завершено** | limits/validation tracked; M1.1 residual separate. |
-| M4.2 | **Завершено** | worker Yaegi via `--yaegi-worker` re-exec + ProcessExecutor kill. |
+| **M10** | **Частично** | HEALTHCHECK/CHANGELOG; signed/canary residual. |
 
 ### Следующий порядок исполнения
 
-1. ~~Commit M6–M10~~ **done** (`4699404`); clean-clone verify **PASS**.
-2. Push `master` only on user ask; optional tag `v1.x` after CHANGELOG review.
-3. Residuals (post-release ok): M0.1 token, M1.1 joint atomicity, M7 full typing, M9.2 hard gates, M10 signed/canary.
+1. ~~M6–M10 backlog~~ `4699404`; ~~residuals M4.2/M1.1 polish/M7-M10~~ `aed650e`.
+2. Push only on user ask; optional tag after CHANGELOG review.
+3. True leftovers: M0.1 token, M1.1 joint FS+DB atomic, M7 full typing, M9.2 hard gate, M10 signed/canary.
 4. **gotd upgrade** separate PR.
 
 ### Worktree snapshot (для handoff)
 
-- Branch: `master` **ahead 3** (`a07c96a`, `96975c7`, `4699404`); clean product tree after commit.
+- Branch: `master` **ahead 5** (…`aed650e`); product clean after residual commit.
 - Local only (ignored): `user_modules/`, `.goroku_plugins/`, secrets/runtime.
 - `gotd/td` **not** upgraded.
 - Prefer `TMPDIR=/root/.cache/go-tmp`.
