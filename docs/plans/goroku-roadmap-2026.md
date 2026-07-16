@@ -28,7 +28,7 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 
 | Задача | Статус | Краткое свидетельство/результат |
 |---|---|---|
-| M0.1 | **Ручной блокер** | Ротация действующего token остаётся внешним ручным действием. |
+| M0.1 | **Завершено** | Operator confirmed token never exposed; local config storage OK; git ignore + scan-secrets in place. No rotation required. |
 | M0.2 | **Завершено** | Samples вне package path (`/user_modules/` ignored); runtime `dataRoot/modules`; parity clean on tracked tree (`a07c96a`). |
 | M1.1 | **Частично** | StageReset→FS→CommitStaged + journal/restore_id (`30958a7`). Residual: not single multi-store atomic; rare nil-DB window. |
 | M1.2 | **Завершено** | limits/validation/redaction; M1.1 residual separate. |
