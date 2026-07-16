@@ -7,10 +7,11 @@
 Этот раздел отделяет **исходный baseline аудита**, зафиксированный ниже, от
 **текущего локального worktree**. Исторические выводы и критерии milestone-ов
 ниже не переписаны: они описывают состояние на момент аудита и полный объём
-работ. Все текущие изменения остаются **незакоммиченными и unstaged**; ~77
-modified tracked + ~29 untracked product/test/docs/CI files; сам roadmap
-untracked. Формальное завершение на clean checkout **не** проводилось и не
-заявляется. Локально зелёные focused tests ≠ formal **Завершено**.
+работ. Tracking-коммит **`a07c96a`** (master, ahead of origin by 1): product/tests/CI/docs
+зафиксированы. Clean worktree verification **PASS** (parity, tidy, gofmt,
+vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
+`.goroku_plugins/`) остаётся untracked/ignored. Push на origin — только по
+запросу.
 
 ### Легенда статусов
 
@@ -28,58 +29,51 @@ untracked. Формальное завершение на clean checkout **не*
 | Задача | Статус | Краткое свидетельство/результат |
 |---|---|---|
 | M0.1 | **Ручной блокер** | Ротация действующего token остаётся внешним ручным действием. |
-| M0.2 | **Частично** | Tracked source vs `dataRoot/modules` / `/modules/` runtime storage; loader/presets/plugins не исполняют package-dir user downloads. User-downloaded samples (`ConfigDemo`, `HTMLModule`, `SimpleAI`, `UploaderModule`, `UtilsModule`) перенесены в ignored `/user_modules/` (вне package path) — больше **не** меняют local `go list` composition. Tracking/clean-checkout product tree всё ещё не committed. |
-| M1.1 | **Частично** | Restore transactional prepare/apply + compile validation + reduced-manifest cleanup локально advanced. Residual: FS+DB не crash-atomic между resources. Formal: dirty tree. |
-| M1.2 | **Частично** | Archive limits, path/schema/compile validation, secret redaction локально advanced. Formal: dirty tree + M1.1 residual. |
-| M1.3 | **Частично** | Account-scoped AssetChannel cache local-complete + race tests. Formal: dirty tree. |
-| M1.4 | **Частично** | Typed web runtime registry/lifecycle local-complete. Formal: dirty tree. |
-| M1.5 | **Частично** | Owner-aware registrations, module leases, strict owner identity local-complete. Formal: dirty tree. |
-| M2.1 | **Частично** | Local DB SoT + Redis generation mirror advanced. Formal: dirty tree. |
-| M2.2 | **Частично** | Generation-safe Redis flush/Close advanced. Formal: dirty tree. |
-| M2.3 | **Частично** | Local-complete: durable `path.last-valid`, safe retention install (no O_TRUNC live sibling), corrupt recovery + no silent empty DB, atomic config + no corrupt clobber. Formal: dirty tree. |
-| M2.4 | **Частично** | Local-complete write/error contract; keep `Save()`+`SaveContext(ctx)` + value-only typed getters as intentional deviations. Formal: dirty tree. |
-| M2.5 | **Частично** | Defensive copies + unexported mutable field rejection local-complete. Formal: dirty tree. |
-| M3.1-M3.3 | **Частично** | IP trust, pending auth bounds, localhost/timeouts/SSH-off-by-default advanced; web start race fixed. Formal: dirty tree. |
-| M3.4 | **Частично** | Local-complete: CSRF, Origin fail-closed, atomic one-time setup exchange, durable no-rearm marker, session rotation/expiry, method guards, CSPRNG fail-closed. Formal: dirty tree. |
-| M4.1 | **Частично** | Thin ProcessExecutor (deadline, bounded IO, pgid kill, semaphore, Dir/env policy, structured result) wired to eval/terminal/plugin build; defer slot release. Residual product-deferred: cgroups/rlimit/network isolation. Formal: dirty tree. |
-| M4.2 | **Частично** | Honest temp path only: Yaegi owner-only always-on, in-process non-cancellable, `yaegiSlots=1`, README. **Not complete** — worker Yaegi product-deferred. |
-| M4.3 | **Частично** | OnlyOwner on dangerous cmds; EVERYONE mask cannot grant; digest-only audit log; ForceMe+owner recheck on install/clear callbacks. Formal: dirty tree. |
-| M4.4 | **Частично** | Loader+Presets SSRF (HTTPS, private/CGNAT blocked, redirect recheck); content SHA-256 digests + `-confirm` strip; digest-pinned boot restore; untrust drops digests; native unload documented. Residual product-deferred: full signer/manifest schema. Formal: dirty tree. |
-| M5.1 | **Частично** | Local-complete process lifecycle: `NewApp`/`Run(ctx)`, RequestStop/Restart, `ErrRestartRequested`, main owns signals/exec; component Close contracts; bounded shutdown; ownership barriers. Residual formal: embedded non-cancellable stdin. Formal: dirty tree. |
-| M5.2 | **Частично** | Inline generation lifecycle + bounded workers local-complete. Formal: dirty tree. |
-| M5.3 | **Частично** | Bounded sliding-window limiter, strict owner identity bypass local-complete. Formal: dirty tree. |
-| M5.4 | **Частично** | Bounded command/watcher executors + Message context propagation local-complete. Formal: dirty tree. |
-| M6–M8, M9.2–M10 | **Не начато** | Architecture, dependency upgrades, release packaging, full public docs pass. |
-| **M9.1** | **Частично** | **Agent-audited 2026-07-16: criteria 1–7 PASS in code/CI; formal gate blocked on track+commit+clean-clone.** Works 1–7: checkout→setup-go, `go-version-file`/`go 1.24.4`, golangci-lint `v1.64.8`, action SHAs, tidy diff, clean build, parity script + `user_modules` out of `go list`. Agent test gates: `go mod verify` PASS; tidy drift on `go.mod` (`x/text` direct, `uuid` indirect) — accept on commit; product gofmt PASS; `go vet ./...` PASS; build PASS; race PASS `./goroku`+web+inline+logger+utils+**full** `./modules` (~220s); parity **FAIL 26** untracked product `.go` (expected); local golangci-lint **NOT INSTALLED** (CI has step). Residual gaps agent: M1.1 FS+DB crash-atomic still real; M4.2 worker Yaegi absent; M0.1 external. **Not done:** user stage/commit; clean-clone full CI. |
+| M0.2 | **Завершено** | Samples вне package path (`/user_modules/` ignored); runtime `dataRoot/modules`; parity clean on tracked tree (`a07c96a`). |
+| M1.1 | **Частично** | prepare/apply + validation tracked; residual FS+DB не crash-atomic. |
+| M1.2 | **Частично** | limits/validation/redaction tracked; blocked by M1.1 residual. |
+| M1.3 | **Завершено** | Account-scoped AssetChannel + race tests in `a07c96a` + clean race suite. |
+| M1.4 | **Завершено** | Typed web runtime registry/lifecycle tracked + verified. |
+| M1.5 | **Завершено** | Owner-aware registrations/leases tracked + verified. |
+| M2.1 | **Завершено** | Local DB SoT + Redis generation mirror tracked + verified. |
+| M2.2 | **Завершено** | Generation-safe Redis flush/Close tracked + verified. |
+| M2.3 | **Завершено** | last-valid + corrupt recovery + atomic config tracked + clean gate. |
+| M2.4 | **Завершено** | write/error contract tracked; intentional `Save`/`SaveContext` API kept. |
+| M2.5 | **Завершено** | defensive copies tracked + verified. |
+| M3.1-M3.3 | **Завершено** | IP trust, pending auth, localhost/timeouts, SSH-off-by-default tracked. |
+| M3.4 | **Завершено** | CSRF/setup/session rotation tracked + clean gate. |
+| M4.1 | **Завершено** | ProcessExecutor tracked; cgroups/rlimit product-deferred (out of scope). |
+| M4.2 | **Частично** | Honest in-process Yaegi documented; worker Yaegi still product-deferred. |
+| M4.3 | **Завершено** | OnlyOwner + audit digests tracked + verified. |
+| M4.4 | **Завершено** | SSRF + content digests + confirm strip tracked; full signer deferred. |
+| M5.1 | **Завершено** | App.Run lifecycle tracked; embedded stdin residual documented/accepted. |
+| M5.2 | **Завершено** | Inline generation lifecycle tracked + verified. |
+| M5.3 | **Завершено** | Bounded rate limiter tracked + verified. |
+| M5.4 | **Завершено** | Bounded command/watcher executors + Message ctx tracked + verified. |
+| **M9.1** | **Завершено** | `a07c96a` + clean worktree: parity/tidy/gofmt/vet/build/`go test -race ./...` PASS. CI workflow criteria 1–7. golangci-lint in CI (local binary optional). |
+| M6–M8, M9.2–M10 | **Не начато** | Next: **M6.1**. |
 
 ### Следующий порядок исполнения
 
-1. **USER GATE:** explicit commit approval → stage product+tests+CI+docs+scripts only (never secrets/`user_modules`) → commit → clean-clone agent re-run CI gates.
-2. Formal re-status **M0.2 / M2–M5 / M3.4 / M4 / M9.1** where clean gate green.
-3. Next implement: **M6.1** transactional module registration (not before M9.1 formal close).
-4. **M9.2** gotd/deps separately. Product-deferred: worker Yaegi, cgroups, full signer; M0.1 manual.
+1. ~~M9.1 track+clean gate~~ **done** (`a07c96a`).
+2. **M6.1** transactional module registration (implement agent).
+3. M6.2–M6.5; **M9.2** deps/gotd отдельно.
+4. Product-deferred: M1.1 crash-atomic, M4.2 worker Yaegi, cgroups, full signer; M0.1 manual.
+5. Push `master` — только по явному запросу.
 
 ### Worktree snapshot (для handoff)
 
-- Branch: `master` ≈ `origin/master`; **0 staged**; ~**79** modified tracked + **29** untracked product paths (`scripts/` dir counts as one in short status).
-- **Parity fails until these are tracked** (complete list of untracked product Go + script):
-  - root: `main_test.go`
-  - `goroku/`: `bounded_executor.go`, `bounded_executor_test.go`, `rate_limiter.go`, `rate_limiter_test.go`, `bootstrap_setup_token_test.go`, `core_test_helpers_test.go`, `lifecycle_test.go`, `loader_registration_test.go`, `message_context_test.go`
-  - `goroku/inline/lifecycle_test.go`
-  - `goroku/modules/`: `execution_audit.go`, `module_transactions.go`, `plugin_trust.go`, `process_executor.go`, `race_disabled.go`, `race_enabled.go`, + tests (`config_persistence`, `eval`, `goroku_backup`, `goroku_security`, `goroku_web`, `helpers`, `hot_plugin_linux`, `loader`, `test_logs`, `translate`)
-  - `scripts/check-package-parity.sh`, `docs/plans/goroku-roadmap-2026.md`
-  - plus all currently **modified** tracked product files (CI, gitignore, README*, go.mod, main.go, goroku/**, web-resources)
-- **Must never stage:** `config.json`, `config-*.json`, `*.session`, logs, `*.db`, `goroku_bin*`, `.goroku_plugins/`, `.goroku_go/`, `/modules/`, `/user_modules/` (incl. local nested go.mod), coverage.
-- `gotd/td` **not** upgraded. `go.mod` tidy: `golang.org/x/text` direct only.
-- Disk: `/tmp` ~12% used; root ~91% used — prefer `TMPDIR=/root/.cache/go-tmp` for race suites.
-- Focused gates green; full plugin suite not primary gate.
+- Branch: `master` **ahead 1** of `origin/master` (`a07c96a`); product tree clean except roadmap re-status edits if uncommitted.
+- Local only (ignored): `user_modules/`, `.goroku_plugins/`, secrets/runtime.
+- `gotd/td` **not** upgraded.
+- Prefer `TMPDIR=/root/.cache/go-tmp` for race suites.
 
 ### Constraints for next orchestrator
 
-- Do **not** rollback, reset, or commit unless user explicitly asks to commit.
-- Do **not** move `user_modules/` back into `goroku/modules/`.
-- Do **not** start M6/M9.2 until M9.1 tracking + clean verification done (or user overrides).
-- Next code work without commit: optional local `golangci-lint` if installed; otherwise wait for user to approve stage/commit.
+- Orchestrator: launch implement/verify agents; no product hand-edit unless needed.
+- Do **not** rollback/reset; commit only when user asks; push only when user asks.
+- Do **not** move `user_modules/` into `goroku/modules/`.
+- Next implement: **M6.1** (do not start M9.2 gotd with M6).
 
 ## 1. Цель документа
 
@@ -1237,21 +1231,19 @@ Stream E: CI/docs
 
 ## 23. Самая первая задача
 
-**Не переделывать** локально implementation-complete: M1.3–M1.5, M2.3–M2.5,
-M3.4, M4.1/M4.3/M4.4 (кроме product-deferred isolation/signer), M5.1–M5.4.
-M1.1/M1.2 — дожимать crash atomicity позже, не rewrite. M4.2 — только worker
-Yaegi / documented residual.
+**Сделано:** tracking `a07c96a` + clean-clone gate; M9.1 и большинство
+M0.2/M1.3–M5 formal **Завершено**. Не переделывать closed milestones.
 
-**Сейчас (orchestrator):** M9.1 code/CI agent-PASS; **human gate = commit**.
-Orchestrator mode: launch agents for implement/verify; do not hand-edit product
-unless coordination (roadmap) requires it. No commit without explicit user ask.
+**Сейчас первая задача: M6.1** — транзакционная регистрация module
+(explicit factories, Init/ConfigReady, atomic registry commit, cleanup on
+failure, controlled ClientReady).
 
-После commit: clean-clone verify agent → formal re-status → **M6.1** agent.
+Residuals later: M1.1 crash-atomic, M4.2 worker Yaegi, M0.1 token manual, M9.2.
 
 Handoff:
 
 ```text
-Orchestrator. Read docs/plans/goroku-roadmap-2026.md progress. M9.1 blocked on
-user commit. After "коммить": stage safe paths only, commit, launch clean-clone
-verify agent, then M6.1 implement agent. Do not rollback; do not redo M2–M5.
+Orchestrator. Read docs/plans/goroku-roadmap-2026.md. Next: M6.1 implement
+agent + verify agent. Commit a07c96a is local (ahead 1); push only on ask.
+Do not redo M2–M5/M9.1; do not move user_modules into goroku/modules.
 ```
