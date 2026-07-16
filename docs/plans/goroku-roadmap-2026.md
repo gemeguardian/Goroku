@@ -67,7 +67,7 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 
 1. ~~M6–M10 backlog~~ `4699404`; ~~residuals M4.2/M1.1 polish/M7-M10~~ `aed650e`.
 2. Push only on user ask; optional tag after CHANGELOG review.
-  3. True leftovers: M0.1 token, M1.1 theoretical multi-store residual only, M7 full typing, M9.2 hard gate. M10 residuals (SBOM CI, cosign optional, canary) closed.
+   3. Timeline formal complete (`25083e6`). Optional later: gotd upgrade PR, mandatory cosign.
 4. **gotd upgrade** separate PR.
 
 ### Worktree snapshot (для handoff)
