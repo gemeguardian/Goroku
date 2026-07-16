@@ -146,6 +146,17 @@ root передавайте через `--data-root /var/lib/goroku`. Загру
 
 Полный operations dashboard (trust UI модулей, sanitized logs, update UI) **пока не** поставляется.
 
+### Документация
+
+| Документ | Содержание |
+|----------|------------|
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | Сборка, первый запуск, production layout |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Карта кода |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Запуск, health, backup, restart, Docker |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Флаги, env, data-root |
+| [docs/RELEASE.md](docs/RELEASE.md) | ldflags, manual / GoReleaser |
+| [SECURITY.md](SECURITY.md) | Threat model + ротация секретов (M0.1, BotFather checklist) |
+
 ### Другое
 <details>
   <summary><b>На телефоне (Termux / Userland)</b></summary>

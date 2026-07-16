@@ -75,8 +75,9 @@ Operators own this end-to-end. Goroku cannot revoke or reissue Bot API tokens.
   - main job: full scan **advisory** (stdlib / transitive noise does not block merge)
   - `govulncheck-direct` job: fails only on vulns whose vulnerable module is a **direct** `go.mod` require (`GOVULNCHECK_DIRECT_ONLY=1`, stdlib ignored via `-json` filter)
   - optional full strict job on schedule / `workflow_dispatch` (`GOVULNCHECK_STRICT=1`)
-- Lightweight SBOM: `bash scripts/generate-sbom.sh [OUT_DIR]` → default `dist/sbom`; prints `SBOM_ARTIFACT_PATH=…` and writes `SBOM_ARTIFACTS.txt` / `dist/SBOM_LATEST_PATH.txt`.
-- **Not yet automated:** secret scanning, full Syft/CycloneDX publish, PR dependency-review, license policy, cosign (optional — see `docs/RELEASE.md`).
+- **Secret scanning (tracked tree):** `bash scripts/scan-secrets.sh` — high-entropy / known secret filename patterns on `git ls-files` only; fails CI if hits. Does **not** scan untracked runtime files (`config.json`, sessions) — keep those gitignored.
+- Lightweight SBOM: `bash scripts/generate-sbom.sh [OUT_DIR]` → default `dist/sbom`; minimal CycloneDX 1.5 JSON (`sbom.cdx.json` / `sbom-components.json` from `go list -m -json`); prints `SBOM_ARTIFACT_PATH=…` and writes `SBOM_ARTIFACTS.txt` / `dist/SBOM_LATEST_PATH.txt`.
+- **Not yet automated:** host GitHub secret-scanning org policy, full Syft pipeline, PR dependency-review, license policy, mandatory cosign (optional — see `docs/RELEASE.md`).
 - Do **not** mass-upgrade `gotd/td` as part of routine security scans — treat that as a separate migration (`docs/RELEASE.md`).
 
 ## Reporting

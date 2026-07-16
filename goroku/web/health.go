@@ -5,6 +5,13 @@ import (
 	"net/http"
 )
 
+// healthPayload is the typed /health JSON body (no secrets).
+type healthPayload struct {
+	Status         string `json:"status"`
+	Clients        int    `json:"clients"`
+	SetupCompleted bool   `json:"setup_completed"`
+}
+
 // HealthHandler returns a minimal ops snapshot without secrets.
 // GET /health
 func (w *Web) HealthHandler(wr http.ResponseWriter, r *http.Request) {
@@ -12,10 +19,10 @@ func (w *Web) HealthHandler(wr http.ResponseWriter, r *http.Request) {
 		http.Error(wr, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	payload := map[string]any{
-		"status":          "ok",
-		"clients":         w.clientCount(),
-		"setup_completed": SetupCompleted(w.dataRoot),
+	payload := healthPayload{
+		Status:         "ok",
+		Clients:        w.clientCount(),
+		SetupCompleted: SetupCompleted(w.dataRoot),
 	}
 	wr.Header().Set("Content-Type", "application/json; charset=utf-8")
 	wr.Header().Set("Cache-Control", "no-store")

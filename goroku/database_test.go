@@ -2,6 +2,7 @@ package goroku
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1404,6 +1405,10 @@ func TestDatabaseAtomicWriteCommitBoundary(t *testing.T) {
 
 			ops := defaultAtomicFileOps
 			calls := 0
+			// stageLocalCandidate fsyncs the temp file only; commitLocalCandidate dir syncs:
+			// 1 = pre-rename backup snapshot dir sync (when previous file exists)
+			// 2 = post-rename primary dir sync
+			// 3 = last-valid retention dir sync
 			switch stage {
 			case "pre-rename":
 				ops.rename = func(string, string) error { return errors.New("injected rename failure") }
@@ -1436,8 +1441,6 @@ func TestDatabaseAtomicWriteCommitBoundary(t *testing.T) {
 					return err
 				}
 			case "post-rename-cleanup":
-				// 1 = pre-rename snapshot dir sync, 2 = post-rename primary dir sync,
-				// 3 = last-valid retention dir sync.
 				original := ops.syncDir
 				ops.syncDir = func(file *os.File) error {
 					calls++
@@ -1531,10 +1534,12 @@ func TestDatabaseRollbackConsumesRevisionAfterCommittedWarning(t *testing.T) {
 
 	ops := defaultAtomicFileOps
 	calls := 0
+	// See TestDatabaseAtomicWriteCommitBoundary: post-rename primary dir sync is call 2.
+	const postRenameDirCall = 2
 	original := ops.syncDir
 	ops.syncDir = func(file *os.File) error {
 		calls++
-		if calls == 2 {
+		if calls == postRenameDirCall {
 			return errors.New("injected post-rename sync failure")
 		}
 		return original(file)
@@ -1836,6 +1841,92 @@ func TestDatabaseTypedSetterRetainsDefensiveCopy(t *testing.T) {
 	got := db.GetStringMapStringSlice("owner", "key", nil)
 	if !reflect.DeepEqual(got, map[string][]string{"key": {"old"}}) {
 		t.Fatalf("typed setter retained caller alias: %#v", got)
+	}
+}
+
+func TestDatabaseStageResetCommitsOnlyOnRename(t *testing.T) {
+	dir := t.TempDir()
+	db := NewDatabase(81)
+	db.dbFile = filepath.Join(dir, "database.json")
+	db.initialized = true
+	if err := db.Set("owner", "key", "old"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(db.dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	staged, err := db.StageReset(map[string]map[string]any{"owner": {"key": "staged"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged == "" {
+		t.Fatal("empty staged path")
+	}
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("staged missing: %v", err)
+	}
+	primary, err := os.ReadFile(db.dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(primary, before) {
+		t.Fatal("StageReset renamed onto primary")
+	}
+	if got := db.GetString("owner", "key", ""); got != "old" {
+		t.Fatalf("memory after stage = %q, want old", got)
+	}
+
+	if err := db.CommitStagedReset(staged, map[string]map[string]any{"owner": {"key": "staged"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := db.GetString("owner", "key", ""); got != "staged" {
+		t.Fatalf("memory after commit = %q, want staged", got)
+	}
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Fatalf("staged path still present after commit: %v", err)
+	}
+	if _, err := os.Stat(lastValidPath(db.dbFile)); err != nil {
+		t.Fatalf("last-valid missing after staged commit: %v", err)
+	}
+}
+
+func TestDatabaseAbortStagedReset(t *testing.T) {
+	dir := t.TempDir()
+	db := NewDatabase(82)
+	db.dbFile = filepath.Join(dir, "database.json")
+	db.initialized = true
+	if err := db.Set("owner", "key", "old"); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := db.StageReset(map[string]map[string]any{"owner": {"key": "gone"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AbortStagedReset(staged); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Fatalf("staged still present after abort: %v", err)
+	}
+	if got := db.GetString("owner", "key", ""); got != "old" {
+		t.Fatalf("memory after abort = %q", got)
+	}
+}
+
+func TestWriteAndReadRestoreCommitMarker(t *testing.T) {
+	dir := t.TempDir()
+	dbFile := filepath.Join(dir, "config-1.json")
+	if err := WriteRestoreCommitMarker(dbFile, "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	if got := ReadRestoreCommitMarker(dbFile); got != "abc123" {
+		t.Fatalf("marker = %q, want abc123", got)
+	}
+	markerPath := lastValidPath(dbFile) + ".restore-id"
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("marker path missing: %v", err)
 	}
 }
 

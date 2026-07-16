@@ -35,11 +35,12 @@ go list -m all >"${OUT_ABS}/go-modules.txt"
 echo "Writing direct requires to ${OUT_ABS}/go-modules-direct.txt"
 go list -m -f '{{if not .Indirect}}{{.Path}} {{.Version}}{{end}}' all | sed '/^$/d' >"${OUT_ABS}/go-modules-direct.txt"
 
-# Minimal CycloneDX-like component list (JSON) for tooling that accepts simple graphs.
-# Not a full CycloneDX 1.5 document — usable as a release artifact path.
-echo "Writing components inventory to ${OUT_ABS}/sbom-components.json"
+# Minimal CycloneDX 1.5 JSON (hand-built from `go list -m -json`, no Syft/cdxgen).
+# Emits serialNumber, bom-ref, purl, and a flat dependency edge from the root app
+# to every module component. Sufficient for release attach; Syft remains optional.
+echo "Writing CycloneDX inventory to ${OUT_ABS}/sbom.cdx.json and ${OUT_ABS}/sbom-components.json"
 python3 - "${OUT_ABS}" "${MODULE_PATH}" "${MODULE_VERSION}" "${COMMIT}" <<'PY'
-import json, subprocess, sys, datetime
+import hashlib, json, subprocess, sys, datetime, uuid
 
 out_dir, main_path, main_ver, commit = sys.argv[1:5]
 raw = subprocess.check_output(["go", "list", "-m", "-json", "all"], text=True)
@@ -57,30 +58,56 @@ while idx < len(raw):
         continue
     mods.append(obj)
 
+def bom_ref(path: str, ver: str) -> str:
+    key = f"{path}@{ver}" if ver else path
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    return f"pkg:golang/{path}@{ver}" if ver else f"pkg:golang/{path}#{digest}"
+
+ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+root_ref = bom_ref(main_path, main_ver)
 components = []
+dep_refs = []
 for m in mods:
     path = m["Path"]
-    ver = m.get("Version") or ("devel" if path == main_path else "")
+    if path == main_path:
+        continue  # root lives in metadata.component
+    ver = m.get("Version") or ""
+    ref = bom_ref(path, ver)
+    dep_refs.append(ref)
     components.append({
         "type": "library",
+        "bom-ref": ref,
         "name": path,
         "version": ver,
         "purl": f"pkg:golang/{path}@{ver}" if ver else f"pkg:golang/{path}",
         "scope": "required" if not m.get("Indirect") else "optional",
         "properties": [
             {"name": "go.module.indirect", "value": str(bool(m.get("Indirect")))},
-            {"name": "go.module.main", "value": str(path == main_path)},
         ],
     })
+
+# Stable-ish serial from module+commit (UUID namespace DNS + name) for tooling that wants one.
+serial = "urn:uuid:" + str(uuid.uuid5(uuid.NAMESPACE_URL, f"goroku-sbom:{main_path}:{commit}:{main_ver}"))
 
 doc = {
     "bomFormat": "CycloneDX",
     "specVersion": "1.5",
+    "serialNumber": serial,
     "version": 1,
     "metadata": {
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timestamp": ts,
+        "tools": {
+            "components": [
+                {
+                    "type": "application",
+                    "name": "scripts/generate-sbom.sh",
+                    "version": "1",
+                }
+            ]
+        },
         "component": {
             "type": "application",
+            "bom-ref": root_ref,
             "name": main_path,
             "version": main_ver,
             "purl": f"pkg:golang/{main_path}@{main_ver}",
@@ -88,16 +115,21 @@ doc = {
         "properties": [
             {"name": "goroku.git_commit", "value": commit},
             {"name": "goroku.sbom_generator", "value": "scripts/generate-sbom.sh"},
-            {"name": "goroku.sbom_note", "value": "Lightweight go-list inventory; full Syft/CycloneDX optional"},
+            {"name": "goroku.sbom_note", "value": "Minimal CycloneDX from go list -m -json; Syft optional"},
         ],
     },
     "components": components,
+    "dependencies": [
+        {"ref": root_ref, "dependsOn": sorted(set(dep_refs))},
+    ],
 }
-path = f"{out_dir}/sbom-components.json"
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(doc, f, indent=2)
-    f.write("\n")
-print(f"Wrote {path} ({len(components)} components)")
+
+for name in ("sbom.cdx.json", "sbom-components.json"):
+    path = f"{out_dir}/{name}"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2)
+        f.write("\n")
+    print(f"Wrote {path} ({len(components)} components, serial={serial})")
 PY
 
 BIN="${GOROKU_BIN:-}"

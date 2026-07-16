@@ -56,12 +56,12 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 | **M6.3** | **Завершено** | Dispatch pipeline + reason codes + regex-at-register. |
 | **M6.4** | **Завершено** | Web service split; no `web.Instance`. |
 | **M6.5** | **Завершено** | Client file split; EntityCache ownership residual (non-blocking). |
-| **M7** | **Частично** | Loader typed + Settings schema (`aed650e`); more modules still ConfigDefaults. |
+| **M7** | **Частично** | Built-in config modules on `ConfigSchema`; web/inline compile-time asserts; cache perms accessors. Residual: gotd participant unions as `any`, inline `WithModule(func(any))`, full hot-path entity typing. |
 | **M8** | **Завершено** | CLI proxy/qr/no-auth, `/health`, honest README (ops UI residual OK). |
-| **M9.2** | **Частично** | soft+optional strict govulncheck, SBOM script; hard gate residual. |
+| **M9.2** | **Частично** | advisory + `govulncheck-direct` hard gate, `scan-secrets.sh`, minimal CycloneDX SBOM. Residual: Syft pipeline, PR dependency-review, license policy. |
 | **M9.3** | **Завершено** | Soft coverage floor + policy docs. |
 | **M9.4** | **Завершено** | `test-critical.sh` + critical suites green on clean tree. |
-| **M10** | **Частично** | HEALTHCHECK/CHANGELOG; signed/canary residual. |
+| **M10** | **Частично** | HEALTHCHECK, release-check canary checklist, cosign verify docs, SemVer note. Residual: mandatory signed release / Syft in CI. |
 
 ### Следующий порядок исполнения
 

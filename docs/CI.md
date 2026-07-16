@@ -12,7 +12,9 @@ Hard gates (must pass):
 4. `go vet ./...`
 5. `golangci-lint` (pinned version)
 6. `go build` main binary
-7. `go test -race ./...`
+7. `scripts/scan-secrets.sh` (tracked tree only; M9.2)
+8. `go test -race ./...`
+9. Job `govulncheck-direct` (`GOVULNCHECK_DIRECT_ONLY=1`)
 
 Soft / advisory:
 
@@ -68,8 +70,9 @@ go test -race ./...
 | `govulncheck` advisory (pinned) | Done — main job |
 | `govulncheck` direct-deps hard gate | Done — `govulncheck-direct` + `GOVULNCHECK_DIRECT_ONLY=1` |
 | `govulncheck` full strict | Optional job (schedule / dispatch) |
-| Secret scanning (gitleaks / GitHub secret scanning) | **Residual** — enable on the host repo; do not commit runtime secrets |
-| SBOM generation | Helper: `bash scripts/generate-sbom.sh` → `SBOM_ARTIFACT_PATH`, `dist/sbom/*`, `dist/SBOM_LATEST_PATH.txt`. Full Syft + cosign still **optional residual** |
+| Secret scanning (tracked tree) | Done — `scripts/scan-secrets.sh` in main CI job |
+| Host GitHub secret scanning / gitleaks org policy | **Residual** (repo-host feature; still do not commit runtime secrets) |
+| SBOM generation | Helper: `bash scripts/generate-sbom.sh` → minimal CycloneDX `sbom.cdx.json`, `SBOM_ARTIFACT_PATH`, `dist/SBOM_LATEST_PATH.txt`. Full Syft + cosign still **optional residual** |
 | Dependency review action on PRs | **Residual** |
 | License policy automation | **Residual** |
 | Mass `gotd/td` upgrade | **Out of scope** — see `docs/RELEASE.md` pin notes |
@@ -77,11 +80,12 @@ go test -race ./...
 Local:
 
 ```bash
+bash scripts/scan-secrets.sh                             # tracked-tree secret scan
 bash scripts/govulncheck.sh                              # advisory full
 GOVULNCHECK_DIRECT_ONLY=1 bash scripts/govulncheck.sh    # fail on direct-dep vulns only
 GOVULNCHECK_STRICT=1 bash scripts/govulncheck.sh         # fail on any finding
 bash scripts/generate-sbom.sh dist/sbom                  # prints SBOM_ARTIFACT_PATH=
-bash scripts/release-check.sh                            # M10 pre-release
+bash scripts/release-check.sh                            # M10 pre-release + canary checklist
 ```
 
 Known class of findings: Go stdlib fixes often require a **Go patch bump** in `go.mod` / runners; transitive `x/net` / compress bumps should be small, intentional PRs — not bundled with product refactors or gotd upgrades.

@@ -253,6 +253,56 @@ func lastValidPath(path string) string {
 	return path + ".last-valid"
 }
 
+// LastValidPath returns the durable sibling path used for crash-window recovery
+// of the previous valid primary (path + ".last-valid").
+func LastValidPath(path string) string {
+	return lastValidPath(path)
+}
+
+// LocalPath returns the primary on-disk database path, or empty when not initialized.
+func (db *Database) LocalPath() string {
+	if db == nil {
+		return ""
+	}
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	return db.dbFile
+}
+
+// ReadLocalDatabaseFile parses a local database JSON document from path.
+// Used by restore recovery when the live Database handle is unavailable.
+func ReadLocalDatabaseFile(path string) (map[string]map[string]any, error) {
+	if path == "" {
+		return nil, errors.New("empty database path")
+	}
+	content, err := os.ReadFile(path) //nolint:gosec
+	if err != nil {
+		return nil, err
+	}
+	return parseDatabaseContent(content)
+}
+
+// DocumentString returns a string field from a parsed database document.
+func DocumentString(data map[string]map[string]any, owner, key, def string) string {
+	if data == nil {
+		return def
+	}
+	ownerMap := data[owner]
+	if ownerMap == nil {
+		return def
+	}
+	raw, ok := ownerMap[key]
+	if !ok || raw == nil {
+		return def
+	}
+	switch v := raw.(type) {
+	case string:
+		return v
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
 func parseDatabaseContent(content []byte) (map[string]map[string]any, error) {
 	// Convert legacy names if present in the string (similar to python's regex replacement)
 	dbStr := string(content)
@@ -631,6 +681,297 @@ func writeFileAtomic(path string, data []byte) error {
 	return writeFileAtomicWithOps(path, data, defaultAtomicFileOps)
 }
 
+// stageLocalCandidate writes data to a durable same-directory temp file and
+// fsyncs it without renaming onto path. Caller must CommitLocalCandidate or
+// remove the staged path.
+func stageLocalCandidate(path string, data []byte) (stagedPath string, err error) {
+	return stageLocalCandidateWithOps(path, data, defaultAtomicFileOps)
+}
+
+func stageLocalCandidateWithOps(path string, data []byte, ops atomicFileOps) (stagedPath string, err error) {
+	dir := filepath.Dir(path)
+	// Keep the same CreateTemp prefix family as historical atomic writes so
+	// crash-window tests and operators can recognize leftover candidates.
+	tmp, err := os.CreateTemp(dir, ".goroku-db-*")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		_ = tmp.Close()
+		if cleanup {
+			_ = ops.remove(tmpName)
+		}
+	}()
+	if err = tmp.Chmod(0600); err != nil {
+		return "", err
+	}
+	if _, err = tmp.Write(data); err != nil {
+		return "", err
+	}
+	if err = tmp.Sync(); err != nil {
+		return "", err
+	}
+	if err = tmp.Close(); err != nil {
+		return "", err
+	}
+	// Intentionally no directory sync here: writeFileAtomic historically fsynced
+	// the temp file only, then synced the directory around backup+rename. StageReset
+	// callers that need the staged dentry durable before a later rename should
+	// call syncDirectory themselves (see StageReset).
+	cleanup = false
+	return tmpName, nil
+}
+
+// commitLocalCandidate renames a previously staged candidate onto path using the
+// same last-valid retention protocol as writeFileAtomic (rename is the commit).
+func commitLocalCandidate(path, stagedPath string) error {
+	return commitLocalCandidateWithOps(path, stagedPath, defaultAtomicFileOps)
+}
+
+func commitLocalCandidateWithOps(path, stagedPath string, ops atomicFileOps) (err error) {
+	dir := filepath.Dir(path)
+	// Ensure staged survives only until successful rename or explicit cleanup.
+	defer func() {
+		if err != nil && !errors.Is(err, errAtomicWriteCommitted) {
+			_ = ops.remove(stagedPath)
+		}
+	}()
+
+	backup, err := os.CreateTemp(dir, ".goroku-db-backup-*")
+	if err != nil {
+		return err
+	}
+	backupName := backup.Name()
+	if err = backup.Close(); err != nil {
+		_ = ops.remove(backupName)
+		return err
+	}
+	if err = ops.remove(backupName); err != nil {
+		return err
+	}
+
+	hadPrevious := false
+	if linkErr := os.Link(path, backupName); linkErr == nil {
+		hadPrevious = true
+		if err = syncDirectory(dir, ops); err != nil {
+			_ = ops.remove(backupName)
+			return err
+		}
+	} else if !os.IsNotExist(linkErr) {
+		if copyErr := copyFileContents(path, backupName); copyErr == nil {
+			hadPrevious = true
+			if err = syncDirectory(dir, ops); err != nil {
+				_ = ops.remove(backupName)
+				return err
+			}
+		}
+	}
+	defer func() {
+		if err != nil && !errors.Is(err, errAtomicWriteCommitted) {
+			_ = ops.remove(backupName)
+		}
+	}()
+
+	if err = ops.rename(stagedPath, path); err != nil {
+		return err
+	}
+	var postCommitErr error
+	if syncErr := syncDirectory(dir, ops); syncErr != nil {
+		postCommitErr = errors.Join(postCommitErr, fmt.Errorf("sync committed directory: %w", syncErr))
+	}
+	if hadPrevious {
+		if retainErr := retainLastValid(path, backupName, ops); retainErr != nil {
+			postCommitErr = errors.Join(postCommitErr, fmt.Errorf("retain last-valid database copy: %w", retainErr))
+			_ = ops.remove(backupName)
+		}
+	}
+	if postCommitErr != nil {
+		return errors.Join(errAtomicWriteCommitted, postCommitErr)
+	}
+	return nil
+}
+
+// StageReset writes a durable on-disk candidate for Reset without publishing it
+// as the live primary or in-memory state. Rename happens only in CommitStagedReset
+// (after callers have confirmed FS forward-apply for joint restore).
+func (db *Database) StageReset(data map[string]map[string]any) (stagedPath string, err error) {
+	db.mu.RLock()
+	if err := db.stateError("stage-reset", "", ""); err != nil {
+		db.mu.RUnlock()
+		return "", err
+	}
+	dbFile := db.dbFile
+	db.mu.RUnlock()
+
+	cloned, err := cloneJSONValue(data)
+	if err != nil {
+		return "", databaseError("stage-reset", "", "", "local", ErrDatabaseInvalidValue, err)
+	}
+	newData := cloned.(map[string]map[string]any)
+	processDBAutofix(newData)
+	bytes, err := json.MarshalIndent(newData, "", "    ")
+	if err != nil {
+		return "", databaseError("stage-reset", "", "", "local", ErrDatabaseInvalidValue, err)
+	}
+	stagedPath, err = stageLocalCandidate(dbFile, bytes)
+	if err != nil {
+		return "", databaseError("stage-reset", "", "", "local", ErrDatabasePersistence, err)
+	}
+	// Make the staged dentry durable before joint restore mutates FS; rename is later.
+	if err = syncDirectory(filepath.Dir(dbFile), defaultAtomicFileOps); err != nil {
+		_ = os.Remove(stagedPath)
+		return "", databaseError("stage-reset", "", "", "local", ErrDatabasePersistence, err)
+	}
+	return stagedPath, nil
+}
+
+// CommitStagedReset renames a StageReset candidate onto the primary and publishes
+// the candidate in memory (same post-rename semantics as Reset/commitCandidate).
+func (db *Database) CommitStagedReset(stagedPath string, data map[string]map[string]any) error {
+	if stagedPath == "" {
+		return databaseError("commit-staged-reset", "", "", "local", ErrDatabasePersistence, errors.New("empty staged path"))
+	}
+	cloned, err := cloneJSONValue(data)
+	if err != nil {
+		_ = os.Remove(stagedPath)
+		return databaseError("commit-staged-reset", "", "", "local", ErrDatabaseInvalidValue, err)
+	}
+	newData := cloned.(map[string]map[string]any)
+	processDBAutofix(newData)
+
+	db.persistMu.Lock()
+	defer db.persistMu.Unlock()
+
+	db.mu.RLock()
+	if err := db.stateError("commit-staged-reset", "", ""); err != nil {
+		db.mu.RUnlock()
+		_ = os.Remove(stagedPath)
+		return err
+	}
+	dbFile := db.dbFile
+	previous := db.deepCopy(db.data)
+	db.mu.RUnlock()
+
+	persistErr := commitLocalCandidate(dbFile, stagedPath)
+	committedWithWarning := errors.Is(persistErr, errAtomicWriteCommitted)
+	if persistErr != nil && !committedWithWarning {
+		return databaseError("commit-staged-reset", "", "", "local", ErrDatabasePersistence, persistErr)
+	}
+
+	now := time.Now().Unix()
+	db.mu.Lock()
+	db.revisions = append(db.revisions, previous)
+	if len(db.revisions) > 15 {
+		db.revisions = db.revisions[len(db.revisions)-15:]
+	}
+	db.data = newData
+	db.generation++
+	generation := db.generation
+	if committedWithWarning {
+		db.durabilityErr = committedDatabaseError("commit-staged-reset", "", "", "local", persistErr)
+		db.durabilityGen = generation
+	} else {
+		db.durabilityErr = nil
+		db.durabilityGen = 0
+	}
+	redisClient := db.redisClient
+	flushRedis := redisClient != nil && now-db.lastRedisSave >= 5
+	if redisClient != nil {
+		db.redisDirty = true
+	}
+	db.mu.Unlock()
+
+	if flushRedis {
+		redisBytes, marshalErr := json.Marshal(newData)
+		if marshalErr == nil {
+			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			redisErr := redisClient.Set(flushCtx, fmt.Sprintf("%d", db.tgID), redisBytes, 0).Err()
+			cancel()
+			if redisErr == nil {
+				db.markRedisFlushed(generation)
+			} else {
+				db.recordRedisError("commit-staged-reset", "", "", redisErr)
+			}
+		}
+	}
+	if committedWithWarning {
+		L().Warn("Database staged commit completed with uncertain durability",
+			zap.String("operation", "commit-staged-reset"),
+			zap.Uint64("generation", generation),
+			zap.Error(db.DurabilityWarning()))
+	}
+	return nil
+}
+
+// AbortStagedReset removes a StageReset candidate that will not be committed.
+func (db *Database) AbortStagedReset(stagedPath string) error {
+	if stagedPath == "" {
+		return nil
+	}
+	if err := os.Remove(stagedPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// WriteRestoreCommitMarker stores restore_id next to the last-valid sibling so
+// recovery can detect a completed DB rename even when the primary is unreadable
+// and the live Database handle is unavailable.
+func WriteRestoreCommitMarker(dbFile, restoreID string) error {
+	if dbFile == "" || restoreID == "" {
+		return nil
+	}
+	// Prefer last-valid path as the durable anchor for the pre-image of this commit.
+	marker := lastValidPath(dbFile) + ".restore-id"
+	dir := filepath.Dir(marker)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".goroku-restore-id-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		_ = tmp.Close()
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0600); err != nil {
+		return err
+	}
+	if _, err := tmp.WriteString(restoreID); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, marker); err != nil {
+		return err
+	}
+	cleanup = false
+	return syncDirectory(dir, defaultAtomicFileOps)
+}
+
+// ReadRestoreCommitMarker returns the restore_id recorded beside last-valid, if any.
+func ReadRestoreCommitMarker(dbFile string) string {
+	if dbFile == "" {
+		return ""
+	}
+	body, err := os.ReadFile(lastValidPath(dbFile) + ".restore-id") //nolint:gosec
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(body))
+}
+
 // copyFileContents copies src to dst via a same-directory temp + rename so a
 // failed write never truncates or removes an existing destination (e.g. last-valid).
 func copyFileContents(src, dst string) error {
@@ -713,88 +1054,12 @@ func retainLastValid(path, backupName string, ops atomicFileOps) error {
 }
 
 func writeFileAtomicWithOps(path string, data []byte, ops atomicFileOps) (err error) {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".goroku-db-*")
+	stagedPath, err := stageLocalCandidateWithOps(path, data, ops)
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	defer func() {
-		_ = tmp.Close()
-		if err != nil {
-			_ = ops.remove(tmpName)
-		}
-	}()
-
-	if err = tmp.Chmod(0600); err != nil {
-		return err
-	}
-	if _, err = tmp.Write(data); err != nil {
-		return err
-	}
-	if err = tmp.Sync(); err != nil {
-		return err
-	}
-	if err = tmp.Close(); err != nil {
-		return err
-	}
-
-	backup, err := os.CreateTemp(dir, ".goroku-db-backup-*")
-	if err != nil {
-		return err
-	}
-	backupName := backup.Name()
-	if err = backup.Close(); err != nil {
-		_ = ops.remove(backupName)
-		return err
-	}
-	if err = ops.remove(backupName); err != nil {
-		return err
-	}
-
-	hadPrevious := false
-	if linkErr := os.Link(path, backupName); linkErr == nil {
-		hadPrevious = true
-		if err = syncDirectory(dir, ops); err != nil {
-			_ = ops.remove(backupName)
-			return err
-		}
-	} else if !os.IsNotExist(linkErr) {
-		// Some filesystems reject hardlinks; fall back to a full copy so the
-		// write can still proceed and last-valid retention remains best-effort.
-		if copyErr := copyFileContents(path, backupName); copyErr == nil {
-			hadPrevious = true
-			if err = syncDirectory(dir, ops); err != nil {
-				_ = ops.remove(backupName)
-				return err
-			}
-		}
-	}
-	defer func() {
-		if err != nil && !errors.Is(err, errAtomicWriteCommitted) {
-			_ = ops.remove(backupName)
-		}
-	}()
-
-	if err = ops.rename(tmpName, path); err != nil {
-		return err
-	}
-	// Rename is the commit point. Never attempt rollback after this point: a
-	// failed rollback would create a second ambiguity about which file is live.
-	var postCommitErr error
-	if syncErr := syncDirectory(dir, ops); syncErr != nil {
-		postCommitErr = errors.Join(postCommitErr, fmt.Errorf("sync committed directory: %w", syncErr))
-	}
-	if hadPrevious {
-		if retainErr := retainLastValid(path, backupName, ops); retainErr != nil {
-			postCommitErr = errors.Join(postCommitErr, fmt.Errorf("retain last-valid database copy: %w", retainErr))
-			_ = ops.remove(backupName)
-		}
-	}
-	if postCommitErr != nil {
-		return errors.Join(errAtomicWriteCommitted, postCommitErr)
-	}
-	return nil
+	// Rename is the commit point (see commitLocalCandidateWithOps).
+	return commitLocalCandidateWithOps(path, stagedPath, ops)
 }
 
 // Close stops background flushing and closes the Redis client.

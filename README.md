@@ -155,7 +155,7 @@ Full operations dashboard (module trust UI, sanitized log browser, update UI) is
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Run, health, backup, restart, Docker |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Flags, env, data-root files |
 | [docs/RELEASE.md](docs/RELEASE.md) | Version ldflags, manual / GoReleaser |
-| [SECURITY.md](SECURITY.md) | Threat model lite + secret rotation (M0.1) |
+| [SECURITY.md](SECURITY.md) | Threat model lite + secret rotation (M0.1, BotFather checklist) |
 
 ### Other
 <details>

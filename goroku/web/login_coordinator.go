@@ -43,9 +43,6 @@ func (w *Web) startAuth() {
 	w.mu.Unlock()
 }
 
-func (w *Web) sendMessage(client TelegramClient, chatID int64, text string) (any, error) {
-	return client.SendMessage(chatref.ID(chatID), text)
-}
 func (w *Web) SetTGApiHandler(wr http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(wr, "Method not allowed", http.StatusMethodNotAllowed)

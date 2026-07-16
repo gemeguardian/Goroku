@@ -2,7 +2,13 @@ package goroku
 
 import "goroku/goroku/inline"
 
-var _ inline.InlineModules = (*InlineModulesAdapter)(nil)
+// Compile-time consumer-port assertions (M7.2) for the inline package.
+var (
+	_ inline.InlineModules   = (*InlineModulesAdapter)(nil)
+	_ inline.InlineUserBot   = (*CustomTelegramClient)(nil)
+	_ inline.Database        = (*Database)(nil)
+	_ inline.SecurityChecker = (*SecurityManager)(nil)
+)
 
 // InlineModulesAdapter adapts goroku.Modules so it satisfies inline.InlineModules.
 // InlineModules requires map[string]any while Modules.GetModules returns

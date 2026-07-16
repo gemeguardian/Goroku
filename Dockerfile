@@ -32,7 +32,9 @@ USER goroku:goroku
 EXPOSE 8080
 VOLUME ["/data"]
 
-# Liveness: process is serving HTTP (see /healthz). Port matches default CMD.
+# Liveness: process is serving HTTP on /healthz (registered in goroku/web/routes.go).
+# Port must match CMD --port (default 8080). curl is installed in the runtime image.
+# start-period allows cold start / first-time setup before probes count as failures.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 	CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 

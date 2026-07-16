@@ -968,13 +968,14 @@ func stageModuleRestore(modsDir string, files map[string][]byte) (*moduleRestore
 	return &moduleRestorePlan{dir: stage, names: names}, nil
 }
 
-// applyRestore mutates module sources then Database.Reset.
+// applyRestore mutates module sources then Database (stage then rename).
 //
 // Dual-commit protocol (see restore_journal.go): stage under journal/staged/,
-// durable journal with restore_id + payload_hash, apply FS (copy, keep staged),
-// files_applied → db_applying → Reset(stamped restore_id) → db_applied → remove.
-// Crash after Reset but before db_applied is recovered by matching restore_id in
-// the live DB (forward-apply FS from staged) instead of inventing FS-old/DB-new.
+// durable journal with restore_id + payload_hash + db_file, stage DB candidate
+// (fsync, no rename), apply FS (copy, keep staged), files_applied → db_applying
+// → commit staged DB (rename) → last-valid restore_id marker → db_applied → remove.
+// Crash after DB rename but before db_applied is recovered by matching restore_id
+// in live DB / primary / last-valid / marker (forward-apply FS from staged).
 func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *moduleRestorePlan) error {
 	// Clear any leftover incomplete restore before starting a new one.
 	if err := recoverIncompleteModuleRestoreLocked(m.db); err != nil {
@@ -986,15 +987,21 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 	createdModsDir := false
 	var journal *restoreJournal
 	var journalState *restoreJournalState
+	var stagedDBPath string
 
 	rollbackFiles := func() error {
 		if journalState == nil || journal == nil {
+			if stagedDBPath != "" {
+				_ = m.db.AbortStagedReset(stagedDBPath)
+				stagedDBPath = ""
+			}
 			return nil
 		}
 		filesErr := rollbackRestoreJournalState(journalState, journal)
 		_ = journal.remove()
 		journal = nil
 		journalState = nil
+		stagedDBPath = ""
 		return filesErr
 	}
 
@@ -1078,8 +1085,12 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			entries = append(entries, entry)
 		}
 
+		dbFile := ""
+		if m.db != nil {
+			dbFile = m.db.LocalPath()
+		}
 		journal = openRestoreJournal()
-		if err := journal.begin(modsDir, createdModsDir, entries, stagedSources); err != nil {
+		if err := journal.begin(modsDir, createdModsDir, entries, stagedSources, dbFile); err != nil {
 			cleanupCreatedDir()
 			return fmt.Errorf("prepare restore journal: %w", err)
 		}
@@ -1092,7 +1103,32 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			journalState = nil
 			return fmt.Errorf("read restore journal after prepare: %w", err)
 		}
+
+		// Stamp dual-commit metadata before staging the DB candidate.
+		backupData = stampRestoreCommitMetadata(backupData, journalState.RestoreID, journalState.PayloadHash)
+
+		// Stage DB candidate (fsync) before any live FS mutation so rename can
+		// wait until files_applied is durable. Primary remains pre-restore.
+		if staged, stageErr := m.db.StageReset(backupData); stageErr != nil {
+			cleanupCreatedDir()
+			_ = journal.remove()
+			journal = nil
+			journalState = nil
+			return fmt.Errorf("stage database restore candidate: %w", stageErr)
+		} else {
+			stagedDBPath = staged
+			if err := journal.setStagedDBPath(journalState, stagedDBPath); err != nil {
+				_ = m.db.AbortStagedReset(stagedDBPath)
+				cleanupCreatedDir()
+				_ = journal.remove()
+				journal = nil
+				journalState = nil
+				return fmt.Errorf("record staged database path: %w", err)
+			}
+		}
+
 		if err := journal.markApplying(journalState); err != nil {
+			_ = m.db.AbortStagedReset(stagedDBPath)
 			cleanupCreatedDir()
 			_ = journal.remove()
 			journal = nil
@@ -1153,7 +1189,7 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			}
 		}
 
-		// Durable files_applied before any DB mutation.
+		// Durable files_applied before any DB rename.
 		if err := journal.markFilesApplied(journalState); err != nil {
 			filesErr := rollbackFiles()
 			if filesErr != nil {
@@ -1161,7 +1197,7 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			}
 			return err
 		}
-		// db_applying before Reset: recovery uses restore_id to choose forward vs rollback.
+		// db_applying before DB rename: recovery uses restore_id to choose forward vs rollback.
 		if err := journal.markDBApplying(journalState); err != nil {
 			filesErr := rollbackFiles()
 			if filesErr != nil {
@@ -1169,22 +1205,48 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			}
 			return err
 		}
-		// Stamp dual-commit metadata into the Reset payload before DB mutation.
-		backupData = stampRestoreCommitMetadata(backupData, journalState.RestoreID, journalState.PayloadHash)
 	}
 
-	resetDB := m.restoreDBReset
-	if resetDB == nil {
-		resetDB = m.db.Reset
+	// DB-only restore (no module plan) uses Reset; joint FS+DB uses staged commit.
+	var dbErr error
+	if journal != nil && journalState != nil && stagedDBPath != "" {
+		if m.restoreDBReset != nil {
+			// Test seam: still exercise the injected path, then drop the staged
+			// candidate so we do not leave an orphan temp after a real Reset.
+			dbErr = m.restoreDBReset(backupData)
+			_ = m.db.AbortStagedReset(stagedDBPath)
+			stagedDBPath = ""
+			journalState.StagedDBPath = ""
+		} else {
+			dbErr = m.db.CommitStagedReset(stagedDBPath, backupData)
+			if dbErr == nil {
+				stagedDBPath = ""
+				journalState.StagedDBPath = ""
+			}
+		}
+	} else {
+		resetDB := m.restoreDBReset
+		if resetDB == nil {
+			resetDB = m.db.Reset
+		}
+		dbErr = resetDB(backupData)
 	}
-	if dbErr := resetDB(backupData); dbErr != nil {
+
+	if dbErr != nil {
 		var diagnostic *goroku.DatabaseError
 		if errors.As(dbErr, &diagnostic) && diagnostic.Committed && errors.Is(dbErr, goroku.ErrDatabaseCommitUncertain) {
 			// DB is treated as forward-committed; advance journal like success.
 			if journal != nil && journalState != nil {
+				if journalState.DBFile != "" {
+					_ = goroku.WriteRestoreCommitMarker(journalState.DBFile, journalState.RestoreID)
+				}
 				_ = journal.finishForwardCommit(journalState)
 			}
 			return &forwardRestoreCommitWarning{err: fmt.Errorf("database restore durability warning: %w", dbErr)}
+		}
+		resetDB := m.restoreDBReset
+		if resetDB == nil {
+			resetDB = m.db.Reset
 		}
 		dbRollbackErr := resetDB(oldDB)
 		filesErr := rollbackFiles()
@@ -1198,6 +1260,9 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 		return err
 	}
 	if journal != nil && journalState != nil {
+		if journalState.DBFile != "" {
+			_ = goroku.WriteRestoreCommitMarker(journalState.DBFile, journalState.RestoreID)
+		}
 		// files_applied → db_applying already durable; now db_applied → remove.
 		if err := journal.finishForwardCommit(journalState); err != nil {
 			// FS+DB already match backup; surface journal cleanup only if both

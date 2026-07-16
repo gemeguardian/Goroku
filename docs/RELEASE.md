@@ -30,6 +30,7 @@ What it does:
 2. Runs critical tests: `go test -race -count=1 ./goroku/ ./goroku/web/`
 3. Writes `dist/SHA256SUMS`
 4. Optionally generates SBOM under `dist/sbom` (`RELEASE_CHECK_SBOM=0` to skip)
+5. Writes `dist/CANARY_CHECKLIST.txt` (operator canary / rollback smoke steps)
 
 ## Manual release checklist
 
@@ -101,11 +102,12 @@ go build -o "${TMPDIR:-/tmp}/goroku_bin" .
 GOROKU_BIN="${TMPDIR:-/tmp}/goroku_bin" bash scripts/generate-sbom.sh dist/sbom
 # SBOM_ARTIFACT_PATH printed; index at dist/sbom/SBOM_ARTIFACTS.txt
 # also: go-modules.json, go-modules.txt, go-modules-direct.txt,
-#       sbom-components.json (minimal CycloneDX-like), optional binary-version-m.txt
+#       sbom.cdx.json / sbom-components.json (minimal CycloneDX 1.5 from go list),
+#       optional binary-version-m.txt
 # path pointer: dist/SBOM_LATEST_PATH.txt
 ```
 
-For full CycloneDX/Syft, install those tools separately and attach artifacts at publish time.
+For richer Syft/CDX tooling, install those separately and attach artifacts at publish time.
 
 ## Cosign (optional)
 
@@ -114,14 +116,33 @@ Artifact signing with [cosign](https://github.com/sigstore/cosign) is **optional
 ```bash
 # keyless (OIDC) example — requires cosign + identity provider setup
 cosign sign-blob --bundle dist/goroku.sigbundle dist/goroku_1.0.0_linux_amd64
-cosign verify-blob --bundle dist/goroku.sigbundle dist/goroku_1.0.0_linux_amd64
+cosign verify-blob --bundle dist/goroku.sigbundle \
+  --certificate-identity-regexp '.*' \
+  --certificate-oidc-issuer-regexp '.*' \
+  dist/goroku_1.0.0_linux_amd64
 
 # or static key pair
 cosign sign-blob --key cosign.key dist/goroku_1.0.0_linux_amd64 > dist/goroku.sig
 cosign verify-blob --key cosign.pub --signature dist/goroku.sig dist/goroku_1.0.0_linux_amd64
 ```
 
+Operator verify (after download):
+
+```bash
+# 1) always check SHA-256 first
+sha256sum -c SHA256SUMS
+
+# 2) if the publisher attached a cosign bundle / signature:
+cosign verify-blob --key cosign.pub --signature goroku.sig goroku_1.0.0_linux_amd64
+# or keyless bundle (identity/issuer must match the publisher's policy):
+cosign verify-blob --bundle goroku.sigbundle \
+  --certificate-identity-regexp '<publisher-identity>' \
+  --certificate-oidc-issuer-regexp '<issuer>' \
+  goroku_1.0.0_linux_amd64
+```
+
 Publish `SHA256SUMS` either way; cosign bundles are additive. CI does not hard-require cosign.
+`scripts/release-check.sh` prints a canary checklist (`dist/CANARY_CHECKLIST.txt`) that includes optional cosign verify.
 
 ## gotd/td pin (do not casual-upgrade)
 

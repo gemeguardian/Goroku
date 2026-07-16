@@ -1,6 +1,10 @@
 package cache
 
-import "time"
+import (
+	"time"
+
+	"github.com/gotd/td/tg"
+)
 
 // PrivateChatPerms is the typed permission snapshot for private (user) peers.
 // Channel/chat peers store tg.ChannelParticipantClass / tg.ChatParticipantClass.
@@ -34,4 +38,16 @@ func (r CacheRecordPerms) AsPrivate() (PrivateChatPerms, bool) {
 		return *p, true
 	}
 	return PrivateChatPerms{}, false
+}
+
+// AsChannelParticipant returns a channel participant when stored under that union.
+func (r CacheRecordPerms) AsChannelParticipant() (tg.ChannelParticipantClass, bool) {
+	p, ok := r.Perms.(tg.ChannelParticipantClass)
+	return p, ok
+}
+
+// AsChatParticipant returns a basic-chat participant when stored under that union.
+func (r CacheRecordPerms) AsChatParticipant() (tg.ChatParticipantClass, bool) {
+	p, ok := r.Perms.(tg.ChatParticipantClass)
+	return p, ok
 }

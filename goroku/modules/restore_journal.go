@@ -18,15 +18,17 @@ import (
 //
 // applyRestore cannot make filesystem module sources and Database.Reset jointly
 // crash-atomic with a single rename across two stores. Instead we use a durable
-// dual-commit journal plus a restore ID stamped into the DB on Reset:
+// dual-commit journal plus a restore ID stamped into the DB on commit:
 //
 //  1. Stage all intended module bodies under journal/staged/ (kept until finish).
 //  2. Snapshot previous live bodies under journal/previous/.
-//  3. Write journal {prepared, restore_id, payload_hash, intended paths}.
-//  4. Apply live FS from staged (copy/write, not consume-rename) → files_applied.
-//  5. mark db_applying, inject restore_id (+ payload_hash) into Reset payload.
-//  6. Database.Reset (single-file atomic temp+rename inside DB layer).
-//  7. db_applied → remove journal.
+//  3. Write journal {prepared, restore_id, payload_hash, db_file, intended paths}.
+//  4. Stage DB candidate on disk (temp+fsync) with restore_id stamped — primary
+//     still pre-restore until step 7.
+//  5. Apply live FS from staged (copy/write, not consume-rename) → files_applied.
+//  6. mark db_applying.
+//  7. Commit staged DB (rename + last-valid retention) → primary carries restore_id.
+//  8. Write restore_id marker beside last-valid; db_applied → remove journal.
 //
 // Success path phase advances (each writeState is fsynced via writeFileDurable):
 //
@@ -34,31 +36,29 @@ import (
 //
 // Phases recorded under BaseDir/.goroku-restore-journal:
 //
-//	prepared      – previous/ + staged/ durable; live FS and DB unchanged.
-//	                Crash → discard journal (no live mutation).
+//	prepared      – previous/ + staged/ durable; live FS and DB primary unchanged.
+//	                Crash → discard journal (no live mutation); abort staged DB.
 //	applying      – some live module files may already match the backup
 //	                (including after mutation but before Applied is journaled).
 //	                Crash → rollback the full intended entry set from previous/.
-//	files_applied – live FS matches backup; DB still pre-restore (Reset not started).
+//	files_applied – live FS matches backup; DB primary still pre-restore.
 //	                Crash → rollback full intended FS set so boot sees FS+DB old.
-//	db_applying   – FS matches backup; Database.Reset may be in flight or
-//	                durability is uncertain from the journal's point of view.
-//	                Crash + DB carries this journal's restore_id → forward commit
-//	                (re-apply FS from staged if needed, drop journal).
-//	                Crash + DB lacks restore_id → prefer safe FS rollback.
+//	db_applying   – FS matches backup; DB commit may be in flight or durability
+//	                is uncertain from the journal's point of view.
+//	                Crash + DB/primary/last-valid/marker carries this restore_id
+//	                → forward commit (re-apply FS from staged if needed).
+//	                Crash + no restore_id observable → prefer safe FS rollback.
 //	db_applied    – FS and DB both match backup; journal not yet removed.
 //	                Crash → drop journal (forward commit).
 //
 // Residual (not fully jointly atomic without multi-store coordinator):
-//   - If recovery cannot read the live Database (nil / not initialized) while the
-//     phase is db_applying, recovery still prefers FS rollback and may yield
-//     FS-old + DB-new when Reset already renamed on disk.
+//   - True single-rename joint atomicity across FS tree + DB file is still
+//     impossible without a multi-store coordinator or shared journal device.
+//   - If primary, last-valid, commit marker, and live DB are all unreadable
+//     while phase is db_applying, recovery still prefers FS rollback (may yield
+//     FS-old + DB-new only when the rename landed but every probe path is gone).
 //   - Same class as ErrDatabaseCommitUncertain when no durable restore_id is
-//     observable yet (Reset renamed but process died before any reader can see it
-//     is not distinguishable from "Reset never started" without the ID stamp).
-//   - True single-rename joint atomicity would need a DB API that stages a
-//     candidate file and renames only after FS commit is durable (or a real
-//     multi-store coordinator).
+//     observable yet.
 //
 // Ambiguous phases (empty, unknown): always prefer safe FS rollback over
 // forward commit unless a matching restore_id proves DB forward-commit.
@@ -75,8 +75,8 @@ const (
 	restorePhaseDBApplying   = "db_applying"
 	restorePhaseDBApplied    = "db_applied"
 
-	// Stamped into Database.Reset payload so crash recovery can detect whether
-	// this restore's DB commit already landed.
+	// Stamped into Database.Reset/StageReset payload so crash recovery can
+	// detect whether this restore's DB commit already landed.
 	restoreDBOwner   = "goroku.restore"
 	restoreDBIDKey   = "restore_id"
 	restoreDBHashKey = "fs_payload_hash"
@@ -97,6 +97,12 @@ type restoreJournalState struct {
 	Entries        []restoreJournalEntry `json:"entries"`
 	RestoreID      string                `json:"restore_id,omitempty"`
 	PayloadHash    string                `json:"payload_hash,omitempty"`
+	// DBFile is the primary local database path at journal begin. Recovery uses
+	// it for offline restore_id probes when the live Database is unavailable.
+	DBFile string `json:"db_file,omitempty"`
+	// StagedDBPath is the fsynced DB candidate written before FS apply; renamed
+	// only after files_applied. Cleared after successful commit or abort.
+	StagedDBPath string `json:"staged_db_path,omitempty"`
 }
 
 type restoreJournal struct {
@@ -241,7 +247,7 @@ func computeRestorePayloadHash(entries []restoreJournalEntry, stagedSources map[
 }
 
 // stampRestoreCommitMetadata injects this restore's ID (and optional FS hash)
-// into the Database.Reset payload so recovery can detect a completed DB commit.
+// into the Database.Reset/StageReset payload so recovery can detect a completed DB commit.
 func stampRestoreCommitMetadata(data map[string]map[string]any, restoreID, payloadHash string) map[string]map[string]any {
 	if data == nil {
 		data = make(map[string]map[string]any)
@@ -272,16 +278,59 @@ func restorePayloadHashFromDatabase(db *goroku.Database) string {
 	return db.GetString(restoreDBOwner, restoreDBHashKey, "")
 }
 
-// databaseHasRestoreCommit reports whether the live DB already carries this
-// journal's restore_id (Reset completed for this dual-commit attempt).
-func databaseHasRestoreCommit(db *goroku.Database, state *restoreJournalState) bool {
-	if db == nil || state == nil || state.RestoreID == "" {
-		return false
-	}
-	return restoreIDFromDatabase(db) == state.RestoreID
+func restoreIDFromDocument(data map[string]map[string]any) string {
+	return goroku.DocumentString(data, restoreDBOwner, restoreDBIDKey, "")
 }
 
-func (j *restoreJournal) begin(modsDir string, createdModsDir bool, entries []restoreJournalEntry, stagedSources map[string][]byte) error {
+func restoreIDFromFile(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := goroku.ReadLocalDatabaseFile(path)
+	if err != nil {
+		return ""
+	}
+	return restoreIDFromDocument(data)
+}
+
+// databaseHasRestoreCommit reports whether this journal's restore_id is already
+// durable in the live DB, primary file, last-valid sibling, or last-valid marker.
+func databaseHasRestoreCommit(db *goroku.Database, state *restoreJournalState) bool {
+	if state == nil || state.RestoreID == "" {
+		return false
+	}
+	want := state.RestoreID
+	if db != nil && restoreIDFromDatabase(db) == want {
+		return true
+	}
+	dbFile := state.DBFile
+	if dbFile == "" && db != nil {
+		dbFile = db.LocalPath()
+	}
+	if dbFile == "" {
+		return false
+	}
+	if restoreIDFromFile(dbFile) == want {
+		return true
+	}
+	if restoreIDFromFile(goroku.LastValidPath(dbFile)) == want {
+		return true
+	}
+	if goroku.ReadRestoreCommitMarker(dbFile) == want {
+		return true
+	}
+	return false
+}
+
+func abortStagedDB(state *restoreJournalState) {
+	if state == nil || state.StagedDBPath == "" {
+		return
+	}
+	_ = os.Remove(state.StagedDBPath)
+	state.StagedDBPath = ""
+}
+
+func (j *restoreJournal) begin(modsDir string, createdModsDir bool, entries []restoreJournalEntry, stagedSources map[string][]byte, dbFile string) error {
 	if err := j.remove(); err != nil {
 		return err
 	}
@@ -329,6 +378,7 @@ func (j *restoreJournal) begin(modsDir string, createdModsDir bool, entries []re
 		Entries:        entries,
 		RestoreID:      restoreID,
 		PayloadHash:    computeRestorePayloadHash(entries, stagedSources),
+		DBFile:         dbFile,
 	}
 	if err := j.writeState(state); err != nil {
 		_ = j.remove()
@@ -366,12 +416,18 @@ func (j *restoreJournal) markDBApplied(state *restoreJournalState) error {
 	return j.writeState(state)
 }
 
+func (j *restoreJournal) setStagedDBPath(state *restoreJournalState, stagedPath string) error {
+	state.StagedDBPath = stagedPath
+	return j.writeState(state)
+}
+
 // finishForwardCommit records db_applied (fsynced) then removes the journal.
 // After FS+DB already match the backup, leaving the journal at files_applied or
 // db_applying is dangerous (boot would roll FS back unless restore_id proves DB
 // forward-commit). Prefer durable db_applied, then clear; if phase advance fails,
 // still attempt remove so no journal remains.
 func (j *restoreJournal) finishForwardCommit(state *restoreJournalState) error {
+	state.StagedDBPath = ""
 	if err := j.markDBApplied(state); err != nil {
 		if remErr := j.remove(); remErr != nil {
 			return errors.Join(fmt.Errorf("mark db_applied: %w", err), fmt.Errorf("clear restore journal: %w", remErr))
@@ -390,6 +446,7 @@ func (j *restoreJournal) finishForwardCommit(state *restoreJournalState) error {
 // Applied flags: a crash between a live FS mutation and the journal update must
 // still roll FS back to match the still-old database.
 func rollbackRestoreJournalState(state *restoreJournalState, journal *restoreJournal) error {
+	abortStagedDB(state)
 	var rollbackErr error
 	modsDir := state.ModsDir
 	if modsDir == "" {
@@ -433,6 +490,8 @@ func rollbackRestoreJournalState(state *restoreJournalState, journal *restoreJou
 // tree from durable staged/ copies. Used when recovery proves DB already
 // committed this restore_id (FS must match backup, not previous/).
 func forwardApplyRestoreJournalState(state *restoreJournalState, journal *restoreJournal) error {
+	// Staged DB candidate is obsolete once DB commit is proven.
+	abortStagedDB(state)
 	var applyErr error
 	modsDir := state.ModsDir
 	if modsDir == "" {
@@ -466,7 +525,9 @@ func forwardApplyRestoreJournalState(state *restoreJournalState, journal *restor
 // recoverIncompleteModuleRestore rolls back or forward-commits an interrupted
 // module restore if a durable journal remains. Safe to call on every boot.
 // Pass the live Database when available so db_applying can detect a completed
-// Reset via restore_id and avoid FS-old/DB-new divergence.
+// Reset via restore_id and avoid FS-old/DB-new divergence. When db is nil or
+// unreadable, recovery probes primary, last-valid, and the last-valid restore
+// marker using journal.DBFile.
 func recoverIncompleteModuleRestore(db *goroku.Database) error {
 	return withModuleTransaction(func() error {
 		return recoverIncompleteModuleRestoreLocked(db)
@@ -488,19 +549,21 @@ func recoverIncompleteModuleRestoreLocked(db *goroku.Database) error {
 	switch state.Phase {
 	case restorePhaseDBApplied:
 		// Forward commit completed; only journal cleanup was interrupted.
+		abortStagedDB(state)
 		if err := journal.remove(); err != nil {
 			return fmt.Errorf("clear completed restore journal: %w", err)
 		}
 		return nil
 	case restorePhasePrepared:
-		// Live state never mutated (or only journal prep). Discard.
+		// Live state never mutated (or only journal prep). Discard staged DB.
+		abortStagedDB(state)
 		if err := journal.remove(); err != nil {
 			return fmt.Errorf("clear prepared restore journal: %w", err)
 		}
 		return nil
 	case restorePhaseDBApplying:
-		// DB may already carry this restore_id (Reset committed). Prefer forward
-		// commit so we do not invent FS-old + DB-new.
+		// DB may already carry this restore_id (commit completed). Prefer forward
+		// commit so we do not invent FS-old + DB-new. Offline probes cover nil DB.
 		if databaseHasRestoreCommit(db, state) {
 			if err := forwardApplyRestoreJournalState(state, journal); err != nil {
 				return fmt.Errorf("forward-apply restore after db commit (phase %q): %w", state.Phase, err)

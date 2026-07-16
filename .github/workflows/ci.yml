@@ -67,7 +67,11 @@ jobs:
     # M9.2: pin govulncheck via scripts/govulncheck.sh (advisory by default).
     # Full scan stays non-blocking (stdlib / transitive noise). Hard gate on
     # direct go.mod deps only is the separate job govulncheck-direct.
-    # Secret scanning / Syft SBOM / dependency-review: residual — see docs/CI.md.
+    # Secret scanning: scripts/scan-secrets.sh (tracked tree only).
+    # Syft full SBOM / PR dependency-review: residual — see docs/CI.md.
+    - name: Secret scan (tracked tree)
+      run: bash scripts/scan-secrets.sh
+
     - name: govulncheck (advisory)
       run: bash scripts/govulncheck.sh
 

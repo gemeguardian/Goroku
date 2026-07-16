@@ -49,6 +49,24 @@ func TestCacheRecordExpired(t *testing.T) {
 	if rPermsActive.Expired() {
 		t.Error("expected perms record not to be expired")
 	}
+
+	priv := CacheRecordPerms{Perms: PrivateChatPerms{IsPrivate: true}}
+	if p, ok := priv.AsPrivate(); !ok || !p.IsPrivate {
+		t.Fatalf("AsPrivate = (%v, %v)", p, ok)
+	}
+	chPart := &tg.ChannelParticipant{UserID: 7}
+	chRec := CacheRecordPerms{Perms: chPart}
+	if got, ok := chRec.AsChannelParticipant(); !ok || got != chPart {
+		t.Fatalf("AsChannelParticipant = (%v, %v)", got, ok)
+	}
+	if _, ok := chRec.AsChatParticipant(); ok {
+		t.Fatal("channel participant must not match AsChatParticipant")
+	}
+	chatPart := &tg.ChatParticipant{UserID: 9}
+	chatRec := CacheRecordPerms{Perms: chatPart}
+	if got, ok := chatRec.AsChatParticipant(); !ok || got != chatPart {
+		t.Fatalf("AsChatParticipant = (%v, %v)", got, ok)
+	}
 }
 
 func TestUseCachedTTL(t *testing.T) {
