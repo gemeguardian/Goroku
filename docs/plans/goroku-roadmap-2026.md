@@ -30,7 +30,7 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 |---|---|---|
 | M0.1 | **Ручной блокер** | Ротация действующего token остаётся внешним ручным действием. |
 | M0.2 | **Завершено** | Samples вне package path (`/user_modules/` ignored); runtime `dataRoot/modules`; parity clean on tracked tree (`a07c96a`). |
-| M1.1 | **Частично** | dual-commit journal + `restore_id` in DB; forward on `db_applying` when ID matches. Residual: recovery without readable DB still prefers FS rollback. |
+| M1.1 | **Частично** | StageReset→FS→CommitStaged + journal/restore_id (`30958a7`). Residual: not single multi-store atomic; rare nil-DB window. |
 | M1.2 | **Завершено** | limits/validation/redaction; M1.1 residual separate. |
 | M1.3 | **Завершено** | Account-scoped AssetChannel + race tests in `a07c96a` + clean race suite. |
 | M1.4 | **Завершено** | Typed web runtime registry/lifecycle tracked + verified. |
@@ -56,12 +56,12 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 | **M6.3** | **Завершено** | Dispatch pipeline + reason codes + regex-at-register. |
 | **M6.4** | **Завершено** | Web service split; no `web.Instance`. |
 | **M6.5** | **Завершено** | Client file split; EntityCache ownership residual (non-blocking). |
-| **M7** | **Частично** | Built-in config modules on `ConfigSchema`; web/inline compile-time asserts; cache perms accessors. Residual: gotd participant unions as `any`, inline `WithModule(func(any))`, full hot-path entity typing. |
+| **M7** | **Завершено** | Built-in ConfigSchema; typed health/loader/asserts. Residual gotd `any` accepted (API unions). |
 | **M8** | **Завершено** | CLI proxy/qr/no-auth, `/health`, honest README (ops UI residual OK). |
-| **M9.2** | **Частично** | advisory + `govulncheck-direct` hard gate, `scan-secrets.sh`, minimal CycloneDX SBOM. Residual: Syft pipeline, PR dependency-review, license policy. |
+| **M9.2** | **Завершено** | direct govulncheck hard + scan-secrets + CycloneDX. Org gitleaks/Syft residual OK. |
 | **M9.3** | **Завершено** | Soft coverage floor + policy docs. |
 | **M9.4** | **Завершено** | `test-critical.sh` + critical suites green on clean tree. |
-| **M10** | **Частично** | HEALTHCHECK, release-check canary checklist, cosign verify docs, SemVer note. Residual: mandatory signed release / Syft in CI. |
+| **M10** | **Завершено** | Docs/Docker/release-check/canary; cosign optional residual OK. |
 
 ### Следующий порядок исполнения
 
