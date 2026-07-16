@@ -30,7 +30,7 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 |---|---|---|
 | M0.1 | **Ручной блокер** | Ротация действующего token остаётся внешним ручным действием. |
 | M0.2 | **Завершено** | Samples вне package path (`/user_modules/` ignored); runtime `dataRoot/modules`; parity clean on tracked tree (`a07c96a`). |
-| M1.1 | **Частично** | journal phases + recovery (`aed650e`); still not joint FS+DB atomic. |
+| M1.1 | **Частично** | dual-commit journal + `restore_id` in DB; forward on `db_applying` when ID matches. Residual: recovery without readable DB still prefers FS rollback. |
 | M1.2 | **Завершено** | limits/validation/redaction; M1.1 residual separate. |
 | M1.3 | **Завершено** | Account-scoped AssetChannel + race tests in `a07c96a` + clean race suite. |
 | M1.4 | **Завершено** | Typed web runtime registry/lifecycle tracked + verified. |
@@ -67,7 +67,7 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 
 1. ~~M6–M10 backlog~~ `4699404`; ~~residuals M4.2/M1.1 polish/M7-M10~~ `aed650e`.
 2. Push only on user ask; optional tag after CHANGELOG review.
-3. True leftovers: M0.1 token, M1.1 joint FS+DB atomic, M7 full typing, M9.2 hard gate, M10 signed/canary.
+3. True leftovers: M0.1 token, M1.1 residual (nil-DB recovery / true multi-store rename), M7 full typing, M9.2 hard gate, M10 signed/canary.
 4. **gotd upgrade** separate PR.
 
 ### Worktree snapshot (для handoff)

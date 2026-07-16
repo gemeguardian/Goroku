@@ -65,7 +65,8 @@ jobs:
       run: go build -o "${TMPDIR:-/tmp}/goroku_bin" .
 
     # M9.2: pin govulncheck via scripts/govulncheck.sh (advisory by default).
-    # Known stdlib / x/* findings need deliberate bumps; gotd mass upgrade OOS.
+    # Full scan stays non-blocking (stdlib / transitive noise). Hard gate on
+    # direct go.mod deps only is the separate job govulncheck-direct.
     # Secret scanning / Syft SBOM / dependency-review: residual — see docs/CI.md.
     - name: govulncheck (advisory)
       run: bash scripts/govulncheck.sh
@@ -87,10 +88,29 @@ jobs:
     - name: Run tests
       run: go test -race ./...
 
-  # Optional hard gate: does not block PRs. Enable failures intentionally
-  # after Go/x/* bumps clear residual stdlib noise (not gotd mass upgrade).
+  # Hard gate: fails only when the vulnerable module is a direct go.mod require.
+  # Stdlib and transitive findings are ignored (filtered from govulncheck -json).
+  # Does not block on residual stdlib noise; main job stays advisory for full scan.
+  govulncheck-direct:
+    name: govulncheck (direct deps)
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+    - name: Set up Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      with:
+        go-version-file: go.mod
+        cache: true
+    - name: govulncheck direct-module-deps only
+      env:
+        GOVULNCHECK_DIRECT_ONLY: "1"
+      run: bash scripts/govulncheck.sh
+
+  # Optional full hard gate: does not block PRs (dispatch / weekly only).
+  # Use after deliberate Go/x/* bumps; not a gotd mass-upgrade path.
   govulncheck-strict:
-    name: govulncheck (strict, optional)
+    name: govulncheck (strict full, optional)
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     steps:

@@ -139,13 +139,20 @@ func (m *LoaderModule) Init(client *goroku.CustomTelegramClient, db *goroku.Data
 	return nil
 }
 
-func (m *LoaderModule) ConfigDefaults() map[string]any {
-	return map[string]any{
-		"MODULES_REPO":     "https://raw.githubusercontent.com/coddrago/modules/main",
-		"ADDITIONAL_REPOS": []any{},
-		"share_link":       false,
-		"basic_auth":       "",
-		"command_emoji":    "<tg-emoji emoji-id=5197195523794157505>▫️</tg-emoji>",
+var _ goroku.ModuleWithConfigSchema = (*LoaderModule)(nil)
+
+// ConfigSchema is the M7 typed config surface for Loader.
+func (m *LoaderModule) ConfigSchema() []goroku.ConfigField {
+	return []goroku.ConfigField{
+		{Key: "MODULES_REPO", Type: "string", Default: "https://raw.githubusercontent.com/coddrago/modules/main", Validator: &goroku.StringValidator{}},
+		{Key: "ADDITIONAL_REPOS", Type: "series", Default: []any{}, Validator: &goroku.SeriesValidator{}},
+		{Key: "share_link", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
+		{Key: "basic_auth", Type: "hidden", Default: "", Secret: true, Validator: &goroku.UnionValidator{Validators: []goroku.Validator{
+			&goroku.NoneTypeValidator{},
+			&goroku.RegExpValidator{Pattern: regexp.MustCompile(`^$`)},
+			&goroku.RegExpValidator{Pattern: regexp.MustCompile(`^.*:.*$`)},
+		}}},
+		{Key: "command_emoji", Type: "string", Default: "<tg-emoji emoji-id=5197195523794157505>▫️</tg-emoji>", Validator: &goroku.StringValidator{}},
 	}
 }
 
@@ -162,13 +169,16 @@ func (m *LoaderModule) ConfigReady(config map[string]any) error {
 	if val, ok := config["command_emoji"].(string); ok {
 		m.commandEmoji = val
 	}
-	if val, ok := config["ADDITIONAL_REPOS"].([]any); ok {
-		m.additionalRepos = []string{}
+	switch val := config["ADDITIONAL_REPOS"].(type) {
+	case []any:
+		m.additionalRepos = make([]string, 0, len(val))
 		for _, item := range val {
 			if s, ok := item.(string); ok {
 				m.additionalRepos = append(m.additionalRepos, s)
 			}
 		}
+	case []string:
+		m.additionalRepos = append([]string(nil), val...)
 	}
 	return nil
 }

@@ -111,17 +111,23 @@ func (m *TerminalMod) OnUnload() error {
 }
 func (m *TerminalMod) OnDlmod() error { return nil }
 
-func (m *TerminalMod) ConfigDefaults() map[string]any {
-	return map[string]any{
-		"FLOOD_WAIT_PROTECT": 2,
+var _ goroku.ModuleWithConfigSchema = (*TerminalMod)(nil)
+
+// ConfigSchema is the M7 typed config surface for Terminal.
+func (m *TerminalMod) ConfigSchema() []goroku.ConfigField {
+	return []goroku.ConfigField{
+		{Key: "FLOOD_WAIT_PROTECT", Type: "int", Default: 2, Validator: &goroku.IntegerValidator{}},
 	}
 }
 
 func (m *TerminalMod) ConfigReady(config map[string]any) error {
-	if val, ok := config["FLOOD_WAIT_PROTECT"].(float64); ok {
+	switch val := config["FLOOD_WAIT_PROTECT"].(type) {
+	case float64:
 		m.floodWaitProtect = int(val)
-	} else if val, ok := config["FLOOD_WAIT_PROTECT"].(int); ok {
+	case int:
 		m.floodWaitProtect = val
+	case int64:
+		m.floodWaitProtect = int(val)
 	}
 	return nil
 }

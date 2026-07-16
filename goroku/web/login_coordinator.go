@@ -420,14 +420,11 @@ func getClientTGID(client webiface.TelegramClient) int64 {
 	return client.TGIDValue()
 }
 
-func getInlineProvider(client any) inlineBotProvider {
-	c, ok := client.(interface {
-		InlineProvider() webiface.InlineProvider
-	})
-	if !ok {
+func getInlineProvider(client webiface.TelegramClient) inlineBotProvider {
+	if client == nil {
 		return nil
 	}
-	provider := c.InlineProvider()
+	provider := client.InlineProvider()
 	if provider == nil {
 		return nil
 	}

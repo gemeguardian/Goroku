@@ -189,16 +189,16 @@ func TestLegacyAddLoaderUsesTypedRegistry(t *testing.T) {
 	if got := clients[0].Loader.ModuleNames(); len(got) != 1 || got[0] != "loader" {
 		t.Fatalf("loader names = %v", got)
 	}
-	// Non-ModulesRegistry loaders are dropped (typed registry only).
+	// Nil loader is allowed; nil client/db or non-positive TGID is rejected.
 	core2 := NewWebCore(WebConfig{})
-	core2.AddLoader(testWebClient{tgid: 7}, "not-a-registry", legacyWebDB{})
+	core2.AddLoader(testWebClient{tgid: 7}, nil, legacyWebDB{})
 	if c := core2.ListClients(); len(c) != 1 || c[0].Loader != nil {
-		t.Fatalf("non-typed loader must be stored as nil: %#v", c)
+		t.Fatalf("nil loader must be stored as nil: %#v", c)
 	}
 	if DefaultFallbackTGID == 0 {
 		t.Fatal("compatibility constant was removed")
 	}
-	core.AddLoader(testWebClient{}, "invalid", legacyWebDB{})
+	core.AddLoader(testWebClient{}, nil, legacyWebDB{})
 	if len(core.ListClients()) != 1 {
 		t.Fatal("legacy AddLoader registered a fake fallback identity")
 	}
@@ -382,8 +382,11 @@ func TestGetInlineProviderUsesInterface(t *testing.T) {
 	if !got.PopWebAuthToken("ok") {
 		t.Fatal("expected provider method to be available")
 	}
-	if got := getInlineProvider(struct{ GorokuInline testInlineProvider }{GorokuInline: provider}); got != nil {
-		t.Fatal("plain structs should not be inspected with reflection")
+	if got := getInlineProvider(nil); got != nil {
+		t.Fatal("nil client must not yield a provider")
+	}
+	if got := getInlineProvider(testWebClient{}); got != nil {
+		t.Fatal("client without InlineProvider must yield nil")
 	}
 }
 

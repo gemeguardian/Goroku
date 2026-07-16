@@ -30,6 +30,8 @@ type GorokuConfig struct {
 	infoEmoji            string
 }
 
+var _ goroku.ModuleWithConfigSchema = (*GorokuConfig)(nil)
+
 var configEmojiRe = regexp.MustCompile(`(?i)<tg-emoji\s+emoji-id=["']?5341715473882955310["']?>(?:⚙️|🪐)</tg-emoji>`)
 var tgEmojiTagRe = regexp.MustCompile(`(?is)</?tg-emoji\b[^>]*>`)
 
@@ -72,14 +74,15 @@ func (m *GorokuConfig) Init(client *goroku.CustomTelegramClient, db *goroku.Data
 	return nil
 }
 
-func (m *GorokuConfig) ConfigDefaults() map[string]any {
-	return map[string]any{
-		"cfg_emoji":              "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>",
-		"start_emoji":            "🍃",
-		"list_emoji":             "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>",
-		"validation_error_emoji": "<tg-emoji emoji-id=\"4918014360267260850\">⛔️</tg-emoji>",
-		"detective_emoji":        "<tg-emoji emoji-id=\"5350830008665400761\">🕵️</tg-emoji>",
-		"info_emoji":             "<tg-emoji emoji-id=\"5247029067256987229\">ℹ️</tg-emoji>",
+// ConfigSchema is the M7 typed config surface for GorokuConfig.
+func (m *GorokuConfig) ConfigSchema() []goroku.ConfigField {
+	return []goroku.ConfigField{
+		{Key: "cfg_emoji", Type: "string", Default: "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>", Validator: &goroku.StringValidator{}},
+		{Key: "start_emoji", Type: "string", Default: "🍃", Validator: &goroku.StringValidator{}},
+		{Key: "list_emoji", Type: "string", Default: "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>", Validator: &goroku.StringValidator{}},
+		{Key: "validation_error_emoji", Type: "string", Default: "<tg-emoji emoji-id=\"4918014360267260850\">⛔️</tg-emoji>", Validator: &goroku.StringValidator{}},
+		{Key: "detective_emoji", Type: "string", Default: "<tg-emoji emoji-id=\"5350830008665400761\">🕵️</tg-emoji>", Validator: &goroku.StringValidator{}},
+		{Key: "info_emoji", Type: "string", Default: "<tg-emoji emoji-id=\"5247029067256987229\">ℹ️</tg-emoji>", Validator: &goroku.StringValidator{}},
 	}
 }
 
@@ -536,7 +539,7 @@ func (m *GorokuConfig) ConfigCmd(msg *goroku.Message) error {
 			if loader != nil {
 				targetModule := loader.LookupByName(parts[0])
 				if targetModule != nil {
-					if _, hasConfig := targetModule.(goroku.ModuleWithConfig); !hasConfig {
+					if !goroku.ModuleHasConfig(targetModule) {
 						msg.Text = "🚫 <b>This module has no configuration options</b>"
 						_ = msg.Answer(msg.Text)
 						return nil
@@ -587,7 +590,7 @@ func (m *GorokuConfig) ChooseCategory(msg any) error {
 		for _, mod := range loader.GetModules() {
 			nameLower := strings.ToLower(mod.Name())
 			if !builtInModules[nameLower] {
-				if _, hasConfig := mod.(goroku.ModuleWithConfig); hasConfig {
+				if goroku.ModuleHasConfig(mod) {
 					hasExternal = true
 					break
 				}
@@ -673,7 +676,7 @@ func (m *GorokuConfig) ChooseModuleList(msg any, isBuiltin bool, page int) error
 		nameLower := strings.ToLower(name)
 		isBuiltinMod := builtInModules[nameLower]
 		if isBuiltin == isBuiltinMod {
-			if _, hasConfig := mod.(goroku.ModuleWithConfig); hasConfig {
+			if goroku.ModuleHasConfig(mod) {
 				modulesList = append(modulesList, name)
 			}
 		}
@@ -835,19 +838,7 @@ func (m *GorokuConfig) ConfigureModule(msg any, modName string, fromFolder strin
 		return fmt.Errorf("module not found")
 	}
 
-	optionsSet := make(map[string]string)
-	if withConfig, ok := targetModule.(goroku.ModuleWithConfig); ok {
-		for k := range withConfig.ConfigDefaults() {
-			optionsSet[strings.ToLower(k)] = k
-		}
-	}
-	if withValidators, ok := targetModule.(goroku.ModuleWithConfigValidators); ok {
-		for k := range withValidators.ConfigValidators() {
-			if _, exists := optionsSet[strings.ToLower(k)]; !exists {
-				optionsSet[strings.ToLower(k)] = k
-			}
-		}
-	}
+	optionsSet := goroku.ModuleConfigKeys(targetModule)
 	if modSchemas, exists := schemas[strings.ToLower(modName)]; exists {
 		for k := range modSchemas {
 			if _, exists := optionsSet[strings.ToLower(k)]; !exists {
@@ -1406,8 +1397,7 @@ func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 
 		modNames := make([]string, 0, len(modulesList))
 		for name, mod := range modulesList {
-			_, hasConfig := mod.(goroku.ModuleWithConfig)
-			if hasConfig || strings.EqualFold(mod.Name(), "InlineStuff") {
+			if goroku.ModuleHasConfig(mod) || strings.EqualFold(mod.Name(), "InlineStuff") {
 				modNames = append(modNames, name)
 			}
 		}
@@ -1495,7 +1485,7 @@ func (m *GorokuConfig) textConfig(msg *goroku.Message) error {
 		return nil
 	}
 
-	if _, hasConfig := found.(goroku.ModuleWithConfig); !hasConfig && !strings.EqualFold(found.Name(), "InlineStuff") {
+	if !goroku.ModuleHasConfig(found) && !strings.EqualFold(found.Name(), "InlineStuff") {
 		msg.Text = "🚫 <b>This module has no configuration options</b>"
 		_ = msg.Answer(msg.Text)
 		return nil
@@ -1634,7 +1624,7 @@ func (m *GorokuConfig) resolveConfigModule(msg *goroku.Message, mod string) (gor
 		if strings.ToLower(modObj.Name()) != targetModName {
 			continue
 		}
-		if _, hasConfig := modObj.(goroku.ModuleWithConfig); !hasConfig {
+		if !goroku.ModuleHasConfig(modObj) {
 			_ = msg.Answer("🚫 <b>This module has no configuration options</b>")
 			return nil, false
 		}

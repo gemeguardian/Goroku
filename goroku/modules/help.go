@@ -29,6 +29,8 @@ type Help struct {
 	invertMedia  bool
 }
 
+var _ goroku.ModuleWithConfigSchema = (*Help)(nil)
+
 func (m *Help) Name() string {
 	return "Help"
 }
@@ -59,16 +61,17 @@ func (m *Help) ClientReady() error { return nil }
 func (m *Help) OnUnload() error    { return nil }
 func (m *Help) OnDlmod() error     { return nil }
 
-func (m *Help) ConfigDefaults() map[string]any {
-	return map[string]any{
-		"core_emoji":    "<tg-emoji emoji-id=4974681956907221809>▪️</tg-emoji>",
-		"plain_emoji":   "<tg-emoji emoji-id=4974508259839836856>▪️</tg-emoji>",
-		"empty_emoji":   "<tg-emoji emoji-id=5100652175172830068>🟠</tg-emoji>",
-		"desc_icon":     "<tg-emoji emoji-id=5188377234380954537>🪐</tg-emoji>",
-		"command_emoji": "<tg-emoji emoji-id=5197195523794157505>▫️</tg-emoji>",
-		"banner_url":    "",
-		"media_quote":   false,
-		"invert_media":  false,
+// ConfigSchema is the M7 typed config surface for Help.
+func (m *Help) ConfigSchema() []goroku.ConfigField {
+	return []goroku.ConfigField{
+		{Key: "core_emoji", Type: "string", Default: "<tg-emoji emoji-id=4974681956907221809>▪️</tg-emoji>", Validator: &goroku.StringValidator{}},
+		{Key: "plain_emoji", Type: "string", Default: "<tg-emoji emoji-id=4974508259839836856>▪️</tg-emoji>", Validator: &goroku.StringValidator{}},
+		{Key: "empty_emoji", Type: "string", Default: "<tg-emoji emoji-id=5100652175172830068>🟠</tg-emoji>", Validator: &goroku.StringValidator{}},
+		{Key: "desc_icon", Type: "string", Default: "<tg-emoji emoji-id=5188377234380954537>🪐</tg-emoji>", Validator: &goroku.StringValidator{}},
+		{Key: "command_emoji", Type: "string", Default: "<tg-emoji emoji-id=5197195523794157505>▫️</tg-emoji>", Validator: &goroku.StringValidator{}},
+		{Key: "banner_url", Type: "string", Default: "", Validator: &goroku.StringValidator{}},
+		{Key: "media_quote", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
+		{Key: "invert_media", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
 	}
 }
 

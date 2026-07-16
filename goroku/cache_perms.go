@@ -9,11 +9,17 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+// GetPerms returns participant rights with default cache policy (accept any present entry).
+func (c *CustomTelegramClient) GetPerms(entity, user any) (any, error) {
+	return c.GetPermsCached(entity, user, 0, false)
+}
+
 // GetPermsCached returns participant rights for user in entity, using the perms cache when fresh.
 // requestTTL==0 means accept any present cache entry (see cache.UseCached).
 //
 // Residual return type is any because Telegram participants are interface unions
 // (ChannelParticipantClass / ChatParticipantClass) plus PrivateChatPerms.
+// Use cache.CacheRecordPerms.AsPrivate for the typed private-chat case.
 func (c *CustomTelegramClient) GetPermsCached(entity any, user any, exp int64, force bool) (any, error) {
 	entityKey := cache.NormalizeEntityCacheKey(entity)
 	userKey := cache.NormalizeEntityCacheKey(user)

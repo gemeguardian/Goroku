@@ -79,24 +79,16 @@ func NewWebCore(cfg WebConfig) *WebCore {
 // AddLoader preserves the historical API as a strict typed-registry wrapper.
 // Invalid or duplicate runtimes are rejected rather than assigned a fake ID.
 // Deprecated: use RegisterClient.
-func (wc *WebCore) AddLoader(client any, loader any, db any) {
-	typedClient, clientOK := client.(webiface.TelegramClient)
-	typedDB, dbOK := db.(webiface.Database)
-	if !clientOK || !dbOK || typedClient.TGIDValue() <= 0 {
+func (wc *WebCore) AddLoader(client webiface.TelegramClient, loader webiface.ModulesRegistry, db webiface.Database) {
+	if client == nil || db == nil || client.TGIDValue() <= 0 {
 		L().Warn("legacy AddLoader rejected invalid runtime")
 		return
 	}
-	var typedLoader webiface.ModulesRegistry
-	if loader != nil {
-		if reg, ok := loader.(webiface.ModulesRegistry); ok {
-			typedLoader = reg
-		}
-	}
 	if err := wc.RegisterClient(RuntimeClient{
-		ID:       typedClient.TGIDValue(),
-		Client:   typedClient,
-		Loader:   typedLoader,
-		Database: typedDB,
+		ID:       client.TGIDValue(),
+		Client:   client,
+		Loader:   loader,
+		Database: db,
 	}); err != nil {
 		L().Warn("legacy AddLoader failed", zap.Error(err))
 	}

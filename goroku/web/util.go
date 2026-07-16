@@ -92,14 +92,8 @@ func maskPhone(phone string) string {
 	return strings.Repeat("*", len(phone)-4) + phone[len(phone)-4:]
 }
 
-func hasAPIToken(token any) bool {
-	if token == nil {
-		return false
-	}
-	if s, ok := token.(string); ok {
-		return strings.TrimSpace(s) != ""
-	}
-	return true
+func hasAPIToken(token string) bool {
+	return strings.TrimSpace(token) != ""
 }
 
 func writeTelegramAuthError(wr http.ResponseWriter, err error) {

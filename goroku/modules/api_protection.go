@@ -20,6 +20,8 @@ type APIProtection struct {
 	forbiddenTypeIDs []uint32
 }
 
+var _ goroku.ModuleWithConfigSchema = (*APIProtection)(nil)
+
 func (m *APIProtection) Name() string {
 	return "APILimiter"
 }
@@ -53,12 +55,13 @@ func (m *APIProtection) ClientReady() error { return nil }
 func (m *APIProtection) OnUnload() error    { return nil }
 func (m *APIProtection) OnDlmod() error     { return nil }
 
-func (m *APIProtection) ConfigDefaults() map[string]any {
-	return map[string]any{
-		"time_sample":       15,
-		"threshold":         100,
-		"local_floodwait":   30,
-		"forbidden_methods": []any{"joinChannel", "importChatInvite"},
+// ConfigSchema is the M7 typed config surface for APILimiter (security).
+func (m *APIProtection) ConfigSchema() []goroku.ConfigField {
+	return []goroku.ConfigField{
+		{Key: "time_sample", Type: "int", Default: 15, Validator: &goroku.IntegerValidator{}},
+		{Key: "threshold", Type: "int", Default: 100, Validator: &goroku.IntegerValidator{}},
+		{Key: "local_floodwait", Type: "int", Default: 30, Validator: &goroku.IntegerValidator{}},
+		{Key: "forbidden_methods", Type: "series", Default: []any{"joinChannel", "importChatInvite"}, Validator: &goroku.SeriesValidator{}},
 	}
 }
 

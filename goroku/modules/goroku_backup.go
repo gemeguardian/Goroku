@@ -84,7 +84,7 @@ func (m *GorokuBackup) Init(client *goroku.CustomTelegramClient, db *goroku.Data
 
 	// Recover FS from an interrupted restore before any scheduled backup work.
 	// See restore_journal.go for residual crash-window documentation.
-	if err := recoverIncompleteModuleRestore(); err != nil {
+	if err := recoverIncompleteModuleRestore(m.db); err != nil {
 		return fmt.Errorf("recover incomplete module restore: %w", err)
 	}
 
@@ -970,15 +970,14 @@ func stageModuleRestore(modsDir string, files map[string][]byte) (*moduleRestore
 
 // applyRestore mutates module sources then Database.Reset.
 //
-// Crash residual (not jointly atomic): Database.Reset is single-file atomic
-// (temp+rename) but has no joint staging rename with the module tree. After FS
-// apply and before db_applied is durable, a crash is recovered via the journal
-// under BaseDir/.goroku-restore-journal (prefer FS rollback when DB is
-// uncertain). Success path: files_applied → db_applying → Reset → db_applied →
-// remove, each journal write fsynced. See restore_journal.go.
+// Dual-commit protocol (see restore_journal.go): stage under journal/staged/,
+// durable journal with restore_id + payload_hash, apply FS (copy, keep staged),
+// files_applied → db_applying → Reset(stamped restore_id) → db_applied → remove.
+// Crash after Reset but before db_applied is recovered by matching restore_id in
+// the live DB (forward-apply FS from staged) instead of inventing FS-old/DB-new.
 func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *moduleRestorePlan) error {
 	// Clear any leftover incomplete restore before starting a new one.
-	if err := recoverIncompleteModuleRestoreLocked(); err != nil {
+	if err := recoverIncompleteModuleRestoreLocked(m.db); err != nil {
 		return fmt.Errorf("recover incomplete module restore: %w", err)
 	}
 
@@ -1084,11 +1083,14 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			cleanupCreatedDir()
 			return fmt.Errorf("prepare restore journal: %w", err)
 		}
-		journalState = &restoreJournalState{
-			Phase:          restorePhasePrepared,
-			ModsDir:        modsDir,
-			CreatedModsDir: createdModsDir,
-			Entries:        entries,
+		// Reload state so RestoreID / PayloadHash from begin are authoritative.
+		journalState, err = journal.readState()
+		if err != nil {
+			cleanupCreatedDir()
+			_ = journal.remove()
+			journal = nil
+			journalState = nil
+			return fmt.Errorf("read restore journal after prepare: %w", err)
 		}
 		if err := journal.markApplying(journalState); err != nil {
 			cleanupCreatedDir()
@@ -1122,14 +1124,15 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			}
 			source := filepath.Join(journal.stagedDir(), entry.Name)
 			destination := filepath.Join(modsDir, entry.Name)
+			// Copy (not consume-rename) so staged/ survives for crash recovery
+			// re-apply after a DB commit that already carries restore_id.
 			var applyErr error
 			if m.restoreApplyFile != nil {
 				applyErr = m.restoreApplyFile(source, destination)
-			} else if renameErr := os.Rename(source, destination); renameErr != nil {
-				// Staged copy remains; fall back to durable write into live path.
+			} else {
 				body, readErr := os.ReadFile(source) //nolint:gosec
 				if readErr != nil {
-					applyErr = renameErr
+					applyErr = readErr
 				} else {
 					applyErr = writeFileDurable(destination, body, 0600)
 				}
@@ -1158,7 +1161,7 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			}
 			return err
 		}
-		// db_applying before Reset: crash recovery prefers FS rollback while DB uncertain.
+		// db_applying before Reset: recovery uses restore_id to choose forward vs rollback.
 		if err := journal.markDBApplying(journalState); err != nil {
 			filesErr := rollbackFiles()
 			if filesErr != nil {
@@ -1166,6 +1169,8 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			}
 			return err
 		}
+		// Stamp dual-commit metadata into the Reset payload before DB mutation.
+		backupData = stampRestoreCommitMetadata(backupData, journalState.RestoreID, journalState.PayloadHash)
 	}
 
 	resetDB := m.restoreDBReset

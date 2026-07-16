@@ -106,3 +106,23 @@ Runs as non-root user inside the image. Persist `/data` (or your data root).
 3. Rotate secrets ([SECURITY.md](../SECURITY.md)).
 4. Restore known-good backup if integrity is in doubt.
 5. Restart with `--no-git` and localhost web unless tunnel is required.
+
+## Canary deploy and rollback
+
+Short path; full checklist lives in [RELEASE.md](RELEASE.md).
+
+**Canary**
+
+1. Backup data root.
+2. Keep previous binary as `goroku.prev` (or known-good artifact verified via `SHA256SUMS`).
+3. Install new binary; start with same `--data-root` / `--no-git` flags.
+4. Probe `GET /healthz` and `GET /readyz`; exercise owner smoke commands; watch logs.
+
+**Rollback**
+
+1. Stop new process.
+2. Restore previous binary; restore data-root snapshot if on-disk format is incompatible.
+3. Start previous binary; re-check health endpoints.
+4. Rotate credentials if the failed rollout may have leaked secrets.
+
+Binary installs should not rely on `git reset` for rollback when running with `--no-git`.

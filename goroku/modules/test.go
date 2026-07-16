@@ -70,18 +70,21 @@ func (m *Test) ClientReady() error {
 func (m *Test) OnUnload() error { return nil }
 func (m *Test) OnDlmod() error  { return nil }
 
-func (m *Test) ConfigDefaults() map[string]any {
-	return map[string]any{
-		"force_send_all":        false,
-		"tglog_level":           "ERROR",
-		"ignore_common":         true,
-		"disable_internet_warn": false,
-		"custom_message":        "<tg-emoji emoji-id=5920515922505765329>⚡️</tg-emoji> <b>𝙿𝚒𝚗𝚐: </b><code>{ping}</code><b> 𝚖𝚜 </b>\n<tg-emoji emoji-id=5900104897885376843>🕓</tg-emoji><b> 𝚄𝚙𝚝𝚒𝚖𝚎: </b><code>{uptime}</code>",
-		"hint":                  "",
-		"ping_emoji":            "🪐",
-		"banner_url":            "",
-		"quote_media":           false,
-		"invert_media":          false,
+var _ goroku.ModuleWithConfigSchema = (*Test)(nil)
+
+// ConfigSchema is the M7 typed config surface for Tester.
+func (m *Test) ConfigSchema() []goroku.ConfigField {
+	return []goroku.ConfigField{
+		{Key: "force_send_all", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
+		{Key: "tglog_level", Type: "choice", Default: "ERROR", Validator: &goroku.ChoiceValidator{PossibleValues: []string{"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "ALL"}}},
+		{Key: "ignore_common", Type: "bool", Default: true, Validator: &goroku.BooleanValidator{}},
+		{Key: "disable_internet_warn", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
+		{Key: "custom_message", Type: "string", Default: "<tg-emoji emoji-id=5920515922505765329>⚡️</tg-emoji> <b>𝙿𝚒𝚗𝚐: </b><code>{ping}</code><b> 𝚖𝚜 </b>\n<tg-emoji emoji-id=5900104897885376843>🕓</tg-emoji><b> 𝚄𝚙𝚝𝚒𝚖𝚎: </b><code>{uptime}</code>", Validator: &goroku.StringValidator{}},
+		{Key: "hint", Type: "string", Default: "", Validator: &goroku.StringValidator{}},
+		{Key: "ping_emoji", Type: "string", Default: "🪐", Validator: &goroku.StringValidator{}},
+		{Key: "banner_url", Type: "string", Default: "", Validator: &goroku.StringValidator{}},
+		{Key: "quote_media", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
+		{Key: "invert_media", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
 	}
 }
 

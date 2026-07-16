@@ -34,7 +34,7 @@ Tracked source must not contain real tokens. Runtime files are gitignored.
 
 If a token or credential may have been exposed (logs, backups, shared host, leaked config):
 
-1. **Bot API token** — revoke/regenerate in [@BotFather](https://t.me/BotFather). Update the value only in the runtime data root; restart Goroku.
+1. **Bot API token** — see [BotFather token rotation checklist](#botfather-token-rotation-checklist-manual) below. Maintainers **cannot** rotate your token for you.
 2. **Telegram user session** — if session file leaked: log out other sessions in Telegram settings, delete `goroku-<id>.session` (and related config if needed), re-authenticate via web or CLI.
 3. **API id/hash** — if compromised or shared widely: create a new app at [my.telegram.org/apps](https://my.telegram.org/apps), update `api_id`/`api_hash` in `config.json`, re-login if sessions break.
 4. **Web setup token** — restart with a fresh `GOROKU_SETUP_TOKEN` only before setup completes; after setup it is not used.
@@ -47,6 +47,21 @@ Rotation completeness criteria:
 - New secrets live only under the data root with restricted permissions
 - Git history and tracked tree have no token signatures
 
+### BotFather token rotation checklist (manual)
+
+Operators own this end-to-end. Goroku cannot revoke or reissue Bot API tokens.
+
+1. Open Telegram and message [@BotFather](https://t.me/BotFather).
+2. Send `/mybots` → select the bot → **API Token** (or use `/revoke` / **Revoke current token** if offered).
+3. Confirm revoke so the **old** token is invalidated immediately.
+4. Copy the **new** token once; store it only in the runtime data root (never in git, CI logs, or chat).
+5. Stop Goroku (`SIGTERM` / process manager stop).
+6. Update the bot token field in the relevant runtime config under the data root (typically `config-<telegram-id>.json` or the module/settings path where the bot token was stored). Keep file mode `0600`.
+7. Start Goroku and verify bot features that use Bot API (e.g. notifications / web login helpers if enabled).
+8. Confirm the old token is dead: a Bot API call with the old value must fail (`401 Unauthorized`).
+9. If the old token may have appeared in backups, logs, or shared hosts: treat those artifacts as compromised, delete or re-encrypt them, and re-run this checklist after any restore of an archive that still holds the old token.
+10. Optionally rotate related secrets in the same incident window (session file, `api_hash`, setup token) using the steps above.
+
 ## Residual risks (honest)
 
 - **Yaegi eval** runs out-of-process and is killable on timeout, but still full RCE as the process user while the worker is alive. Snapshots only: no live `msg`/`client`/`db`/`loader` shared with the parent; `Loader` is unavailable in the worker.
@@ -56,10 +71,13 @@ Rotation completeness criteria:
 
 ## Dependency / supply-chain checks (M9.2)
 
-- CI runs pinned **govulncheck** via `scripts/govulncheck.sh` (advisory in main job; optional strict job — see `docs/CI.md`).
-- Lightweight SBOM: `bash scripts/generate-sbom.sh` (`go list -m` / `go version -m`).
-- **Not yet automated:** secret scanning, Syft/CycloneDX publish, PR dependency-review, license policy.
-- Do **not** mass-upgrade `gotd/td` as part of routine security scans — treat that as a separate migration.
+- CI runs pinned **govulncheck** via `scripts/govulncheck.sh`:
+  - main job: full scan **advisory** (stdlib / transitive noise does not block merge)
+  - `govulncheck-direct` job: fails only on vulns whose vulnerable module is a **direct** `go.mod` require (`GOVULNCHECK_DIRECT_ONLY=1`, stdlib ignored via `-json` filter)
+  - optional full strict job on schedule / `workflow_dispatch` (`GOVULNCHECK_STRICT=1`)
+- Lightweight SBOM: `bash scripts/generate-sbom.sh [OUT_DIR]` → default `dist/sbom`; prints `SBOM_ARTIFACT_PATH=…` and writes `SBOM_ARTIFACTS.txt` / `dist/SBOM_LATEST_PATH.txt`.
+- **Not yet automated:** secret scanning, full Syft/CycloneDX publish, PR dependency-review, license policy, cosign (optional — see `docs/RELEASE.md`).
+- Do **not** mass-upgrade `gotd/td` as part of routine security scans — treat that as a separate migration (`docs/RELEASE.md`).
 
 ## Reporting
 

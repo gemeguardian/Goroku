@@ -56,3 +56,31 @@ func TestSchemaHelpers(t *testing.T) {
 		t.Fatalf("SchemaSecretKeys = %v", secrets)
 	}
 }
+
+type schemaOnlyMod struct{}
+
+func (schemaOnlyMod) Name() string                                { return "SchemaOnly" }
+func (schemaOnlyMod) Strings() map[string]string                  { return nil }
+func (schemaOnlyMod) Init(*CustomTelegramClient, *Database) error { return nil }
+func (schemaOnlyMod) ClientReady() error                          { return nil }
+func (schemaOnlyMod) OnUnload() error                             { return nil }
+func (schemaOnlyMod) OnDlmod() error                              { return nil }
+func (schemaOnlyMod) Commands() map[string]CommandHandler         { return nil }
+func (schemaOnlyMod) Watchers() []WatcherHandler                  { return nil }
+func (schemaOnlyMod) ConfigSchema() []ConfigField {
+	return []ConfigField{{Key: "flag", Type: "bool", Default: true}}
+}
+
+func TestModuleHasConfigAndKeys(t *testing.T) {
+	mod := schemaOnlyMod{}
+	if !ModuleHasConfig(mod) {
+		t.Fatal("schema-only module must report config")
+	}
+	keys := ModuleConfigKeys(mod)
+	if keys["flag"] != "flag" {
+		t.Fatalf("ModuleConfigKeys = %#v", keys)
+	}
+	if ModuleHasConfig(nil) {
+		t.Fatal("nil module must not report config")
+	}
+}

@@ -55,14 +55,17 @@ func (m *GorokuInfo) Init(client *goroku.CustomTelegramClient, db *goroku.Databa
 	return nil
 }
 
-func (m *GorokuInfo) ConfigDefaults() map[string]any {
-	return map[string]any{
-		"custom_message": "",
-		"banner_url":     defaultGorokuInfoBanner(),
-		"ping_emoji":     "🪐",
-		"quote_media":    false,
-		"invert_media":   false,
-		"show_goroku":    true,
+var _ goroku.ModuleWithConfigSchema = (*GorokuInfo)(nil)
+
+// ConfigSchema is the M7 typed config surface for GorokuInfo.
+func (m *GorokuInfo) ConfigSchema() []goroku.ConfigField {
+	return []goroku.ConfigField{
+		{Key: "custom_message", Type: "string", Default: "", Validator: &goroku.StringValidator{}},
+		{Key: "banner_url", Type: "string", Default: defaultGorokuInfoBanner(), Validator: &goroku.StringValidator{}},
+		{Key: "ping_emoji", Type: "string", Default: "🪐", Validator: &goroku.StringValidator{}},
+		{Key: "quote_media", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
+		{Key: "invert_media", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
+		{Key: "show_goroku", Type: "bool", Default: true, Validator: &goroku.BooleanValidator{}},
 	}
 }
 

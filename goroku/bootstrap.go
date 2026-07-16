@@ -29,6 +29,9 @@ var (
 	ConfigPath string
 )
 
+// Compile-time: WebCore is the production WebRuntime implementation.
+var _ WebRuntime = (*web.WebCore)(nil)
+
 func init() {
 	if os.Getenv("DOCKER") != "" {
 		BaseDir = "/data"

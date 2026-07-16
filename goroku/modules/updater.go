@@ -76,11 +76,14 @@ func (m *Updater) ClientReady() error {
 	return nil
 }
 
-func (m *Updater) ConfigDefaults() map[string]any {
-	return map[string]any{
-		"GIT_ORIGIN_URL":        "https://github.com/gemeguardian/Goroku",
-		"disable_notifications": false,
-		"autoupdate":            false,
+var _ goroku.ModuleWithConfigSchema = (*Updater)(nil)
+
+// ConfigSchema is the M7 typed config surface for Updater.
+func (m *Updater) ConfigSchema() []goroku.ConfigField {
+	return []goroku.ConfigField{
+		{Key: "GIT_ORIGIN_URL", Type: "string", Default: "https://github.com/gemeguardian/Goroku", Validator: &goroku.StringValidator{}},
+		{Key: "disable_notifications", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
+		{Key: "autoupdate", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
 	}
 }
 

@@ -138,10 +138,10 @@ func (m *GorokuWeb) WebpanelCmd(msg *goroku.Message) error {
 		}
 	}
 
-	return m.showWebpanelTunnel(msg, false)
+	return m.showWebpanelTunnelMessage(msg)
 }
 
-func (m *GorokuWeb) showWebpanelTunnel(call any, isCallback bool) error {
+func (m *GorokuWeb) showWebpanelTunnelMessage(msg *goroku.Message) error {
 	im := m.client.GorokuInline
 	hasInline := im != nil && im.IsComplete()
 
@@ -156,29 +156,19 @@ func (m *GorokuWeb) showWebpanelTunnel(call any, isCallback bool) error {
 	waitMarkup := [][]inline.Button{{waitBtn}}
 
 	if !hasInline {
-		_ = call.(*goroku.Message).Answer(openingText)
+		_ = msg.Answer(openingText)
 		url := m.webRuntime().GetURL(true)
 		openedText := m.getTrans("tunnel_opened", "✅ <b>Tunnel opened successfully!</b>")
 		webBtnText := m.getTrans("web_btn", "🔗 Web Panel")
-		return call.(*goroku.Message).Answer(fmt.Sprintf("%s\n\n<a href=\"%s\">%s</a>", openedText, url, webBtnText))
+		return msg.Answer(fmt.Sprintf("%s\n\n<a href=\"%s\">%s</a>", openedText, url, webBtnText))
 	}
 
-	var inlineMsg *inline.InlineMessage
-	var callbackQuery inline.CallbackQuery
-	var err error
-
-	if isCallback {
-		callbackQuery = call.(inline.CallbackQuery)
-		err = callbackQuery.Edit(openingText, im.GenerateMarkup(waitMarkup))
-	} else {
-		msg := call.(*goroku.Message)
-		inlineMsg, err = im.Form(
-			openingText,
-			msg,
-			waitMarkup,
-			inline.WithPhoto("https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/opening_tunnel.png"),
-		)
-	}
+	inlineMsg, err := im.Form(
+		openingText,
+		msg,
+		waitMarkup,
+		inline.WithPhoto("https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/opening_tunnel.png"),
+	)
 	if err != nil {
 		return err
 	}
@@ -192,14 +182,43 @@ func (m *GorokuWeb) showWebpanelTunnel(call any, isCallback bool) error {
 			URL:  url,
 		}
 		linkMarkup := [][]inline.Button{{linkBtn}}
-
-		if isCallback {
-			_ = callbackQuery.Edit(openedText, im.GenerateMarkup(linkMarkup))
-		} else if inlineMsg != nil {
+		if inlineMsg != nil {
 			_ = inlineMsg.Edit(openedText, im.GenerateMarkup(linkMarkup))
 		}
 	}()
+	return nil
+}
 
+func (m *GorokuWeb) showWebpanelTunnel(call inline.CallbackQuery, _ bool) error {
+	im := m.client.GorokuInline
+	if im == nil || !im.IsComplete() {
+		return nil
+	}
+
+	openingText := m.getTrans("opening_tunnel", "🕔 <b>Opening tunnel...</b>")
+	waitBtn := inline.Button{
+		Text: "🕔 Wait...",
+		Data: "empty",
+		Handler: func(c inline.CallbackQuery) error {
+			return c.Answer("Please wait, the tunnel is opening...", false)
+		},
+	}
+	waitMarkup := [][]inline.Button{{waitBtn}}
+	if err := call.Edit(openingText, im.GenerateMarkup(waitMarkup)); err != nil {
+		return err
+	}
+
+	go func() {
+		url := m.webRuntime().GetURL(true)
+		openedText := m.getTrans("tunnel_opened", "✅ <b>Tunnel opened successfully!</b>")
+		webBtnText := m.getTrans("web_btn", "🔗 Web Panel")
+		linkBtn := inline.Button{
+			Text: webBtnText,
+			URL:  url,
+		}
+		linkMarkup := [][]inline.Button{{linkBtn}}
+		_ = call.Edit(openedText, im.GenerateMarkup(linkMarkup))
+	}()
 	return nil
 }
 

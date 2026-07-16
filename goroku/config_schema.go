@@ -3,6 +3,7 @@ package goroku
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ConfigField describes one module configuration option (M7 typed schema).
@@ -19,6 +20,60 @@ type ConfigField struct {
 // ModuleWithConfigSchema is the preferred config surface: type, default, validator, secret.
 type ModuleWithConfigSchema interface {
 	ConfigSchema() []ConfigField
+}
+
+// ModuleHasConfig reports whether mod exposes configuration via schema and/or defaults.
+func ModuleHasConfig(mod Module) bool {
+	if mod == nil {
+		return false
+	}
+	if _, ok := mod.(ModuleWithConfigSchema); ok {
+		return true
+	}
+	if _, ok := mod.(ModuleWithConfig); ok {
+		return true
+	}
+	if _, ok := mod.(ModuleWithConfigValidators); ok {
+		return true
+	}
+	return false
+}
+
+// ModuleConfigKeys returns canonical option keys (lowercased map key → original key).
+func ModuleConfigKeys(mod Module) map[string]string {
+	out := make(map[string]string)
+	if mod == nil {
+		return out
+	}
+	if withSchema, ok := mod.(ModuleWithConfigSchema); ok {
+		for _, field := range withSchema.ConfigSchema() {
+			if field.Key == "" {
+				continue
+			}
+			out[strings.ToLower(field.Key)] = field.Key
+		}
+	}
+	if withConfig, ok := mod.(ModuleWithConfig); ok {
+		for k := range withConfig.ConfigDefaults() {
+			if k == "" {
+				continue
+			}
+			if _, exists := out[strings.ToLower(k)]; !exists {
+				out[strings.ToLower(k)] = k
+			}
+		}
+	}
+	if withValidators, ok := mod.(ModuleWithConfigValidators); ok {
+		for k := range withValidators.ConfigValidators() {
+			if k == "" {
+				continue
+			}
+			if _, exists := out[strings.ToLower(k)]; !exists {
+				out[strings.ToLower(k)] = k
+			}
+		}
+	}
+	return out
 }
 
 // ConfigError carries module/key context for configuration failures.

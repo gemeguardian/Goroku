@@ -16,8 +16,13 @@ Hard gates (must pass):
 
 Soft / advisory:
 
-- **govulncheck** (pinned via `scripts/govulncheck.sh`, default `v1.1.4`) — reports known vulns; main CI job stays advisory (`GOVULNCHECK_STRICT` unset). Optional workflow job `govulncheck-strict` runs on `workflow_dispatch` / weekly schedule and fails on findings. govulncheck has no reliable built-in “high only” severity filter; hard-gating on high alone is deferred until residual stdlib noise is cleared by deliberate Go/x/* bumps.
+- **govulncheck full scan** (pinned via `scripts/govulncheck.sh`, default `v1.1.4`) — main job stays **advisory** so stdlib / transitive noise does not block merge.
 - **Coverage floor 20%** on critical packages — soft gate: warns and exits non-zero only if total drops below 20%; intended as a floor, not a quality target.
+
+Hard gate (vulns):
+
+- **govulncheck direct deps** — job `govulncheck-direct` runs `GOVULNCHECK_DIRECT_ONLY=1`. Uses `govulncheck -json` and fails only when the **vulnerable module** (first trace frame) is a direct `go.mod` require. **stdlib is always ignored.** Transitive modules (e.g. `golang.org/x/net`) do not fail this job.
+- Optional full strict job `govulncheck-strict` on `workflow_dispatch` / weekly schedule (`GOVULNCHECK_STRICT=1`) — fails on any finding; not a PR merge gate.
 
 ## Coverage policy (M9.3)
 
@@ -60,19 +65,23 @@ go test -race ./...
 
 | Check | Status |
 |-------|--------|
-| `govulncheck` in CI (pinned) | Done — advisory in main job; optional strict job |
+| `govulncheck` advisory (pinned) | Done — main job |
+| `govulncheck` direct-deps hard gate | Done — `govulncheck-direct` + `GOVULNCHECK_DIRECT_ONLY=1` |
+| `govulncheck` full strict | Optional job (schedule / dispatch) |
 | Secret scanning (gitleaks / GitHub secret scanning) | **Residual** — enable on the host repo; do not commit runtime secrets |
-| SBOM generation | Lightweight helper: `bash scripts/generate-sbom.sh` (`go list -m -json all`, optional `go version -m` on binary). Full Syft/CycloneDX publish still **residual** for signed release |
+| SBOM generation | Helper: `bash scripts/generate-sbom.sh` → `SBOM_ARTIFACT_PATH`, `dist/sbom/*`, `dist/SBOM_LATEST_PATH.txt`. Full Syft + cosign still **optional residual** |
 | Dependency review action on PRs | **Residual** |
 | License policy automation | **Residual** |
-| Mass `gotd/td` upgrade | **Out of scope for M9.2** — separate milestone |
+| Mass `gotd/td` upgrade | **Out of scope** — see `docs/RELEASE.md` pin notes |
 
 Local:
 
 ```bash
-bash scripts/govulncheck.sh                 # advisory
-GOVULNCHECK_STRICT=1 bash scripts/govulncheck.sh
-bash scripts/generate-sbom.sh dist/sbom
+bash scripts/govulncheck.sh                              # advisory full
+GOVULNCHECK_DIRECT_ONLY=1 bash scripts/govulncheck.sh    # fail on direct-dep vulns only
+GOVULNCHECK_STRICT=1 bash scripts/govulncheck.sh         # fail on any finding
+bash scripts/generate-sbom.sh dist/sbom                  # prints SBOM_ARTIFACT_PATH=
+bash scripts/release-check.sh                            # M10 pre-release
 ```
 
-Known class of findings: Go stdlib fixes often require a **Go patch bump** in `go.mod` / runners; transitive `x/net` / compress bumps should be small, intentional PRs — not bundled with product refactors.
+Known class of findings: Go stdlib fixes often require a **Go patch bump** in `go.mod` / runners; transitive `x/net` / compress bumps should be small, intentional PRs — not bundled with product refactors or gotd upgrades.

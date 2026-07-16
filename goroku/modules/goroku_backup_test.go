@@ -332,7 +332,7 @@ func TestRestoreJournalClearedAfterSuccessfulModulesRestore(t *testing.T) {
 	assertFileBody(t, filepath.Join(modsDir, "kept.go"), testModuleSource("Kept", "journal success"))
 }
 
-func TestRecoverIncompleteRestoreRollsBackFilesAppliedPhase(t *testing.T) {
+func TestRestoreJournalRollsBackFilesAppliedPhase(t *testing.T) {
 	dataRoot, _ := setModuleTestRoots(t)
 	modsDir := filepath.Join(dataRoot, "modules")
 	if err := os.MkdirAll(modsDir, 0700); err != nil {
@@ -368,7 +368,7 @@ func TestRecoverIncompleteRestoreRollsBackFilesAppliedPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := recoverIncompleteModuleRestore(); err != nil {
+	if err := recoverIncompleteModuleRestore(nil); err != nil {
 		t.Fatal(err)
 	}
 	assertFileBody(t, filepath.Join(modsDir, "owned.go"), oldBody)
@@ -377,7 +377,7 @@ func TestRecoverIncompleteRestoreRollsBackFilesAppliedPhase(t *testing.T) {
 	}
 }
 
-func TestRecoverIncompleteRestoreRollsBackUnmarkedAppliedMutation(t *testing.T) {
+func TestRestoreJournalRollsBackUnmarkedAppliedMutation(t *testing.T) {
 	// Crash window: live FS already mutated, journal entry.Applied still false.
 	dataRoot, _ := setModuleTestRoots(t)
 	modsDir := filepath.Join(dataRoot, "modules")
@@ -411,7 +411,7 @@ func TestRecoverIncompleteRestoreRollsBackUnmarkedAppliedMutation(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if err := recoverIncompleteModuleRestore(); err != nil {
+	if err := recoverIncompleteModuleRestore(nil); err != nil {
 		t.Fatal(err)
 	}
 	assertFileBody(t, filepath.Join(modsDir, "owned.go"), oldBody)
@@ -420,7 +420,7 @@ func TestRecoverIncompleteRestoreRollsBackUnmarkedAppliedMutation(t *testing.T) 
 	}
 }
 
-func TestRecoverIncompleteRestoreDropsDBAppliedJournal(t *testing.T) {
+func TestRestoreJournalDropsDBAppliedJournal(t *testing.T) {
 	dataRoot, _ := setModuleTestRoots(t)
 	modsDir := filepath.Join(dataRoot, "modules")
 	if err := os.MkdirAll(modsDir, 0700); err != nil {
@@ -449,7 +449,7 @@ func TestRecoverIncompleteRestoreDropsDBAppliedJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := recoverIncompleteModuleRestore(); err != nil {
+	if err := recoverIncompleteModuleRestore(nil); err != nil {
 		t.Fatal(err)
 	}
 	assertFileBody(t, filepath.Join(modsDir, "owned.go"), body)
@@ -485,7 +485,7 @@ func seedOwnedRestoreJournal(t *testing.T, modsDir string, newBody, oldBody []by
 	return journal, state
 }
 
-func TestRecoverIncompleteRestoreRollsBackDBApplyingPhase(t *testing.T) {
+func TestRestoreJournalRollsBackDBApplyingPhase(t *testing.T) {
 	// Crash window: FS applied, journal at db_applying (DB uncertain) → prefer FS rollback.
 	dataRoot, _ := setModuleTestRoots(t)
 	modsDir := filepath.Join(dataRoot, "modules")
@@ -499,7 +499,7 @@ func TestRecoverIncompleteRestoreRollsBackDBApplyingPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := recoverIncompleteModuleRestore(); err != nil {
+	if err := recoverIncompleteModuleRestore(nil); err != nil {
 		t.Fatal(err)
 	}
 	assertFileBody(t, filepath.Join(modsDir, "owned.go"), oldBody)
@@ -508,7 +508,7 @@ func TestRecoverIncompleteRestoreRollsBackDBApplyingPhase(t *testing.T) {
 	}
 }
 
-func TestRecoverIncompleteRestoreRollsBackUnknownPhase(t *testing.T) {
+func TestRestoreJournalRollsBackUnknownPhase(t *testing.T) {
 	dataRoot, _ := setModuleTestRoots(t)
 	modsDir := filepath.Join(dataRoot, "modules")
 	if err := os.MkdirAll(modsDir, 0700); err != nil {
@@ -522,7 +522,7 @@ func TestRecoverIncompleteRestoreRollsBackUnknownPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := recoverIncompleteModuleRestore(); err != nil {
+	if err := recoverIncompleteModuleRestore(nil); err != nil {
 		t.Fatal(err)
 	}
 	assertFileBody(t, filepath.Join(modsDir, "owned.go"), oldBody)
@@ -531,7 +531,7 @@ func TestRecoverIncompleteRestoreRollsBackUnknownPhase(t *testing.T) {
 	}
 }
 
-func TestRecoverIncompleteRestoreRollsBackEmptyPhase(t *testing.T) {
+func TestRestoreJournalRollsBackEmptyPhase(t *testing.T) {
 	dataRoot, _ := setModuleTestRoots(t)
 	modsDir := filepath.Join(dataRoot, "modules")
 	if err := os.MkdirAll(modsDir, 0700); err != nil {
@@ -545,7 +545,7 @@ func TestRecoverIncompleteRestoreRollsBackEmptyPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := recoverIncompleteModuleRestore(); err != nil {
+	if err := recoverIncompleteModuleRestore(nil); err != nil {
 		t.Fatal(err)
 	}
 	assertFileBody(t, filepath.Join(modsDir, "owned.go"), oldBody)
@@ -660,7 +660,7 @@ func TestApplyRestoreCrashBetweenFilesAppliedAndDBRollsBackOnRecovery(t *testing
 	if err := journal.markDBApplying(state); err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverIncompleteModuleRestore(); err != nil {
+	if err := recoverIncompleteModuleRestore(nil); err != nil {
 		t.Fatal(err)
 	}
 	assertFileBody(t, filepath.Join(modsDir, "owned.go"), oldSource)
@@ -702,12 +702,372 @@ func TestFinishForwardCommitLeavesDBAppliedIfRemoveFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Crash after db_applied, before remove: recovery drops journal, keeps FS.
-	if err := recoverIncompleteModuleRestore(); err != nil {
+	if err := recoverIncompleteModuleRestore(nil); err != nil {
 		t.Fatal(err)
 	}
 	assertFileBody(t, filepath.Join(modsDir, "owned.go"), body)
 	if _, err := os.Stat(restoreJournalRoot()); !os.IsNotExist(err) {
 		t.Fatalf("db_applied journal not cleared: %v", err)
+	}
+}
+
+func TestRestoreJournalDBApplyingWithMatchingRestoreIDForwardCommits(t *testing.T) {
+	// Crash window residual closed when DB already carries restore_id:
+	// journal at db_applying + live FS rolled/wrong → re-apply from staged, keep DB.
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldBody := []byte("package modules\n// old owned\n")
+	newBody := testModuleSource("Owned", "db committed new")
+	// Live FS still looks old (as if recovery would otherwise roll back).
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), oldBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	journal, state := seedOwnedRestoreJournal(t, modsDir, newBody, oldBody)
+	// seed wrote newBody to live; put old body back to simulate divergence after DB commit.
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), oldBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.markDBApplying(state); err != nil {
+		t.Fatal(err)
+	}
+	db := newBackupTestDB(t)
+	if err := db.Reset(stampRestoreCommitMetadata(map[string]map[string]any{
+		"goroku.main": {"command_prefix": "new"},
+		"Loader":      {"loaded_modules": map[string]any{"owned": "local"}},
+	}, state.RestoreID, state.PayloadHash)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recoverIncompleteModuleRestore(db); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), newBody)
+	if got := db.GetString("goroku.main", "command_prefix", ""); got != "new" {
+		t.Fatalf("db prefix = %q, want new (forward commit)", got)
+	}
+	if _, err := os.Stat(restoreJournalRoot()); !os.IsNotExist(err) {
+		t.Fatalf("journal not cleared after forward recovery: %v", err)
+	}
+}
+
+func TestRestoreJournalDBApplyingWithoutRestoreIDRollsBackFS(t *testing.T) {
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldBody := []byte("package modules\n// old owned\n")
+	newBody := testModuleSource("Owned", "db not yet committed")
+	journal, state := seedOwnedRestoreJournal(t, modsDir, newBody, oldBody)
+	if err := journal.markDBApplying(state); err != nil {
+		t.Fatal(err)
+	}
+	db := newBackupTestDB(t)
+	if err := db.Reset(map[string]map[string]any{
+		"goroku.main": {"command_prefix": "old"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recoverIncompleteModuleRestore(db); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), oldBody)
+	if got := db.GetString("goroku.main", "command_prefix", ""); got != "old" {
+		t.Fatalf("db prefix = %q, want old", got)
+	}
+}
+
+func TestRestoreJournalDBApplyingMismatchedRestoreIDRollsBackFS(t *testing.T) {
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldBody := []byte("package modules\n// old owned\n")
+	newBody := testModuleSource("Owned", "other restore id")
+	journal, state := seedOwnedRestoreJournal(t, modsDir, newBody, oldBody)
+	if err := journal.markDBApplying(state); err != nil {
+		t.Fatal(err)
+	}
+	db := newBackupTestDB(t)
+	// DB carries a different restore_id (previous successful restore).
+	if err := db.Reset(stampRestoreCommitMetadata(map[string]map[string]any{
+		"goroku.main": {"command_prefix": "old"},
+	}, "not-this-restore", "deadbeef")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recoverIncompleteModuleRestore(db); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), oldBody)
+}
+
+func TestApplyRestoreStampsRestoreIDIntoDatabase(t *testing.T) {
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), []byte("package modules\n// old\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	db := newBackupTestDB(t)
+	if err := db.Reset(map[string]map[string]any{
+		"Loader":      {"loaded_modules": map[string]any{"owned": "local"}},
+		"goroku.main": {"command_prefix": "old"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stampedID, stampedHash string
+	var phaseAtDB string
+	m := newBackupTestModule(db)
+	m.restoreDBReset = func(data map[string]map[string]any) error {
+		journal := openRestoreJournal()
+		state, err := journal.readState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		phaseAtDB = state.Phase
+		if owner := data[restoreDBOwner]; owner != nil {
+			if v, ok := owner[restoreDBIDKey].(string); ok {
+				stampedID = v
+			}
+			if v, ok := owner[restoreDBHashKey].(string); ok {
+				stampedHash = v
+			}
+		}
+		if stampedID == "" || stampedID != state.RestoreID {
+			t.Fatalf("reset payload restore_id = %q, journal = %q", stampedID, state.RestoreID)
+		}
+		if stampedHash == "" || stampedHash != state.PayloadHash {
+			t.Fatalf("reset payload hash = %q, journal = %q", stampedHash, state.PayloadHash)
+		}
+		return db.Reset(data)
+	}
+
+	mods := makeZip(t, map[string][]byte{
+		"db_mods.json": []byte(`{"owned":"local"}`),
+		"owned.go":     testModuleSource("Owned", "stamped"),
+	})
+	backup := makeZip(t, map[string][]byte{
+		"db.json":  []byte(`{"Loader":{"loaded_modules":{"owned":"local"}},"goroku.main":{"command_prefix":"new"}}`),
+		"mods.zip": mods,
+	})
+	if err := m.restoreAllFromZip(backup); err != nil {
+		t.Fatal(err)
+	}
+	if phaseAtDB != restorePhaseDBApplying {
+		t.Fatalf("phase at Reset = %q, want %q", phaseAtDB, restorePhaseDBApplying)
+	}
+	if got := db.GetString(restoreDBOwner, restoreDBIDKey, ""); got == "" {
+		t.Fatal("restore_id not persisted in database after success")
+	}
+	if got := db.GetString(restoreDBOwner, restoreDBHashKey, ""); got == "" {
+		t.Fatal("fs_payload_hash not persisted in database after success")
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), testModuleSource("Owned", "stamped"))
+}
+
+func TestApplyRestoreKeepsStagedForCrashRecovery(t *testing.T) {
+	// staged/ must remain until finish so db_applying+restore_id recovery can re-apply.
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), []byte("package modules\n// old\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	db := newBackupTestDB(t)
+	if err := db.Reset(map[string]map[string]any{
+		"Loader": {"loaded_modules": map[string]any{"owned": "local"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	newBody := testModuleSource("Owned", "staged retained")
+	var stagedAtDB []byte
+	m := newBackupTestModule(db)
+	m.restoreDBReset = func(data map[string]map[string]any) error {
+		journal := openRestoreJournal()
+		state, err := journal.readState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		stagedAtDB, err = os.ReadFile(filepath.Join(journal.stagedDir(), "owned.go"))
+		if err != nil {
+			t.Fatalf("staged missing at Database.Reset: %v", err)
+		}
+		if state.RestoreID == "" || state.PayloadHash == "" {
+			t.Fatalf("journal missing dual-commit fields: %+v", state)
+		}
+		return db.Reset(data)
+	}
+	mods := makeZip(t, map[string][]byte{
+		"db_mods.json": []byte(`{"owned":"local"}`),
+		"owned.go":     newBody,
+	})
+	backup := makeZip(t, map[string][]byte{
+		"db.json":  []byte(`{"Loader":{"loaded_modules":{"owned":"local"}}}`),
+		"mods.zip": mods,
+	})
+	if err := m.restoreAllFromZip(backup); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stagedAtDB, newBody) {
+		t.Fatalf("staged at Reset = %q, want %q", stagedAtDB, newBody)
+	}
+}
+
+func TestRestoreJournalPreparedPhaseDiscardsWithoutTouchingFS(t *testing.T) {
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("package modules\n// untouched\n")
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	journal := openRestoreJournal()
+	entries := []restoreJournalEntry{{Name: "owned.go", Install: true, Existed: true, Mode: 0600}}
+	if err := journal.begin(modsDir, false, entries, map[string][]byte{"owned.go": testModuleSource("Owned", "never applied")}); err != nil {
+		t.Fatal(err)
+	}
+	// Leave at prepared (begin default).
+	if err := recoverIncompleteModuleRestore(nil); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), body)
+	if _, err := os.Stat(restoreJournalRoot()); !os.IsNotExist(err) {
+		t.Fatalf("prepared journal not cleared: %v", err)
+	}
+}
+
+func TestRestoreJournalUnknownPhaseWithMatchingRestoreIDForwardCommits(t *testing.T) {
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldBody := []byte("package modules\n// old\n")
+	newBody := testModuleSource("Owned", "unknown forward")
+	journal, state := seedOwnedRestoreJournal(t, modsDir, newBody, oldBody)
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), oldBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state.Phase = "corrupted-phase-token"
+	if err := journal.writeState(state); err != nil {
+		t.Fatal(err)
+	}
+	db := newBackupTestDB(t)
+	if err := db.Reset(stampRestoreCommitMetadata(map[string]map[string]any{
+		"goroku.main": {"command_prefix": "new"},
+	}, state.RestoreID, state.PayloadHash)); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoverIncompleteModuleRestore(db); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), newBody)
+}
+
+func TestRestoreJournalCrashAfterDBCommitBeforeDBAppliedForwardOnBoot(t *testing.T) {
+	// End-to-end: applyRestore injects restore_id; simulated death leaves journal at
+	// db_applying with DB already new; next boot recovery keeps FS+DB new.
+	dataRoot, _ := setModuleTestRoots(t)
+	modsDir := filepath.Join(dataRoot, "modules")
+	if err := os.MkdirAll(modsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldSource := []byte("package modules\n// pre\n")
+	if err := os.WriteFile(filepath.Join(modsDir, "owned.go"), oldSource, 0600); err != nil {
+		t.Fatal(err)
+	}
+	db := newBackupTestDB(t)
+	if err := db.Reset(map[string]map[string]any{
+		"Loader":      {"loaded_modules": map[string]any{"owned": "local"}},
+		"goroku.main": {"command_prefix": "old"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	newBody := testModuleSource("Owned", "post db commit")
+	var freezeJournal bool
+	m := newBackupTestModule(db)
+	m.restoreDBReset = func(data map[string]map[string]any) error {
+		if err := db.Reset(data); err != nil {
+			return err
+		}
+		// Simulate process death after durable DB rename, before db_applied.
+		// Leave journal at db_applying (already set before Reset).
+		freezeJournal = true
+		return errors.New("injected process death after db commit")
+	}
+
+	mods := makeZip(t, map[string][]byte{
+		"db_mods.json": []byte(`{"owned":"local"}`),
+		"owned.go":     newBody,
+	})
+	backup := makeZip(t, map[string][]byte{
+		"db.json":  []byte(`{"Loader":{"loaded_modules":{"owned":"local"}},"goroku.main":{"command_prefix":"new"}}`),
+		"mods.zip": mods,
+	})
+	err := m.restoreAllFromZip(backup)
+	if err == nil {
+		t.Fatal("expected injected process death error")
+	}
+	if !freezeJournal {
+		t.Fatal("reset spy did not run")
+	}
+	// In-process path rolls FS because injected error is not CommitUncertain.
+	// Re-seed the true crash window: FS new, journal db_applying, DB has restore_id.
+	// Capture restore_id from live DB after the failed path's first Reset... but
+	// applyRestore rolled DB back. Simulate pure crash: re-apply DB stamp + FS new.
+	journal := openRestoreJournal()
+	entries := []restoreJournalEntry{{
+		Name: "owned.go", Install: true, Existed: true, Applied: true, Mode: 0600,
+	}}
+	if err := journal.begin(modsDir, false, entries, map[string][]byte{"owned.go": newBody}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileDurable(filepath.Join(journal.previousDir(), "owned.go"), oldSource, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := journal.readState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Entries[0].Applied = true
+	if err := writeFileDurable(filepath.Join(modsDir, "owned.go"), newBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.markDBApplying(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Reset(stampRestoreCommitMetadata(map[string]map[string]any{
+		"Loader":      {"loaded_modules": map[string]any{"owned": "local"}},
+		"goroku.main": {"command_prefix": "new"},
+	}, state.RestoreID, state.PayloadHash)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Boot recovery with live DB: must forward-commit (keep new FS + new DB).
+	if err := recoverIncompleteModuleRestore(db); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBody(t, filepath.Join(modsDir, "owned.go"), newBody)
+	if got := db.GetString("goroku.main", "command_prefix", ""); got != "new" {
+		t.Fatalf("prefix = %q, want new", got)
+	}
+	if _, err := os.Stat(restoreJournalRoot()); !os.IsNotExist(err) {
+		t.Fatalf("journal left after forward boot recovery: %v", err)
 	}
 }
 

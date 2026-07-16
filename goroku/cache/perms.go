@@ -24,3 +24,14 @@ type CacheRecordPerms struct {
 func (r CacheRecordPerms) Expired() bool {
 	return r.Exp < time.Now().Unix()
 }
+
+// AsPrivate returns PrivateChatPerms when the record stores a private-chat snapshot.
+func (r CacheRecordPerms) AsPrivate() (PrivateChatPerms, bool) {
+	if p, ok := r.Perms.(PrivateChatPerms); ok {
+		return p, true
+	}
+	if p, ok := r.Perms.(*PrivateChatPerms); ok && p != nil {
+		return *p, true
+	}
+	return PrivateChatPerms{}, false
+}

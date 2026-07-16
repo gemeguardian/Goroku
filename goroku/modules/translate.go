@@ -48,10 +48,13 @@ func (m *Translate) ClientReady() error { return nil }
 func (m *Translate) OnUnload() error    { return nil }
 func (m *Translate) OnDlmod() error     { return nil }
 
-func (m *Translate) ConfigDefaults() map[string]any {
-	return map[string]any{
-		"only_text": false,
-		"provider":  "telegram",
+var _ goroku.ModuleWithConfigSchema = (*Translate)(nil)
+
+// ConfigSchema is the M7 typed config surface for Translate.
+func (m *Translate) ConfigSchema() []goroku.ConfigField {
+	return []goroku.ConfigField{
+		{Key: "only_text", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
+		{Key: "provider", Type: "choice", Default: "telegram", Validator: &goroku.ChoiceValidator{PossibleValues: []string{"telegram", "google"}}},
 	}
 }
 
