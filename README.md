@@ -51,7 +51,7 @@
 > - ✅ Download modules exclusively from official repositories or trusted developers
 > - ❌ Do NOT install modules if unsure about their safety
 > - ⚠️ Exercise caution with unknown commands (`.terminal`, `.eval`, `.ecpp`, etc.)
-> - Go `.eval` is owner-only and always enabled. It runs **in-process via Yaegi** and is **not cancellable** after a timeout: the process may keep running the eval until hard restart. Concurrency is limited to one in-process eval.
+> - Go `.eval` is owner-only and always enabled. It runs **out-of-process via Yaegi** (worker child process); timeout/cancel **kills the worker process group**. No shared memory with the bot (`msg`/`client`/`db` are snapshots; `Loader` unavailable). Concurrency is limited to one worker eval.
 > - Native Go plugins (`.dlmod` / `.loadmod` / presets) require owner identity. Unsigned/untrusted installs need explicit `-confirm` (or a trusted content SHA-256). Plugins **cannot be fully unloaded from process memory** after load—unregister only removes handlers.
 > - Remote module downloads are HTTPS-only; private/loopback/link-local/CGNAT targets are blocked.
 
@@ -201,7 +201,7 @@ Full operations dashboard (module trust UI, sanitized log browser, update UI) is
 | 🎨 **UI/UX Improvements** | Modern interface and user experience |
 | 📦 **Core Modules** | Improved and new core functionality |
 | ⏱ **Rapid Bug Fixes** | Faster resolution than Hikka/Heroku/FTG/GeekTG |
-| 🔌 **Go plugins + Yaegi** | Native Go plugins (`.dlmod` / `.loadmod`) and in-process Yaegi `.eval` — **not** a Python module runtime |
+| 🔌 **Go plugins + Yaegi** | Native Go plugins (`.dlmod` / `.loadmod`) and out-of-process Yaegi `.eval` — **not** a Python module runtime |
 | ▶️ **Inline Elements** | Forms, galleries and lists support |
 
 ### Module compatibility (honest)
@@ -209,7 +209,7 @@ Full operations dashboard (module trust UI, sanitized log browser, update UI) is
 Goroku is a **Go** userbot. It does **not** load Python Hikka / FTG / GeekTG modules.
 
 - **Native Go plugins**: install/load via owner commands; unsigned installs need `-confirm` or a trusted content SHA-256.
-- **Yaegi `.eval`**: owner-only, in-process; timeout does not cancel running code.
+- **Yaegi `.eval`**: owner-only, out-of-process worker; timeout kills the worker; snapshots only (no shared bot memory).
 - **Semantic familiarity**: command style and UX are inspired by Heroku/Hikka; that is **not** binary or Python import compatibility.
 
 ---

@@ -18,6 +18,10 @@ import (
 )
 
 func main() {
+	// M4.2: out-of-process Yaegi worker (re-exec of this binary).
+	if modules.IsYaegiWorkerProcess() {
+		os.Exit(modules.RunYaegiWorker())
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

@@ -16,7 +16,7 @@ Hard gates (must pass):
 
 Soft / advisory:
 
-- **govulncheck** (pinned `golang.org/x/vuln/cmd/govulncheck`) — reports known vulns; does not fail the build while residual stdlib / transitive findings are tracked (see below).
+- **govulncheck** (pinned via `scripts/govulncheck.sh`, default `v1.1.4`) — reports known vulns; main CI job stays advisory (`GOVULNCHECK_STRICT` unset). Optional workflow job `govulncheck-strict` runs on `workflow_dispatch` / weekly schedule and fails on findings. govulncheck has no reliable built-in “high only” severity filter; hard-gating on high alone is deferred until residual stdlib noise is cleared by deliberate Go/x/* bumps.
 - **Coverage floor 20%** on critical packages — soft gate: warns and exits non-zero only if total drops below 20%; intended as a floor, not a quality target.
 
 ## Coverage policy (M9.3)
@@ -60,11 +60,19 @@ go test -race ./...
 
 | Check | Status |
 |-------|--------|
-| `govulncheck` in CI (pinned) | Done (advisory until Go/x deps bumps are deliberate) |
+| `govulncheck` in CI (pinned) | Done — advisory in main job; optional strict job |
 | Secret scanning (gitleaks / GitHub secret scanning) | **Residual** — enable on the host repo; do not commit runtime secrets |
-| SBOM generation (e.g. Syft / `govulncheck` companion) | **Residual** — planned with release pipeline (M10) |
+| SBOM generation | Lightweight helper: `bash scripts/generate-sbom.sh` (`go list -m -json all`, optional `go version -m` on binary). Full Syft/CycloneDX publish still **residual** for signed release |
 | Dependency review action on PRs | **Residual** |
 | License policy automation | **Residual** |
 | Mass `gotd/td` upgrade | **Out of scope for M9.2** — separate milestone |
+
+Local:
+
+```bash
+bash scripts/govulncheck.sh                 # advisory
+GOVULNCHECK_STRICT=1 bash scripts/govulncheck.sh
+bash scripts/generate-sbom.sh dist/sbom
+```
 
 Known class of findings: Go stdlib fixes often require a **Go patch bump** in `go.mod` / runners; transitive `x/net` / compress bumps should be small, intentional PRs — not bundled with product refactors.

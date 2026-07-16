@@ -23,7 +23,9 @@ var _ = logger.L
 
 // Compile-time consumer-port assertions (M7.2).
 var (
-	_ webiface.TelegramClient = (*CustomTelegramClient)(nil)
+	_ webiface.TelegramClient  = (*CustomTelegramClient)(nil)
+	_ webiface.Database        = (*Database)(nil)
+	_ webiface.ModulesRegistry = (*Modules)(nil)
 )
 
 type Message struct {

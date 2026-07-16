@@ -149,7 +149,7 @@ type Web struct {
 type RuntimeClient struct {
 	ID         int64
 	Client     webiface.TelegramClient
-	Loader     any // residual: modules registry surface not yet webiface-typed
+	Loader     webiface.ModulesRegistry // nil allowed; web UI does not call yet
 	Database   webiface.Database
 	generation uint64
 }

@@ -86,10 +86,16 @@ func (wc *WebCore) AddLoader(client any, loader any, db any) {
 		L().Warn("legacy AddLoader rejected invalid runtime")
 		return
 	}
+	var typedLoader webiface.ModulesRegistry
+	if loader != nil {
+		if reg, ok := loader.(webiface.ModulesRegistry); ok {
+			typedLoader = reg
+		}
+	}
 	if err := wc.RegisterClient(RuntimeClient{
 		ID:       typedClient.TGIDValue(),
 		Client:   typedClient,
-		Loader:   loader,
+		Loader:   typedLoader,
 		Database: typedDB,
 	}); err != nil {
 		L().Warn("legacy AddLoader failed", zap.Error(err))

@@ -174,12 +174,26 @@ func TestWebRootHandlerAndSetupToken(t *testing.T) {
 	}
 }
 
+type stubModulesRegistry struct{ names []string }
+
+func (s stubModulesRegistry) ModuleNames() []string { return s.names }
+
 func TestLegacyAddLoaderUsesTypedRegistry(t *testing.T) {
 	core := NewWebCore(WebConfig{})
-	core.AddLoader(testWebClient{tgid: 42}, "loader", legacyWebDB{})
+	loader := stubModulesRegistry{names: []string{"loader"}}
+	core.AddLoader(testWebClient{tgid: 42}, loader, legacyWebDB{})
 	clients := core.ListClients()
-	if len(clients) != 1 || clients[0].ID != 42 || clients[0].Loader != "loader" {
+	if len(clients) != 1 || clients[0].ID != 42 || clients[0].Loader == nil {
 		t.Fatalf("legacy registration = %#v", clients)
+	}
+	if got := clients[0].Loader.ModuleNames(); len(got) != 1 || got[0] != "loader" {
+		t.Fatalf("loader names = %v", got)
+	}
+	// Non-ModulesRegistry loaders are dropped (typed registry only).
+	core2 := NewWebCore(WebConfig{})
+	core2.AddLoader(testWebClient{tgid: 7}, "not-a-registry", legacyWebDB{})
+	if c := core2.ListClients(); len(c) != 1 || c[0].Loader != nil {
+		t.Fatalf("non-typed loader must be stored as nil: %#v", c)
 	}
 	if DefaultFallbackTGID == 0 {
 		t.Fatal("compatibility constant was removed")
@@ -828,17 +842,21 @@ func TestRegisterClientRejectsZeroID(t *testing.T) {
 
 func TestRegisterClientRejectsDuplicateID(t *testing.T) {
 	web := NewWeb(WebConfig{})
-	first := RuntimeClient{ID: 42, Client: testWebClient{tgid: 42}, Loader: "first"}
+	firstLoader := stubModulesRegistry{names: []string{"first"}}
+	first := RuntimeClient{ID: 42, Client: testWebClient{tgid: 42}, Loader: firstLoader}
 	if err := web.RegisterClient(first); err != nil {
 		t.Fatalf("register first client: %v", err)
 	}
-	err := web.RegisterClient(RuntimeClient{ID: 42, Client: testWebClient{tgid: 42}, Loader: "replacement"})
+	err := web.RegisterClient(RuntimeClient{ID: 42, Client: testWebClient{tgid: 42}, Loader: stubModulesRegistry{names: []string{"replacement"}}})
 	if !errors.Is(err, ErrDuplicateClient) {
 		t.Fatalf("expected duplicate error, got %v", err)
 	}
 	clients := web.ListClients()
-	if len(clients) != 1 || clients[0].Loader != "first" {
+	if len(clients) != 1 || clients[0].Loader == nil {
 		t.Fatalf("duplicate registration overwrote original: %#v", clients)
+	}
+	if got := clients[0].Loader.ModuleNames(); len(got) != 1 || got[0] != "first" {
+		t.Fatalf("original loader lost: %v", got)
 	}
 }
 

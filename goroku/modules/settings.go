@@ -22,6 +22,8 @@ type SettingsModule struct {
 	aliasEmoji               string
 }
 
+var _ goroku.ModuleWithConfigSchema = (*SettingsModule)(nil)
+
 func (m *SettingsModule) Name() string {
 	return "Settings"
 }
@@ -62,10 +64,11 @@ func (m *SettingsModule) ClientReady() error {
 func (m *SettingsModule) OnUnload() error { return nil }
 func (m *SettingsModule) OnDlmod() error  { return nil }
 
-func (m *SettingsModule) ConfigDefaults() map[string]any {
-	return map[string]any{
-		"allow_nonstandart_prefixes": false,
-		"alias_emoji":                "<tg-emoji emoji-id=4974259868996207180>▪️</tg-emoji>",
+// ConfigSchema is the M7 typed config surface for Settings.
+func (m *SettingsModule) ConfigSchema() []goroku.ConfigField {
+	return []goroku.ConfigField{
+		{Key: "allow_nonstandart_prefixes", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
+		{Key: "alias_emoji", Type: "string", Default: "<tg-emoji emoji-id=4974259868996207180>▪️</tg-emoji>", Validator: &goroku.StringValidator{}},
 	}
 }
 

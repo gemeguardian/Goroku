@@ -35,3 +35,10 @@ type InlineProvider interface {
 type Database interface {
 	Get(owner, key string, defaultValue any) (any, error)
 }
+
+// ModulesRegistry is the modules surface held on RuntimeClient.
+// Web handlers do not call into it yet; *goroku.Modules implements it.
+// Residual: expand when web UI needs module list/control (M7).
+type ModulesRegistry interface {
+	ModuleNames() []string
+}

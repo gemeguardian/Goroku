@@ -43,7 +43,7 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 | M3.1-M3.3 | **Завершено** | IP trust, pending auth, localhost/timeouts, SSH-off-by-default tracked. |
 | M3.4 | **Завершено** | CSRF/setup/session rotation tracked + clean gate. |
 | M4.1 | **Завершено** | ProcessExecutor tracked; cgroups/rlimit product-deferred (out of scope). |
-| M4.2 | **Частично** | Honest in-process Yaegi documented; worker Yaegi still product-deferred. |
+| M4.2 | **Завершено** | Out-of-process Yaegi worker via ProcessExecutor; timeout kills process group. |
 | M4.3 | **Завершено** | OnlyOwner + audit digests tracked + verified. |
 | M4.4 | **Завершено** | SSRF + content digests + confirm strip tracked; full signer deferred. |
 | M5.1 | **Завершено** | App.Run lifecycle tracked; embedded stdin residual documented/accepted. |
@@ -64,13 +64,13 @@ vet, build, `go test -race ./...`). Local runtime (`user_modules/`,
 | **M10** | **Частично** | Docs+Docker+goreleaser present; signed release/canary residual. |
 | **M1.1** | **Частично** | restore journal; not joint FS+DB atomic. |
 | **M1.2** | **Завершено** | limits/validation tracked; M1.1 residual separate. |
-| M4.2 | **Частично** | worker Yaegi deferred. |
+| M4.2 | **Завершено** | worker Yaegi via `--yaegi-worker` re-exec + ProcessExecutor kill. |
 
 ### Следующий порядок исполнения
 
 1. ~~Commit M6–M10~~ **done** (`4699404`); clean-clone verify **PASS**.
 2. Push `master` only on user ask; optional tag `v1.x` after CHANGELOG review.
-3. Residuals (post-release ok): M0.1 token, M1.1 joint atomicity, M4.2 worker Yaegi, M7 full typing, M9.2 hard gates, M10 signed/canary.
+3. Residuals (post-release ok): M0.1 token, M1.1 joint atomicity, M7 full typing, M9.2 hard gates, M10 signed/canary.
 4. **gotd upgrade** separate PR.
 
 ### Worktree snapshot (для handoff)
@@ -701,17 +701,16 @@ func GetAs[T any](db Reader, owner, key string, fallback T) (T, error)
 
 ### M4.2. Убрать ложный timeout Yaegi
 
-Файл: `goroku/modules/eval.go`.
+Файл: `goroku/modules/eval.go`, `yaegi_worker.go`.
 
-`context.WithTimeout` вокруг ожидания goroutine не способен остановить Yaegi.
-Варианты:
-
-1. Рекомендуемый: запускать Go eval в отдельном worker process.
-2. Временный: явно документировать non-cancellable execution, ограничить один
-   eval за раз и требовать hard restart timeout supervisor-а.
+**Сделано:** Go eval в отдельном worker process (`--yaegi-worker` re-exec того же
+бинарника / test binary). Parent шлёт JSON (code + snapshots) через stdin;
+`ProcessExecutor` убивает process group по timeout/cancel. Owner-only сохранён.
+Лимиты: нет shared memory с ботом; `Loader` недоступен; `msg`/`client`/`db` —
+JSON snapshots.
 
 Критерий готовности: бесконечный Go eval не оставляет CPU-consuming goroutine в
-основном процессе после deadline.
+основном процессе после deadline — worker process killed.
 
 ### M4.3. Зафиксировать dangerous capability invariant
 

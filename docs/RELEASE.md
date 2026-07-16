@@ -57,8 +57,20 @@ CI release job is **not** required for this subset; manual or GoReleaser both OK
 - Verify `/healthz` and `/readyz` after deploy.
 - Backup data root before upgrade; restore tested path: stop → restore files → start.
 
+## SBOM (lightweight)
+
+Without adding heavy deps:
+
+```bash
+go build -o "${TMPDIR:-/tmp}/goroku_bin" .
+GOROKU_BIN="${TMPDIR:-/tmp}/goroku_bin" bash scripts/generate-sbom.sh dist/sbom
+# produces go-modules.json, go-modules.txt, binary-version-m.txt
+```
+
+For CycloneDX/Syft, install those tools separately and attach artifacts at publish time.
+
 ## Out of scope for this subset
 
-- Cosign / full SBOM pipeline
+- Cosign / full Syft SBOM pipeline
 - Hardened systemd unit (document later)
 - Automatic promotion / canary

@@ -9,7 +9,7 @@ Practical threat model and secret-handling notes for Goroku operators.
 | Web panel | Session theft, CSRF, open bind | Binds `127.0.0.1` by default; Docker uses `0.0.0.0` only with `DOCKER` set. Setup token, CSRF, session rotation. Prefer reverse proxy + TLS if exposed. |
 | SSH reverse tunnel (`--ssh-tunnel`) | Exposes panel to public tunnel providers | **Off by default.** Only enable when you accept third-party tunnel risk. |
 | MTProto proxy flags | Wrong secret / MITM path | `--proxy-host` + `--proxy-port` + `--proxy-secret` required together; `--proxy-pass` is a deprecated alias for the secret, **not** SSH. |
-| Yaegi `.eval` | In-process RCE as the bot owner | Owner-only; single concurrent slot; timeout does **not** cancel running code — may need hard restart. |
+| Yaegi `.eval` | RCE as the bot owner | Owner-only; single concurrent worker; eval runs in a **child process** killed on timeout/cancel (process group SIGKILL). No shared memory with the bot (snapshots only). |
 | Native Go plugins | In-process code load | Owner-only; untrusted installs need `-confirm` or trusted content SHA-256; plugins cannot be fully unloaded from memory. |
 | Remote module download | SSRF / hostile payload | HTTPS-only; private/loopback/link-local/CGNAT targets blocked. |
 | Terminal module | Shell RCE | Owner-only; treat as full host compromise capability. |
@@ -49,15 +49,16 @@ Rotation completeness criteria:
 
 ## Residual risks (honest)
 
-- **Yaegi eval** remains in-process and non-cancellable after timeout (worker isolation still deferred).
+- **Yaegi eval** runs out-of-process and is killable on timeout, but still full RCE as the process user while the worker is alive. Snapshots only: no live `msg`/`client`/`db`/`loader` shared with the parent; `Loader` is unavailable in the worker.
 - **Native plugins** cannot be fully unloaded after `plugin.Open`.
 - **`CheckBranch` / `ResetToMaster`** can hard-reset a non-master git worktree for non-allowlisted accounts when git is enabled. For production binary deploys use `--no-git` (or `GOROKU_NO_GIT=1`) so the process does not perform destructive git operations.
 - Running as root is discouraged (`--root` / `force_insecure` / `DOCKER` / `NO_SUDO` only when intentional).
 
 ## Dependency / supply-chain checks (M9.2)
 
-- CI runs pinned **govulncheck** (advisory; see `docs/CI.md`).
-- **Not yet automated:** secret scanning, SBOM publish, PR dependency-review, license policy.
+- CI runs pinned **govulncheck** via `scripts/govulncheck.sh` (advisory in main job; optional strict job — see `docs/CI.md`).
+- Lightweight SBOM: `bash scripts/generate-sbom.sh` (`go list -m` / `go version -m`).
+- **Not yet automated:** secret scanning, Syft/CycloneDX publish, PR dependency-review, license policy.
 - Do **not** mass-upgrade `gotd/td` as part of routine security scans — treat that as a separate migration.
 
 ## Reporting

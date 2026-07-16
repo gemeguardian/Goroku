@@ -13,6 +13,14 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+func TestMain(m *testing.M) {
+	// Re-exec path: ProcessExecutor launches this test binary as the Yaegi worker.
+	if IsYaegiWorkerProcess() {
+		os.Exit(RunYaegiWorker())
+	}
+	os.Exit(m.Run())
+}
+
 func TestEvalCommandAvailableByDefaultAndSafeguarded(t *testing.T) {
 	m := &Eval{client: &goroku.CustomTelegramClient{TGID: 123}}
 	meta := m.CommandMetas()["eval"]
@@ -20,19 +28,25 @@ func TestEvalCommandAvailableByDefaultAndSafeguarded(t *testing.T) {
 		t.Fatal("eval command must remain owner-only")
 	}
 	if got := cap(yaegiSlots); got != 1 {
-		t.Fatalf("Yaegi concurrency slots = %d, want 1 (non-cancellable in-process temporary path)", got)
+		t.Fatalf("Yaegi concurrency slots = %d, want 1", got)
+	}
+
+	// Worker has no shared memory: expressions return via result, not parent msg mutation.
+	res, _, _, err := m.runYaegiEval(&goroku.Message{}, `"executed"`)
+	if err != nil {
+		t.Fatalf("worker eval: %v", err)
+	}
+	if res != "executed" {
+		t.Fatalf("result = %q, want executed", res)
 	}
 
 	msg := &goroku.Message{
-		RawText: ".eval msg.Text = \"executed\"",
+		RawText: `.eval "executed"`,
 		Client:  &goroku.CustomTelegramClient{},
 	}
-	err := m.Commands()["eval"](msg)
+	err = m.Commands()["eval"](msg)
 	if !errors.Is(err, goroku.ErrClientNotInitialized) {
 		t.Fatalf("EvalCmd() error = %v, want ErrClientNotInitialized from response delivery", err)
-	}
-	if msg.Text != "executed" {
-		t.Fatalf("in-process eval did not execute with injected msg: Text = %q", msg.Text)
 	}
 	if !msg.Answered {
 		t.Fatal("eval command did not reach response delivery")
@@ -51,6 +65,23 @@ func TestEvalYaegiExpression(t *testing.T) {
 	}
 	if res != "123" {
 		t.Fatalf("expected 123, got %q", res)
+	}
+}
+
+func TestYaegiWorkerKilledOnTimeout(t *testing.T) {
+	prev := yaegiEvalTimeout
+	yaegiEvalTimeout = 250 * time.Millisecond
+	t.Cleanup(func() { yaegiEvalTimeout = prev })
+
+	m := &Eval{client: &goroku.CustomTelegramClient{TGID: 1}}
+	start := time.Now()
+	_, _, _, err := m.runYaegiEval(&goroku.Message{}, "for {}")
+	elapsed := time.Since(start)
+	if !errors.Is(err, errEvalTimeout) {
+		t.Fatalf("error = %v, want errEvalTimeout", err)
+	}
+	if elapsed > 4*time.Second {
+		t.Fatalf("timeout kill took too long: %v", elapsed)
 	}
 }
 

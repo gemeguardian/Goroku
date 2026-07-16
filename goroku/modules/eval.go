@@ -11,14 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/traefik/yaegi/interp"
-	"github.com/traefik/yaegi/stdlib"
 )
 
 const externalOutputLimit = 256 * 1024
@@ -26,10 +22,10 @@ const externalOutputLimit = 256 * 1024
 const censoredOutputUnavailable = "[output suppressed: database unavailable]"
 
 var (
-	// Yaegi runs in-process and cannot be cancelled after deadline (M4.2 temporary path).
-	// Concurrency is limited to one slot so a runaway eval does not stack multiple CPUs.
+	// Yaegi runs out-of-process (M4.2); one concurrent worker eval.
+	// Timeout kills the worker process group via ProcessExecutor.
 	yaegiSlots     = make(chan struct{}, 1)
-	errEvalTimeout = errors.New("eval timeout; execution may still be running")
+	errEvalTimeout = errors.New("eval timeout; worker process killed")
 )
 
 type boundedBuffer struct {
@@ -703,119 +699,22 @@ func isFullPackageGo(code string) bool {
 }
 
 func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, string, error) {
-	stdout, stderr := newBoundedBuffer(externalOutputLimit), newBoundedBuffer(externalOutputLimit)
-	i := interp.New(interp.Options{Stdout: stdout, Stderr: stderr})
-	if err := i.Use(stdlib.Symbols); err != nil {
-		return "", "", "", err
-	}
-	loader := m.client.Loader
-	if err := i.Use(interp.Exports{
-		"gorokuctx/gorokuctx": map[string]reflect.Value{
-			"Msg":    reflect.ValueOf(msg),
-			"Client": reflect.ValueOf(m.client),
-			"DB":     reflect.ValueOf(m.db),
-			"Loader": reflect.ValueOf(loader),
-		},
-	}); err != nil {
-		return "", "", "", err
-	}
-
-	if isFullPackageGo(code) {
-		_, err := m.evalYaegiWithTimeout(i, code, false)
-		if err != nil {
-			return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
-		}
-		return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), nil
-	}
-
-	source := m.buildYaegiSource(code, true)
-	value, err := m.evalYaegiWithTimeout(i, source, !isFullPackageGo(code))
-	if err != nil && !errors.Is(err, errEvalTimeout) {
-		source = m.buildYaegiSource(code, false)
-		value, err = m.evalYaegiWithTimeout(i, source, !isFullPackageGo(code))
-	}
-	if err != nil {
-		return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
-	}
-
-	resultText, runErr, multiValuePanic := m.runYaegiRunner(value)
-	if multiValuePanic {
-		// Expression mode compiled but the expression is a multi-value function call.
-		// Retry as a statement so the side effects run without trying to return values.
-		source = m.buildYaegiSource(code, false)
-		value, err = m.evalYaegiWithTimeout(i, source, !isFullPackageGo(code))
-		if err != nil {
-			return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
-		}
-		resultText, runErr, _ = m.runYaegiRunner(value)
-	}
-	if runErr != nil {
-		return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), runErr
-	}
-	return resultText, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), nil
-}
-
-func (m *Eval) runYaegiRunner(value reflect.Value) (string, error, bool) {
-	if !value.IsValid() || value.Kind() != reflect.Func {
-		return "", fmt.Errorf("invalid yaegi runner signature"), false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), yaegiEvalTimeout)
 	defer cancel()
 	if err := acquireSlot(ctx, yaegiSlots); err != nil {
-		return "", errEvalTimeout, false
+		return "", "", "", errEvalTimeout
 	}
-	runner, ok := value.Interface().(func() any)
-	if !ok {
-		done := make(chan struct{})
-		var result reflect.Value
-		var panicValue any
-		go func() {
-			defer func() {
-				<-yaegiSlots
-				panicValue = recover()
-				close(done)
-			}()
-			result = value.Call(nil)[0]
-		}()
-		select {
-		case <-done:
-			if panicValue != nil {
-				return "", fmt.Errorf("panic: %v", panicValue), isMultiValuePanic(panicValue)
-			}
-		case <-ctx.Done():
-			return "", errEvalTimeout, false
-		}
-		resultText := ""
-		if result.IsValid() && !result.IsNil() {
-			resultText = fmt.Sprintf("%v", result.Interface())
-		}
-		return resultText, nil, false
-	}
-	done := make(chan struct{})
-	var result any
-	var panicValue any
-	go func() {
-		defer func() {
-			<-yaegiSlots
-			panicValue = recover()
-			close(done)
-		}()
-		result = runner()
-	}()
-	select {
-	case <-done:
-		if panicValue != nil {
-			return "", fmt.Errorf("panic: %v", panicValue), isMultiValuePanic(panicValue)
-		}
-	case <-ctx.Done():
-		return "", errEvalTimeout, false
-	}
+	defer func() { <-yaegiSlots }()
 
-	resultText := ""
-	if result != nil {
-		resultText = formatEvalResult(result)
+	req := m.buildYaegiRequest(msg, code)
+	res, err := runYaegiWorkerProcess(ctx, req)
+	if err != nil {
+		return res.Result, res.Stdout, res.Stderr, err
 	}
-	return resultText, nil, false
+	if res.Error != "" {
+		return res.Result, res.Stdout, res.Stderr, errors.New(res.Error)
+	}
+	return res.Result, res.Stdout, res.Stderr, nil
 }
 
 func formatEvalResult(v any) string {
@@ -847,57 +746,6 @@ func isMultiValuePanic(v any) bool {
 	return strings.Contains(s, "not assignable to type") ||
 		strings.Contains(s, "multiple-value") ||
 		strings.Contains(s, "too many arguments to return")
-}
-
-func (m *Eval) buildYaegiSource(code string, expression bool) string {
-	body := code
-	if expression {
-		body = "return " + code
-	}
-	return fmt.Sprintf(`package main
-
-import (
-    "gorokuctx"
-)
-
-func __run__() any {
-    msg := gorokuctx.Msg
-    client := gorokuctx.Client
-    db := gorokuctx.DB
-    loader := gorokuctx.Loader
-    _ = msg
-    _ = client
-    _ = db
-    _ = loader
-    %s
-    return nil
-}
-`, body)
-}
-
-func (m *Eval) evalYaegiWithTimeout(i *interp.Interpreter, source string, needRunFunc bool) (reflect.Value, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := acquireSlot(ctx, yaegiSlots); err != nil {
-		return reflect.Value{}, errEvalTimeout
-	}
-	done := make(chan struct{})
-	var value reflect.Value
-	var err error
-	go func() {
-		defer func() { <-yaegiSlots }()
-		value, err = i.Eval(source)
-		if err == nil && needRunFunc {
-			value, err = i.Eval("__run__")
-		}
-		close(done)
-	}()
-	select {
-	case <-done:
-		return value, err
-	case <-ctx.Done():
-		return reflect.Value{}, errEvalTimeout
-	}
 }
 
 func (m *Eval) ECCmd(msg *goroku.Message) error {

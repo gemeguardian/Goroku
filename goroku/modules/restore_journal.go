@@ -14,26 +14,45 @@ import (
 // Restore journal residual crash windows (M1.1):
 //
 // applyRestore cannot make filesystem module sources and Database.Reset jointly
-// crash-atomic without a multi-store coordinator. Order is intentionally
-// FS-then-DB so an incomplete restore can be rolled back to the pre-restore
-// filesystem that still matches the live (old) database.
+// crash-atomic without a multi-store coordinator. Database.Reset is already
+// single-file atomic (temp write + rename) but has no staging-path API that can
+// be renamed in lockstep with the module tree, so recovery stays journal-based.
+//
+// Order is intentionally FS-then-DB so an incomplete restore can be rolled back
+// to the pre-restore filesystem that still matches the live (old) database when
+// the DB side is still pre-restore or uncertain.
+//
+// Success path phase advances (each writeState is fsynced via writeFileDurable):
+//
+//	prepared → applying → files_applied → db_applying → db_applied → remove
 //
 // Phases recorded under BaseDir/.goroku-restore-journal:
 //
-//   prepared      – previous/ + staged/ durable; live FS and DB unchanged.
-//                   Crash → discard journal (no live mutation).
-//   applying      – some live module files may already match the backup
-//                   (including after mutation but before Applied is journaled).
-//                   Crash → rollback the full intended entry set from previous/.
-//   files_applied – live FS matches backup; DB still pre-restore.
-//                   Crash → rollback full intended FS set so boot sees FS+DB old.
-//   db_applied    – FS and DB both match backup; journal not yet removed.
-//                   Crash → drop journal (forward commit).
+//	prepared      – previous/ + staged/ durable; live FS and DB unchanged.
+//	                Crash → discard journal (no live mutation).
+//	applying      – some live module files may already match the backup
+//	                (including after mutation but before Applied is journaled).
+//	                Crash → rollback the full intended entry set from previous/.
+//	files_applied – live FS matches backup; DB still pre-restore (Reset not started).
+//	                Crash → rollback full intended FS set so boot sees FS+DB old.
+//	db_applying   – FS matches backup; Database.Reset may be in flight or
+//	                durability is uncertain from the journal's point of view.
+//	                Crash → prefer safe FS rollback (may leave FS-old/DB-new if
+//	                Reset already committed — residual below).
+//	db_applied    – FS and DB both match backup; journal not yet removed.
+//	                Crash → drop journal (forward commit).
 //
-// Residual: a power loss after Database.Reset durability is uncertain still
-// cannot be resolved by the journal alone (same class as
-// ErrDatabaseCommitUncertain). The journal only recovers incomplete FS applies
-// and the FS-new/DB-old window before a successful DB commit.
+// Residual (not jointly atomic):
+//   - Power loss after Database.Reset is logically committed but before
+//     db_applied is durable: recovery still prefers FS rollback when the phase
+//     is files_applied/db_applying/unknown, which can yield FS-old + DB-new.
+//   - Same class as ErrDatabaseCommitUncertain: the journal alone cannot prove
+//     DB durability across process death.
+//   - True joint atomicity needs a multi-store coordinator or a DB API that
+//     stages a candidate and renames only after FS commit is durable.
+//
+// Ambiguous phases (empty, unknown, unreadable body that still parses with an
+// unexpected phase): always prefer safe FS rollback over forward commit.
 
 const (
 	restoreJournalDirName   = ".goroku-restore-journal"
@@ -44,6 +63,7 @@ const (
 	restorePhasePrepared     = "prepared"
 	restorePhaseApplying     = "applying"
 	restorePhaseFilesApplied = "files_applied"
+	restorePhaseDBApplying   = "db_applying"
 	restorePhaseDBApplied    = "db_applied"
 )
 
@@ -246,9 +266,32 @@ func (j *restoreJournal) markFilesApplied(state *restoreJournalState) error {
 	return j.writeState(state)
 }
 
+func (j *restoreJournal) markDBApplying(state *restoreJournalState) error {
+	state.Phase = restorePhaseDBApplying
+	return j.writeState(state)
+}
+
 func (j *restoreJournal) markDBApplied(state *restoreJournalState) error {
 	state.Phase = restorePhaseDBApplied
 	return j.writeState(state)
+}
+
+// finishForwardCommit records db_applied (fsynced) then removes the journal.
+// After FS+DB already match the backup, leaving the journal at files_applied or
+// db_applying is dangerous (boot would roll FS back). Prefer durable db_applied,
+// then clear; if phase advance fails, still attempt remove so no journal remains.
+func (j *restoreJournal) finishForwardCommit(state *restoreJournalState) error {
+	if err := j.markDBApplied(state); err != nil {
+		if remErr := j.remove(); remErr != nil {
+			return errors.Join(fmt.Errorf("mark db_applied: %w", err), fmt.Errorf("clear restore journal: %w", remErr))
+		}
+		return nil
+	}
+	if err := j.remove(); err != nil {
+		// db_applied is durable: recovery will drop the journal on next boot.
+		return nil
+	}
+	return nil
 }
 
 // rollbackRestoreJournalState restores the pre-restore module tree for the
@@ -328,16 +371,19 @@ func recoverIncompleteModuleRestoreLocked() error {
 			return fmt.Errorf("clear prepared restore journal: %w", err)
 		}
 		return nil
-	case restorePhaseApplying, restorePhaseFilesApplied, "":
+	case restorePhaseApplying, restorePhaseFilesApplied, restorePhaseDBApplying, "":
+		// applying / files_applied: DB pre-restore → safe FS rollback.
+		// db_applying / empty: DB uncertain → prefer safe FS rollback (residual:
+		// if Reset already committed, boot may see FS-old + DB-new).
 		if err := rollbackRestoreJournalState(state, journal); err != nil {
-			return fmt.Errorf("rollback incomplete restore: %w", err)
+			return fmt.Errorf("rollback incomplete restore (phase %q): %w", state.Phase, err)
 		}
 		if err := journal.remove(); err != nil {
 			return fmt.Errorf("clear rolled-back restore journal: %w", err)
 		}
 		return nil
 	default:
-		// Unknown phase: treat as incomplete FS mutation and roll back applied entries.
+		// Unknown phase: treat as incomplete / DB-uncertain and prefer FS rollback.
 		if err := rollbackRestoreJournalState(state, journal); err != nil {
 			return fmt.Errorf("rollback restore journal phase %q: %w", state.Phase, err)
 		}

@@ -57,7 +57,7 @@ Persistence:
 
 1. **Built-in modules** — compiled into the binary via factories in `main.go`.
 2. **Native Go plugins** (Linux) — owner install/load (`.dlmod` / `.loadmod` / presets); trust digests / `-confirm`; cannot fully unload from process memory.
-3. **Yaegi `.eval`** — owner-only in-process interpreter (`github.com/traefik/yaegi`); one concurrent eval; timeout does not cancel running code.
+3. **Yaegi `.eval`** — owner-only; out-of-process worker (`--yaegi-worker` re-exec) via `ProcessExecutor`; process group killed on timeout/cancel. Context is JSON snapshots (no shared bot memory); `Loader` unavailable in worker.
 
 There is **no** Python module loader.
 
@@ -72,5 +72,4 @@ Examples registered from `main.go`: `APIProtection`, `Eval`, `GorokuPluginSecuri
 ## Out of scope / deferred (as of M10 subset)
 
 - Full ops dashboard (module trust UI, log browser) not shipped
-- Worker-isolated Yaegi still deferred
 - Full plugin code signing deferred (content digest + confirm is the current gate)

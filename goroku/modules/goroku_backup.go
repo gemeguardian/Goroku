@@ -970,12 +970,12 @@ func stageModuleRestore(modsDir string, files map[string][]byte) (*moduleRestore
 
 // applyRestore mutates module sources then Database.Reset.
 //
-// Crash residual (not jointly atomic): after filesystem apply succeeds and
-// before Database.Reset is durably committed, a crash leaves FS new + DB old.
-// A durable restore journal under BaseDir/.goroku-restore-journal records
-// intended ops and previous file bodies so the next Init rolls FS back to the
-// pre-restore tree (matching the still-old DB). True FS+DB atomicity would
-// need a multi-store coordinator; see restore_journal.go.
+// Crash residual (not jointly atomic): Database.Reset is single-file atomic
+// (temp+rename) but has no joint staging rename with the module tree. After FS
+// apply and before db_applied is durable, a crash is recovered via the journal
+// under BaseDir/.goroku-restore-journal (prefer FS rollback when DB is
+// uncertain). Success path: files_applied → db_applying → Reset → db_applied →
+// remove, each journal write fsynced. See restore_journal.go.
 func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *moduleRestorePlan) error {
 	// Clear any leftover incomplete restore before starting a new one.
 	if err := recoverIncompleteModuleRestoreLocked(); err != nil {
@@ -1150,10 +1150,19 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			}
 		}
 
+		// Durable files_applied before any DB mutation.
 		if err := journal.markFilesApplied(journalState); err != nil {
 			filesErr := rollbackFiles()
 			if filesErr != nil {
 				return errors.Join(fmt.Errorf("journal files_applied failed: %w", err), fmt.Errorf("file rollback failed: %w", filesErr))
+			}
+			return err
+		}
+		// db_applying before Reset: crash recovery prefers FS rollback while DB uncertain.
+		if err := journal.markDBApplying(journalState); err != nil {
+			filesErr := rollbackFiles()
+			if filesErr != nil {
+				return errors.Join(fmt.Errorf("journal db_applying failed: %w", err), fmt.Errorf("file rollback failed: %w", filesErr))
 			}
 			return err
 		}
@@ -1166,10 +1175,9 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 	if dbErr := resetDB(backupData); dbErr != nil {
 		var diagnostic *goroku.DatabaseError
 		if errors.As(dbErr, &diagnostic) && diagnostic.Committed && errors.Is(dbErr, goroku.ErrDatabaseCommitUncertain) {
-			// DB is treated as forward-committed; drop journal like success.
+			// DB is treated as forward-committed; advance journal like success.
 			if journal != nil && journalState != nil {
-				_ = journal.markDBApplied(journalState)
-				_ = journal.remove()
+				_ = journal.finishForwardCommit(journalState)
 			}
 			return &forwardRestoreCommitWarning{err: fmt.Errorf("database restore durability warning: %w", dbErr)}
 		}
@@ -1185,12 +1193,12 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 		return err
 	}
 	if journal != nil && journalState != nil {
-		if err := journal.markDBApplied(journalState); err != nil {
-			// FS+DB already match backup; prefer clearing journal best-effort.
-			_ = journal.remove()
-			return nil
+		// files_applied → db_applying already durable; now db_applied → remove.
+		if err := journal.finishForwardCommit(journalState); err != nil {
+			// FS+DB already match backup; surface journal cleanup only if both
+			// db_applied and remove failed (recovery could otherwise roll FS).
+			return fmt.Errorf("finalize restore journal after db commit: %w", err)
 		}
-		_ = journal.remove()
 	}
 	return nil
 }

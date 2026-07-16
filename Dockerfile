@@ -15,7 +15,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends ca-certificates \
+	&& apt-get install -y --no-install-recommends ca-certificates curl \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& groupadd --system --gid 1000 goroku \
 	&& useradd --system --uid 1000 --gid goroku --home-dir /data --shell /usr/sbin/nologin goroku \
@@ -31,6 +31,10 @@ WORKDIR /data
 USER goroku:goroku
 EXPOSE 8080
 VOLUME ["/data"]
+
+# Liveness: process is serving HTTP (see /healthz). Port matches default CMD.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+	CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 
 ENTRYPOINT ["/usr/local/bin/goroku"]
 CMD ["--data-root", "/data", "--no-git", "--port", "8080"]
