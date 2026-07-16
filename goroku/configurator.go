@@ -2,6 +2,7 @@ package goroku
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 )
 
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+var ErrConfigurationCanceled = errors.New("configuration canceled")
 
 func TTYPrint(text string, tty bool) {
 	if tty {
@@ -30,7 +32,7 @@ func TTYInput(text string, tty bool) string {
 	return strings.TrimSpace(input)
 }
 
-func APIConfig(ttyPtr *bool) {
+func APIConfig(ttyPtr *bool) error {
 	var tty bool
 	if ttyPtr == nil {
 		fmt.Println("\x1b[0;91mThe quick brown fox jumps over the lazy dog\x1b[0m")
@@ -55,7 +57,7 @@ func APIConfig(ttyPtr *bool) {
 		apiIDStr = TTYInput("\x1b[0;95mEnter API ID: \x1b[0m", tty)
 		if apiIDStr == "" {
 			TTYPrint("\x1b[0;91mCancelled\x1b[0m", tty)
-			os.Exit(0)
+			return ErrConfigurationCanceled
 		}
 		_, err := strconv.ParseInt(apiIDStr, 10, 64)
 		if err == nil {
@@ -69,7 +71,7 @@ func APIConfig(ttyPtr *bool) {
 		apiHash = TTYInput("\x1b[0;95mEnter API hash: \x1b[0m", tty)
 		if apiHash == "" {
 			TTYPrint("\x1b[0;91mCancelled\x1b[0m", tty)
-			os.Exit(0)
+			return ErrConfigurationCanceled
 		}
 		apiHash = strings.TrimSpace(apiHash)
 		// API Hash is 32 character hex
@@ -92,4 +94,5 @@ func APIConfig(ttyPtr *bool) {
 	SaveConfigKey("api_id", apiID)
 	SaveConfigKey("api_hash", apiHash)
 	TTYPrint("\x1b[0;92mAPI config saved\x1b[0m", tty)
+	return nil
 }

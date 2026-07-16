@@ -51,6 +51,9 @@
 > - ✅ Download modules exclusively from official repositories or trusted developers
 > - ❌ Do NOT install modules if unsure about their safety
 > - ⚠️ Exercise caution with unknown commands (`.terminal`, `.eval`, `.ecpp`, etc.)
+> - Go `.eval` is owner-only and always enabled. It runs **in-process via Yaegi** and is **not cancellable** after a timeout: the process may keep running the eval until hard restart. Concurrency is limited to one in-process eval.
+> - Native Go plugins (`.dlmod` / `.loadmod` / presets) require owner identity. Unsigned/untrusted installs need explicit `-confirm` (or a trusted content SHA-256). Plugins **cannot be fully unloaded from process memory** after load—unregister only removes handlers.
+> - Remote module downloads are HTTPS-only; private/loopback/link-local/CGNAT targets are blocked.
 
 ---
 
@@ -58,7 +61,7 @@
 
 ### VPS/VDS
 > **Note for VPS/VDS Users:**  
-> Add `--proxy-pass` to enable SSH tunneling  
+> Add `--ssh-tunnel` to explicitly enable SSH tunneling
 > Add `--no-web` for console-only setup  
 > Add `--root` for root users (to avoid entering force_insecure)
 <details> <summary><b>Ubuntu / Debian</b></summary>
@@ -95,6 +98,25 @@ go build -o goroku_bin && \
 ./goroku_bin
 ```
 </details>
+
+### Production filesystem layout
+
+Keep the executable and checkout read-only, and pass a writable runtime root with
+`--data-root /var/lib/goroku`. Downloaded module sources are stored under
+`/var/lib/goroku/modules`; Goroku does not write them into the checked-out
+`goroku/modules` package.
+
+```text
+/opt/goroku/bin/goroku
+/var/lib/goroku/config.json
+/var/lib/goroku/config-<telegram-id>.json
+/var/lib/goroku/goroku-<telegram-id>.session
+/var/lib/goroku/modules/
+```
+
+The current CLI stores configuration, per-account JSON databases, and session
+files directly in the selected data root. It does not currently create separate
+`sessions/` or `database/` directories.
 
 ### Other
 <details>
@@ -147,7 +169,7 @@ go build -o goroku_bin && \
 
 ## 📋 Requirements
 
-- **Go 1.21+**
+- **Go 1.24.4+** (see `go.mod`)
 - **API Credentials** from [Telegram Apps](https://my.telegram.org/apps)
 
 ---

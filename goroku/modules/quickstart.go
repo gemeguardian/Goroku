@@ -56,8 +56,10 @@ func (m *Quickstart) ClientReady() error {
 		if cid != 0 {
 			if cid > 0 {
 				cid = goroku.TelegramChannelChatID(cid)
-				m.db.SetInt64("goroku.forums", "channel_id", cid)
-				m.db.Save()
+				if err := m.db.SetInt64("goroku.forums", "channel_id", cid); err != nil {
+					L().Error("background database write failed", zap.String("operation", "set"), zap.String("owner", "goroku.forums"), zap.String("key", "channel_id"), zap.Error(err))
+					return
+				}
 			}
 			peer, err := m.client.ResolvePeer(cid)
 			if err == nil {
@@ -69,12 +71,15 @@ func (m *Quickstart) ClientReady() error {
 		if contentChannel == nil {
 			peer, err := m.client.FindChannelByTitle("goroku-userbot")
 			if err == nil {
-				contentChannel = peer
 				var cid int64
 				if ch, ok := peer.(*tg.InputPeerChannel); ok {
 					cid = goroku.TelegramChannelChatID(ch.ChannelID)
 				}
-				m.db.SetInt64("goroku.forums", "channel_id", cid)
+				if err := m.db.SetInt64("goroku.forums", "channel_id", cid); err != nil {
+					L().Error("background database write failed", zap.String("operation", "set"), zap.String("owner", "goroku.forums"), zap.String("key", "channel_id"), zap.Error(err))
+					return
+				}
+				contentChannel = peer
 				finalCid = cid
 			}
 		}
@@ -95,12 +100,15 @@ func (m *Quickstart) ClientReady() error {
 				"goroku",
 			)
 			if peer != nil {
-				contentChannel = peer
 				var cid int64
 				if ch, ok := peer.(*tg.InputPeerChannel); ok {
 					cid = goroku.TelegramChannelChatID(ch.ChannelID)
 				}
-				m.db.SetInt64("goroku.forums", "channel_id", cid)
+				if err := m.db.SetInt64("goroku.forums", "channel_id", cid); err != nil {
+					L().Error("background database write failed", zap.String("operation", "set"), zap.String("owner", "goroku.forums"), zap.String("key", "channel_id"), zap.Error(err))
+					return
+				}
+				contentChannel = peer
 				finalCid = cid
 				_ = isNew
 			}
@@ -149,9 +157,12 @@ func (m *Quickstart) ClientReady() error {
 					time.Sleep(500 * time.Millisecond)
 				}
 				if im.IsComplete() {
-					m.db.SetBool("Quickstart", "no_msg", true)
-					m.db.Save()
-					_ = m.sendMenu(m.client.TGID)
+					if err := m.sendMenu(m.client.TGID); err != nil {
+						return
+					}
+					if err := m.db.SetBool("Quickstart", "no_msg", true); err != nil {
+						L().Error("background database write failed", zap.String("operation", "set"), zap.String("owner", "Quickstart"), zap.String("key", "no_msg"), zap.Error(err))
+					}
 				}
 			}
 		}
@@ -294,9 +305,10 @@ func (m *Quickstart) generateWelcomeMarkup(im inlineiface.InlineManager) tgbotap
 			Text: title,
 			Data: "lang_" + l + "_" + genRandStr(4),
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.SetString("goroku.translations", "lang", l)
+				if err := m.db.SetString("goroku.translations", "lang", l); err != nil {
+					return fmt.Errorf("save language: %w", err)
+				}
 				m.translator.Init()
-				m.db.Save()
 
 				saveTrans := getTrans(m.translator, "Translations", "language_saved", "Language saved!")
 				_ = c.Answer(saveTrans, false)

@@ -2,6 +2,7 @@ package goroku
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,14 @@ import (
 )
 
 func (h *Goroku) finishWebLogin(pending webiface.TelegramClient, customModules []Module) error {
+	ctx := h.lifecycleContext()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := h.beginLifecycleOperation(); err != nil {
+		return err
+	}
+	defer h.endLifecycleOperation()
 	pendingClient, ok := pending.(*CustomTelegramClient)
 	if !ok || pendingClient == nil {
 		return fmt.Errorf("unexpected pending client type %T", pending)
@@ -36,13 +45,18 @@ func (h *Goroku) finishWebLogin(pending webiface.TelegramClient, customModules [
 		return fmt.Errorf("authorized Telegram user id is unknown")
 	}
 
-	for _, existing := range h.Clients {
+	h.lifecycleMu.Lock()
+	clients := append([]*CustomTelegramClient(nil), h.Clients...)
+	h.lifecycleMu.Unlock()
+	for _, existing := range clients {
 		if existing.TGID == tgID {
 			return fmt.Errorf("client %d is already running", tgID)
 		}
 	}
 
-	_ = pendingClient.Disconnect() // waits for client.Run to finish via runDone
+	if err := pendingClient.Disconnect(); err != nil { // waits for client.Run to finish via runDone
+		return fmt.Errorf("disconnect temporary client: %w", err)
+	}
 
 	oldSession := filepath.Join(BaseDir, "goroku-0.session")
 	newSession := filepath.Join(BaseDir, fmt.Sprintf("goroku-%d.session", tgID))
@@ -56,15 +70,15 @@ func (h *Goroku) finishWebLogin(pending webiface.TelegramClient, customModules [
 		}
 	}
 
-	client, err := h.initClient(tgID, newSession, customModules)
+	client, err := h.initClientContext(ctx, tgID, newSession, customModules)
 	if err != nil {
 		return err
 	}
 
 	if h.Web != nil {
-		loader := h.Loaders[len(h.Loaders)-1]
-		db := h.DBs[len(h.DBs)-1]
-		h.Web.AddLoader(client, loader, db)
+		if err := h.registerWebRuntime(client); err != nil {
+			return err
+		}
 	}
 
 	L().Info("Web login client initialized without restart", zap.Int64("tg_id", client.TGID))
@@ -87,28 +101,30 @@ func getTGIDFromSessionPath(path string) (int64, error) {
 	return strconv.ParseInt(idStr, 10, 64)
 }
 
-func (h *Goroku) startCliLogin(customModules []Module) {
+func (h *Goroku) startCliLogin(ctx context.Context, customModules []Module) error {
 	client := NewCustomTelegramClient(0)
 	client.APIID = h.APIID
 	client.APIHash = h.APIHash
 	client.SessionPath = filepath.Join(BaseDir, "goroku-0.session")
 
-	if err := client.Connect(); err != nil {
-		L().Fatal("Failed to connect Telegram client", zap.Error(err))
+	if err := client.ConnectContext(ctx); err != nil {
+		return fmt.Errorf("connect Telegram client: %w", err)
 	}
 
 	fmt.Println("\033[0;96mYou can use QR-code to login from another device (your friend's phone, for example).\033[0m")
 	userChoice := promptInput("\033[0;96mUse QR code? [y/N]: \033[0m")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if strings.ToLower(userChoice) != "y" {
-		h.cliPhoneLogin(client, customModules)
-		return
+		return h.cliPhoneLogin(ctx, client, customModules)
 	}
 
 	fmt.Println("\033[0;96mLoading QR code...\033[0m")
 	url, err := client.QRLogin()
 	if err != nil {
-		L().Fatal("QR login init failed", zap.Error(err))
+		return fmt.Errorf("initialize QR login: %w", err)
 	}
 
 	printQR := func(qrUrl string) {
@@ -126,20 +142,23 @@ func (h *Goroku) startCliLogin(customModules []Module) {
 	success := false
 	lastRecreate := time.Now()
 	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		status, err := client.QRLoginStatus()
 		if err != nil {
 			if strings.Contains(err.Error(), "SESSION_PASSWORD_NEEDED") || strings.Contains(strings.ToLower(err.Error()), "password") {
 				PrintBanner("2fa.txt")
 				password := promptInput("\033[0;96mEnter 2FA password: \033[0m")
 				if err := client.SignIn("", "", password); err != nil {
-					L().Fatal("2FA Login failed", zap.Error(err))
+					return fmt.Errorf("2FA login: %w", err)
 				}
 				success = true
 				break
 			}
 			errStr := strings.ToLower(err.Error())
 			if strings.Contains(errStr, "canceled") || strings.Contains(errStr, "closed") || strings.Contains(errStr, "dead") {
-				L().Fatal("Telegram client connection closed", zap.Error(err))
+				return fmt.Errorf("Telegram client connection closed: %w", err)
 			}
 		} else if status == "SUCCESS" {
 			success = true
@@ -155,11 +174,15 @@ func (h *Goroku) startCliLogin(customModules []Module) {
 			}
 		}
 
-		time.Sleep(2 * time.Second)
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 
 	if !success {
-		L().Fatal("QR login timeout")
+		return fmt.Errorf("QR login timeout")
 	}
 
 	PrintBanner("success.txt")
@@ -176,22 +199,28 @@ func (h *Goroku) startCliLogin(customModules []Module) {
 		}
 	}
 	if tgID == 0 {
-		L().Fatal("Login failed: authorized Telegram user ID is 0")
+		return fmt.Errorf("login failed: authorized Telegram user ID is 0")
 	}
 
-	h.cliSaveClientSession(client, customModules)
+	return h.cliSaveClientSession(ctx, client, customModules)
 }
 
-func (h *Goroku) cliPhoneLogin(client *CustomTelegramClient, customModules []Module) {
+func (h *Goroku) cliPhoneLogin(ctx context.Context, client *CustomTelegramClient, customModules []Module) error {
 	phone := promptInput("\033[0;96mEnter phone: \033[0m")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	err := client.SendCodeRequest(phone)
 	if err != nil {
-		L().Fatal("Failed to send code", zap.Error(err))
+		return fmt.Errorf("send login code: %w", err)
 	}
 
 	fmt.Println("A verification code has been sent to your Telegram app or phone.")
 	code := promptInput("Enter verification code: ")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	err = client.SignIn(phone, code, "")
 	if err != nil {
@@ -199,10 +228,10 @@ func (h *Goroku) cliPhoneLogin(client *CustomTelegramClient, customModules []Mod
 			PrintBanner("2fa.txt")
 			password := promptInput("\033[0;96mEnter 2FA password: \033[0m")
 			if err := client.SignIn(phone, code, password); err != nil {
-				L().Fatal("2FA Login failed", zap.Error(err))
+				return fmt.Errorf("2FA login: %w", err)
 			}
 		} else {
-			L().Fatal("Login failed", zap.Error(err))
+			return fmt.Errorf("login: %w", err)
 		}
 	}
 
@@ -220,17 +249,20 @@ func (h *Goroku) cliPhoneLogin(client *CustomTelegramClient, customModules []Mod
 		}
 	}
 	if tgID == 0 {
-		L().Fatal("Login failed: authorized Telegram user ID is 0")
+		return fmt.Errorf("login failed: authorized Telegram user ID is 0")
 	}
 
-	h.cliSaveClientSession(client, customModules)
+	return h.cliSaveClientSession(ctx, client, customModules)
 }
 
-func (h *Goroku) cliSetupBot(client *CustomTelegramClient, db *Database) {
+func (h *Goroku) cliSetupBot(ctx context.Context, client *CustomTelegramClient, db *Database) error {
 	for {
 		bot := promptInput("You can enter a custom bot username or leave it empty and Goroku will generate a random one: ")
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if bot == "" {
-			break
+			return nil
 		}
 		bot = strings.TrimSpace(bot)
 		bot = strings.TrimPrefix(bot, "@")
@@ -254,37 +286,49 @@ func (h *Goroku) cliSetupBot(client *CustomTelegramClient, db *Database) {
 		fmt.Println("Checking bot username...")
 		owned, err := client.CheckBot(bot)
 		if err == nil && owned {
-			db.Set("goroku.inline", "custom_bot", bot)
+			if err := db.Set("goroku.inline", "custom_bot", bot); err != nil {
+				L().Error("Failed to persist bot username", zap.String("username", bot), zap.Error(err))
+				fmt.Println("Could not save bot username. Try again or leave it empty.")
+				continue
+			}
 			fmt.Println("Bot username saved!")
 			break
 		} else {
 			fmt.Println("Bot username is occupied. Try again or leave it empty")
 		}
 	}
+	return nil
 }
 
-func (h *Goroku) cliSaveClientSession(client *CustomTelegramClient, customModules []Module) {
+func (h *Goroku) cliSaveClientSession(ctx context.Context, client *CustomTelegramClient, customModules []Module) error {
 	tgID := client.TGID
 	if tgID == 0 {
-		L().Fatal("Login failed: authorized Telegram user ID is 0")
+		return fmt.Errorf("login failed: authorized Telegram user ID is 0")
 	}
 
-	_ = client.Disconnect() // waits for client.Run to finish via runDone
+	if err := client.Disconnect(); err != nil { // waits for client.Run to finish via runDone
+		L().Warn("Failed to disconnect temporary client", zap.Error(err))
+	}
 
 	oldSession := filepath.Join(BaseDir, "goroku-0.session")
 	newSession := filepath.Join(BaseDir, fmt.Sprintf("goroku-%d.session", tgID))
-	_ = os.Rename(oldSession, newSession)
+	if err := os.Rename(oldSession, newSession); err != nil {
+		L().Warn("Failed to rename temporary session", zap.String("source", oldSession), zap.String("destination", newSession), zap.Error(err))
+	}
 	utils.SecureFile(newSession)
 
 	L().Info("Booting userbot", zap.Int64("tg_id", tgID))
-	if _, err := h.initClient(tgID, newSession, customModules); err != nil {
-		L().Fatal("Failed to init client", zap.Int64("tg_id", tgID), zap.Error(err))
+	if _, err := h.initClientContext(ctx, tgID, newSession, customModules); err != nil {
+		return fmt.Errorf("initialize client %d: %w", tgID, err)
 	}
 
-	h.cliSetupBot(h.Clients[len(h.Clients)-1], h.DBs[len(h.DBs)-1])
+	return h.cliSetupBot(ctx, h.Clients[len(h.Clients)-1], h.DBs[len(h.DBs)-1])
 }
 
 func promptInput(prompt string) string {
+	// A terminal read cannot be canceled portably without closing shared stdin.
+	// Production startup runs in the app-owned startup worker, so Run can honor
+	// its shutdown deadline even if an interactive reader never returns.
 	fmt.Print(prompt)
 	reader := bufio.NewReader(os.Stdin)
 	text, _ := reader.ReadString('\n')

@@ -2,11 +2,28 @@ package inline
 
 import (
 	"goroku/goroku/chatref"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gotd/td/tg"
 )
+
+func TestFormInvalidChatRollsBackUnitAndUnloads(t *testing.T) {
+	im := NewInlineManager(&testInlineUserBot{}, nil, &testInlineModules{})
+	var unloads atomic.Int32
+	if _, err := im.Form("invalid", struct{}{}, [][]Button{{{Data: "button"}}}, WithOnUnload(func() { unloads.Add(1) })); err == nil {
+		t.Fatal("Form accepted an invalid chat")
+	}
+	if unloads.Load() != 1 {
+		t.Fatalf("OnUnload calls = %d, want 1", unloads.Load())
+	}
+	im.mu.RLock()
+	defer im.mu.RUnlock()
+	if len(im.units) != 0 || len(im.customMap) != 0 || len(im.buttonUnits) != 0 {
+		t.Fatal("invalid Form leaked registered state")
+	}
+}
 
 type mockTelegramClient struct {
 	inlineQueryCalled bool

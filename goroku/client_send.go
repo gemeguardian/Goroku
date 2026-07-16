@@ -1,6 +1,8 @@
 package goroku
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
@@ -94,18 +96,36 @@ func (c *CustomTelegramClient) SendFile(chat ChatRef, file any, caption string) 
 }
 
 func (c *CustomTelegramClient) SendFileWithOptions(chat ChatRef, file any, caption string, opts ...MsgOption) (any, error) {
-	return c.sendFileInternal(chat, file, caption, opts...)
+	return c.SendFileWithOptionsContext(nil, chat, file, caption, opts...)
+}
+
+func (c *CustomTelegramClient) SendFileContext(ctx context.Context, chat ChatRef, file any, caption string) (any, error) {
+	return c.SendFileWithOptionsContext(ctx, chat, file, caption)
+}
+
+func (c *CustomTelegramClient) SendFileWithOptionsContext(ctx context.Context, chat ChatRef, file any, caption string, opts ...MsgOption) (any, error) {
+	return c.sendFileInternal(c.rpcContext(ctx), chat, file, caption, opts...)
 }
 
 func (c *CustomTelegramClient) resolveRequestPeer(chat ChatRef) (tg.InputPeerClass, error) {
-	peer, err := c.ResolvePeerRef(chat)
+	return c.resolveRequestPeerContext(nil, chat)
+}
+
+func (c *CustomTelegramClient) resolveRequestPeerContext(ctx context.Context, chat ChatRef) (tg.InputPeerClass, error) {
+	peer, err := c.ResolvePeerRefContext(ctx, chat)
 	if err != nil {
 		return nil, fmt.Errorf("resolve peer: %w", err)
 	}
 	return peer, nil
 }
 
-func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption string, opts ...MsgOption) (any, error) {
+func (c *CustomTelegramClient) sendFileInternal(ctx context.Context, chat ChatRef, file any, caption string, opts ...MsgOption) (any, error) {
+	if c.rawAPI == nil {
+		return nil, ErrClientNotInitialized
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var targetChatID int64
 	if !chat.IsZero() {
 		switch {
@@ -122,7 +142,10 @@ func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption 
 		}
 	}
 
-	logChatID := c.GetLogChatID()
+	logChatID, err := c.GetLogChatIDChecked()
+	if err != nil {
+		return nil, fmt.Errorf("get log chat ID: %w", err)
+	}
 	if logChatID != 0 && targetChatID != 0 && isSameChat(targetChatID, logChatID) && c.InlineManager() != nil {
 		im := c.InlineManager()
 		if im.IsComplete() {
@@ -174,24 +197,24 @@ func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption 
 						ext = ext[:idx]
 					}
 					if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
-						return SendPhotoWithTopic(botClient, targetBotChatID, tgbotapi.FileURL(fileURL), caption, topicID)
+						return sendBotFileContext(ctx, botClient, targetBotChatID, tgbotapi.FileURL(fileURL), caption, topicID, true)
 					} else {
-						return SendDocumentWithTopic(botClient, targetBotChatID, tgbotapi.FileURL(fileURL), caption, topicID)
+						return sendBotFileContext(ctx, botClient, targetBotChatID, tgbotapi.FileURL(fileURL), caption, topicID, false)
 					}
 				} else if len(fileBytes) > 0 {
 					fb := tgbotapi.FileBytes{Name: filename, Bytes: fileBytes}
 					ext := strings.ToLower(filepath.Ext(filename))
 					if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
-						return SendPhotoWithTopic(botClient, targetBotChatID, fb, caption, topicID)
+						return sendBotFileContext(ctx, botClient, targetBotChatID, fb, caption, topicID, true)
 					} else {
-						return SendDocumentWithTopic(botClient, targetBotChatID, fb, caption, topicID)
+						return sendBotFileContext(ctx, botClient, targetBotChatID, fb, caption, topicID, false)
 					}
 				}
 			}
 		}
 	}
 
-	peer, err := c.resolveRequestPeer(chat)
+	peer, err := c.resolveRequestPeerContext(ctx, chat)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +227,19 @@ func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption 
 	switch v := file.(type) {
 	case string:
 		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
-			data, err := utils.DownloadURLLimited(&http.Client{Timeout: 30 * time.Second}, v, 50*1024*1024)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, v, nil)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+			if err != nil {
+				return nil, err
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				return nil, fmt.Errorf("unexpected HTTP status: %d", resp.StatusCode)
+			}
+			data, err := utils.ReadResponseBodyLimited(resp, 50*1024*1024)
 			if err != nil {
 				return nil, err
 			}
@@ -215,13 +250,13 @@ func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption 
 			if filename == "" {
 				filename = "file.bin"
 			}
-			inputFile, err = up.FromBytes(c.ctx, filename, data)
+			inputFile, err = up.FromBytes(ctx, filename, data)
 			if err != nil {
 				return nil, err
 			}
 		} else {
 			filename = filepath.Base(v)
-			inputFile, err = up.FromPath(c.ctx, v)
+			inputFile, err = up.FromPath(ctx, v)
 			if err != nil {
 				return nil, err
 			}
@@ -231,7 +266,7 @@ func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption 
 		if named, ok := file.(interface{ Name() string }); ok {
 			filename = named.Name()
 		}
-		inputFile, err = up.FromBytes(c.ctx, filename, v)
+		inputFile, err = up.FromBytes(ctx, filename, v)
 		if err != nil {
 			return nil, err
 		}
@@ -240,7 +275,7 @@ func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption 
 		if named, ok := v.(interface{ Name() string }); ok {
 			filename = named.Name()
 		}
-		inputFile, err = up.FromReader(c.ctx, filename, v)
+		inputFile, err = up.FromReader(ctx, filename, v)
 		if err != nil {
 			return nil, err
 		}
@@ -290,21 +325,56 @@ func (c *CustomTelegramClient) sendFileInternal(chat ChatRef, file any, caption 
 	for _, opt := range opts {
 		opt(req)
 	}
-	res, err := c.rawAPI.MessagesSendMedia(c.ctx, req)
+	res, err := c.rawAPI.MessagesSendMedia(ctx, req)
 	return res, err
+}
+
+func sendBotFileContext(ctx context.Context, bot *tgbotapi.BotAPI, chatID int64, file tgbotapi.RequestFileData, caption string, topicID int, photo bool) (tgbotapi.Message, error) {
+	var config tgbotapi.Chattable
+	if photo {
+		request := tgbotapi.NewPhoto(chatID, file)
+		request.Caption, request.ParseMode, request.MessageThreadID = caption, tgbotapi.ModeHTML, topicID
+		config = request
+	} else {
+		request := tgbotapi.NewDocument(chatID, file)
+		request.Caption, request.ParseMode, request.MessageThreadID = caption, tgbotapi.ModeHTML, topicID
+		config = request
+	}
+	resp, err := bot.RequestWithContext(ctx, config)
+	if err != nil {
+		return tgbotapi.Message{}, err
+	}
+	var message tgbotapi.Message
+	err = json.Unmarshal(resp.Result, &message)
+	return message, err
 }
 
 func (c *CustomTelegramClient) SendMessage(chat ChatRef, message string) (any, error) {
 	return c.SendMessageWithOptions(chat, message)
 }
 
+func (c *CustomTelegramClient) SendMessageContext(ctx context.Context, chat ChatRef, message string) (any, error) {
+	return c.SendMessageWithOptionsContext(ctx, chat, message)
+}
+
 func (c *CustomTelegramClient) SendMessageWithOptions(chat ChatRef, message string, opts ...MsgOption) (any, error) {
+	return c.SendMessageWithOptionsContext(nil, chat, message, opts...)
+}
+
+func (c *CustomTelegramClient) SendMessageWithOptionsContext(ctx context.Context, chat ChatRef, message string, opts ...MsgOption) (any, error) {
 	if c.rawAPI == nil {
 		return nil, ErrClientNotInitialized
 	}
+	ctx = c.rpcContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	targetChatID := chat.ID()
 
-	logChatID := c.GetLogChatID()
+	logChatID, err := c.GetLogChatIDChecked()
+	if err != nil {
+		return nil, fmt.Errorf("get log chat ID: %w", err)
+	}
 	if logChatID != 0 && targetChatID != 0 && isSameChat(targetChatID, logChatID) && c.InlineManager() != nil {
 		im := c.InlineManager()
 		if im.IsComplete() {
@@ -322,12 +392,20 @@ func (c *CustomTelegramClient) SendMessageWithOptions(chat ChatRef, message stri
 				}
 
 				targetBotChatID := c.ToBotAPIChatID(targetChatID)
-				return SendMessageWithTopic(botClient, targetBotChatID, message, topicID)
+				request := tgbotapi.NewMessage(targetBotChatID, message)
+				request.ParseMode, request.MessageThreadID = tgbotapi.ModeHTML, topicID
+				resp, err := botClient.RequestWithContext(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				var sent tgbotapi.Message
+				err = json.Unmarshal(resp.Result, &sent)
+				return sent, err
 			}
 		}
 	}
 
-	peer, err := c.resolveRequestPeer(chat)
+	peer, err := c.resolveRequestPeerContext(ctx, chat)
 	if err != nil {
 		return nil, err
 	}
@@ -342,15 +420,23 @@ func (c *CustomTelegramClient) SendMessageWithOptions(chat ChatRef, message stri
 	for _, opt := range opts {
 		opt(req)
 	}
-	res, err := c.rawAPI.MessagesSendMessage(c.ctx, req)
+	res, err := c.rawAPI.MessagesSendMessage(ctx, req)
 	return res, err
 }
 
 func (c *CustomTelegramClient) EditMessage(chat ChatRef, msgID int64, text string, opts ...MsgOption) (any, error) {
+	return c.EditMessageContext(nil, chat, msgID, text, opts...)
+}
+
+func (c *CustomTelegramClient) EditMessageContext(ctx context.Context, chat ChatRef, msgID int64, text string, opts ...MsgOption) (any, error) {
 	if c.rawAPI == nil {
 		return nil, ErrClientNotInitialized
 	}
-	peer, err := c.resolveRequestPeer(chat)
+	ctx = c.rpcContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	peer, err := c.resolveRequestPeerContext(ctx, chat)
 	if err != nil {
 		return nil, err
 	}
@@ -365,21 +451,29 @@ func (c *CustomTelegramClient) EditMessage(chat ChatRef, msgID int64, text strin
 	for _, opt := range opts {
 		opt(req)
 	}
-	res, err := c.rawAPI.MessagesEditMessage(c.ctx, req)
+	res, err := c.rawAPI.MessagesEditMessage(ctx, req)
 	return res, err
 }
 
 func (c *CustomTelegramClient) DeleteMessage(chat ChatRef, msgID int64) error {
+	return c.DeleteMessageContext(nil, chat, msgID)
+}
+
+func (c *CustomTelegramClient) DeleteMessageContext(ctx context.Context, chat ChatRef, msgID int64) error {
 	if c.rawAPI == nil {
 		return ErrClientNotInitialized
 	}
-	peer, err := c.resolveRequestPeer(chat)
+	ctx = c.rpcContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	peer, err := c.resolveRequestPeerContext(ctx, chat)
 	if err != nil {
 		return err
 	}
 
 	if ch, ok := peer.(*tg.InputPeerChannel); ok {
-		_, err = c.rawAPI.ChannelsDeleteMessages(c.ctx,
+		_, err = c.rawAPI.ChannelsDeleteMessages(ctx,
 			&tg.ChannelsDeleteMessagesRequest{
 				Channel: &tg.InputChannel{
 					ChannelID:  ch.ChannelID,
@@ -390,10 +484,20 @@ func (c *CustomTelegramClient) DeleteMessage(chat ChatRef, msgID int64) error {
 		return err
 	}
 
-	_, err = c.rawAPI.MessagesDeleteMessages(c.ctx,
+	_, err = c.rawAPI.MessagesDeleteMessages(ctx,
 		&tg.MessagesDeleteMessagesRequest{
 			Revoke: true,
 			ID:     []int{int(msgID)},
 		})
 	return err
+}
+
+func (c *CustomTelegramClient) rpcContext(ctx context.Context) context.Context {
+	if ctx != nil {
+		return ctx
+	}
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
 }

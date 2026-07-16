@@ -1,5 +1,21 @@
+function getCookie(name) {
+    const encoded = encodeURIComponent(name).replace(/[-.+*]/g, "\\$&");
+    const match = document.cookie.match(new RegExp("(?:^|; )" + encoded + "=([^;]*)"));
+    return match ? decodeURIComponent(match[1]) : "";
+}
+
 function csrfFetch(url, options = {}) {
+    options = Object.assign({}, options);
     options.credentials = "include";
+    const headers = new Headers(options.headers || {});
+    const method = String(options.method || "GET").toUpperCase();
+    if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+        const csrf = getCookie("csrf_token");
+        if (csrf) {
+            headers.set("X-CSRF-Token", csrf);
+        }
+    }
+    options.headers = headers;
     return fetch(url, options);
 }
 

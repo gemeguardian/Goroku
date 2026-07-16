@@ -2,16 +2,29 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"os/user"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"goroku/goroku"
 	"goroku/goroku/modules"
 )
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	// Root user warning, mirroring __main__.py logic
 	currentUser, err := user.Current()
 	if err == nil && currentUser.Username == "root" {
@@ -49,20 +62,13 @@ func main() {
 			if text == "no_sudo" {
 				_ = os.Setenv("NO_SUDO", "1")
 				fmt.Println("Added NO_SUDO in your environment variables")
-				goroku.Restart()
-				return
 			} else if text != "force_insecure" {
-				os.Exit(1)
+				return fmt.Errorf("refusing to run as root")
 			}
 		}
 	}
 
-	// Clean up restart variables
-	_ = os.Unsetenv("GOROKU_DO_NOT_RESTART")
-	_ = os.Unsetenv("GOROKU_DO_NOT_RESTART2")
-
-	// Call main runner of goroku package with the registered static modules
-	goroku.Main([]goroku.Module{
+	app := goroku.NewApp([]goroku.Module{
 		&modules.APIProtection{},
 		&modules.Eval{},
 		&modules.Help{},
@@ -84,4 +90,70 @@ func main() {
 		&modules.TranslationsModule{},
 		&modules.Updater{},
 	})
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	err = app.Run(ctx)
+	if restartRequested(err) {
+		if err != goroku.ErrRestartRequested {
+			fmt.Fprintf(os.Stderr, "restart requested after lifecycle errors: %v\n", err)
+		}
+		if app.Sandbox {
+			return nil
+		}
+		return restartProcess()
+	}
+	if errors.Is(err, context.Canceled) {
+		if err != context.Canceled {
+			return err
+		}
+		return nil
+	}
+	return err
+}
+
+func restartRequested(err error) bool {
+	return errors.Is(err, goroku.ErrRestartRequested)
+}
+
+func nextRestartGuard(first, second bool) (setFirst, setSecond bool, err error) {
+	if second {
+		return false, false, fmt.Errorf("GorokuTL version 1.0.2 or higher is required")
+	}
+	if first {
+		return false, true, nil
+	}
+	return true, false, nil
+}
+
+func restartProcess() error {
+	setFirst, setSecond, err := nextRestartGuard(os.Getenv("GOROKU_DO_NOT_RESTART") != "", os.Getenv("GOROKU_DO_NOT_RESTART2") != "")
+	if err != nil {
+		return err
+	}
+	if setFirst {
+		_ = os.Setenv("GOROKU_DO_NOT_RESTART", "1")
+	}
+	if setSecond {
+		_ = os.Setenv("GOROKU_DO_NOT_RESTART2", "1")
+	}
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate executable: %w", err)
+	}
+	projectDir := filepath.Dir(execPath)
+	if _, err := os.Stat(filepath.Join(projectDir, "main.go")); err == nil {
+		fmt.Println("Compiling new binary before restart...")
+		buildCmd := exec.Command("go", "build", "-o", filepath.Base(execPath)) //nolint:gosec
+		buildCmd.Dir = projectDir
+		buildCmd.Stdout = os.Stdout
+		buildCmd.Stderr = os.Stderr
+		if err := buildCmd.Run(); err != nil {
+			fmt.Printf("Compilation failed: %v. Restarting with old binary...\n", err)
+		}
+	}
+	fmt.Println("Restarting...")
+	if err := syscall.Exec(execPath, os.Args, os.Environ()); err != nil { //nolint:gosec
+		return fmt.Errorf("replace process: %w", err)
+	}
+	return nil
 }

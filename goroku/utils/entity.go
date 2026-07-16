@@ -1,12 +1,14 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -28,7 +30,7 @@ type FormattingEntity struct {
 type Database interface {
 	GetInt64(owner, key string, def int64) int64
 	GetAnyMap(owner, key string, def map[string]any) map[string]any
-	SetAnyMap(owner, key string, value map[string]any) bool
+	SetAnyMap(owner, key string, value map[string]any) error
 }
 
 var tagRe = regexp.MustCompile(`(?i)</?([a-zA-Z][a-zA-Z0-9\-]*)(?:\s[^<>]*)?>`)
@@ -54,9 +56,46 @@ var telegramHtmlTags = map[string]bool{
 type CacheEntry struct {
 	Peer any
 	Exp  int64
+	id   uint64
 }
 
-var channelsCache = make(map[string]CacheEntry)
+type channelCall struct {
+	done    chan struct{}
+	peer    any
+	waiters int
+}
+
+type channelCacheKey struct {
+	accountID int64
+	client    ChannelCreator
+	title     string
+}
+
+var (
+	channelsCacheMu sync.Mutex
+	channelsCache   = make(map[channelCacheKey]CacheEntry)
+	channelCalls    = make(map[channelCacheKey]*channelCall)
+	channelsCacheID uint64
+	channelCacheTTL = time.Hour
+)
+
+type channelAccountIdentifier interface {
+	TGIDValue() int64
+}
+
+func assetChannelCacheKey(creator ChannelCreator, title string) (channelCacheKey, bool) {
+	if identified, ok := creator.(channelAccountIdentifier); ok {
+		if accountID := identified.TGIDValue(); accountID != 0 {
+			return channelCacheKey{accountID: accountID, title: title}, true
+		}
+	}
+
+	clientType := reflect.TypeOf(creator)
+	if clientType != nil && clientType.Comparable() {
+		return channelCacheKey{client: creator, title: title}, true
+	}
+	return channelCacheKey{}, false
+}
 
 func fwProtect() {
 	time.Sleep(1000 * time.Millisecond)
@@ -210,7 +249,11 @@ type ChannelCreator interface {
 	SearchForumTopic(channelPeer any, title string) (int64, error)
 }
 
-// AssetChannel returns or creates a channel.
+// ErrIncompatibleChannelClient indicates that AssetChannel cannot use the supplied client.
+var ErrIncompatibleChannelClient = errors.New("asset channel client does not implement ChannelCreator")
+
+// AssetChannel returns or creates a channel. If the client is incompatible, the
+// first result is ErrIncompatibleChannelClient and created is false.
 func AssetChannel(
 	client any,
 	title string,
@@ -234,27 +277,72 @@ func AssetChannel(
 	if strings.HasPrefix(title, "legacy-") {
 		title = strings.Replace(title, "legacy-", "goroku-", 1)
 	}
-
-	key := title
-	if entry, ok := channelsCache[key]; ok && entry.Exp > time.Now().Unix() {
-		return entry.Peer, false
-	}
-
 	creator, ok := client.(ChannelCreator)
 	if !ok {
-		// Stub fallback representation if not satisfying the interface
-		peer := map[string]any{
-			"ID":       int64(987654321),
-			"Title":    title,
-			"Username": "",
-		}
-		fwProtect()
-		channelsCache[key] = CacheEntry{
-			Peer: peer,
-			Exp:  time.Now().Unix() + 3600,
-		}
-		return peer, true
+		return ErrIncompatibleChannelClient, false
 	}
+
+	// Prefer the client's stable Telegram account ID. Clients without one use
+	// comparable instance identity, which timed eviction retains for at most one
+	// cache TTL. Non-comparable clients bypass caching rather than share peers.
+	key, cacheable := assetChannelCacheKey(creator, title)
+	now := time.Now().Unix()
+	if cacheable {
+		channelsCacheMu.Lock()
+		for cachedKey, entry := range channelsCache {
+			if entry.Exp <= now {
+				delete(channelsCache, cachedKey)
+			}
+		}
+		if entry, ok := channelsCache[key]; ok {
+			channelsCacheMu.Unlock()
+			return entry.Peer, false
+		}
+		if call, ok := channelCalls[key]; ok {
+			call.waiters++
+			channelsCacheMu.Unlock()
+			<-call.done
+			return call.peer, false
+		}
+	}
+	call := &channelCall{done: make(chan struct{})}
+	if cacheable {
+		channelCalls[key] = call
+		channelsCacheMu.Unlock()
+	}
+
+	finish := func(peer any) {
+		if !cacheable {
+			return
+		}
+		channelsCacheMu.Lock()
+		if peer != nil {
+			channelsCacheID++
+			entry := CacheEntry{
+				Peer: peer,
+				Exp:  time.Now().Add(channelCacheTTL).Unix(),
+				id:   channelsCacheID,
+			}
+			channelsCache[key] = entry
+			time.AfterFunc(channelCacheTTL, func() {
+				channelsCacheMu.Lock()
+				if current, ok := channelsCache[key]; ok && current.id == entry.id {
+					delete(channelsCache, key)
+				}
+				channelsCacheMu.Unlock()
+			})
+		}
+		call.peer = peer
+		delete(channelCalls, key)
+		close(call.done)
+		channelsCacheMu.Unlock()
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			finish(nil)
+			panic(recovered)
+		}
+	}()
 
 	// 1. Search existing channel
 	peer, err := creator.FindChannelByTitle(title)
@@ -262,10 +350,7 @@ func AssetChannel(
 		if inviteBot {
 			_ = creator.InviteBotToChannel(peer)
 		}
-		channelsCache[key] = CacheEntry{
-			Peer: peer,
-			Exp:  time.Now().Unix() + 3600,
-		}
+		finish(peer)
 		return peer, false
 	}
 
@@ -273,6 +358,7 @@ func AssetChannel(
 	newPeer, err := creator.CreateChannel(title, description, !channel, forum)
 	if err != nil {
 		L().Info("AssetChannel failed to create channel: {0}", zap.Any("arg0", err))
+		finish(nil)
 		return nil, false
 	}
 
@@ -280,10 +366,7 @@ func AssetChannel(
 		_ = creator.InviteBotToChannel(newPeer)
 	}
 
-	channelsCache[key] = CacheEntry{
-		Peer: newPeer,
-		Exp:  time.Now().Unix() + 3600,
-	}
+	finish(newPeer)
 
 	return newPeer, true
 }
@@ -354,7 +437,9 @@ func AssetForumTopic(
 			if subMap, ok := forumsCache[channelTitle].(map[string]any); ok {
 				subMap[title] = topicID
 			}
-			db.SetAnyMap("goroku.forums", "forums_cache", forumsCache)
+			if err := db.SetAnyMap("goroku.forums", "forums_cache", forumsCache); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -371,7 +456,9 @@ func AssetForumTopic(
 		if subMap, ok := forumsCache[channelTitle].(map[string]any); ok {
 			subMap[title] = topicID
 		}
-		db.SetAnyMap("goroku.forums", "forums_cache", forumsCache)
+		if err := db.SetAnyMap("goroku.forums", "forums_cache", forumsCache); err != nil {
+			return nil, err
+		}
 	}
 
 	if inviteBot {

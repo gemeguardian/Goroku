@@ -1,6 +1,7 @@
 package inline
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -14,44 +15,62 @@ import (
 func L() *zap.Logger { return logger.L() }
 
 func (im *InlineManager) HandleUpdate(update tgbotapi.Update) {
+	generation, ctx, err := im.claimIntake()
+	if err != nil {
+		return
+	}
+	defer generation.release()
+	im.handleUpdate(ctx, update)
+}
+
+func (im *InlineManager) handleUpdate(ctx context.Context, update tgbotapi.Update) {
+	if ctx.Err() != nil {
+		return
+	}
 	L().Debug("HandleUpdate", zap.Int("ID", update.UpdateID), zap.Bool("InlineQuery", update.InlineQuery != nil), zap.Bool("CallbackQuery", update.CallbackQuery != nil), zap.Bool("ChosenInlineResult", update.ChosenInlineResult != nil))
 	if update.InlineQuery != nil {
 		im.handleInlineQuery(update.InlineQuery)
 	} else if update.CallbackQuery != nil {
-		im.handleCallbackQuery(update.CallbackQuery)
+		im.handleCallbackQuery(ctx, update.CallbackQuery)
 	} else if update.Message != nil {
 		im.handleBotMessage(update.Message)
 	} else if update.ChosenInlineResult != nil {
-		im.handleChosenInlineResult(update.ChosenInlineResult)
+		im.handleChosenInlineResult(ctx, update.ChosenInlineResult)
 	}
 }
 
-func (im *InlineManager) isUserAuthorizedForInline(userID int64) bool {
+func (im *InlineManager) isUserAuthorizedForInline(userID int64) (bool, error) {
 	if userID == im.ownerID() {
-		return true
+		return true, nil
 	}
 	allowInline := false
-	if dbTyped, ok := im.db.(interface {
-		Get(string, string, any) (any, error)
-	}); ok {
-		raw, _ := dbTyped.Get("goroku.security", "allow_inline_query", false)
+	if im.db != nil {
+		raw, err := im.db.Get("goroku.security", "allow_inline_query", false)
+		if err != nil {
+			return false, fmt.Errorf("read goroku.security.allow_inline_query: %w", err)
+		}
 		if rawBool, ok := raw.(bool); ok {
 			allowInline = rawBool
 		}
 	}
 	if allowInline {
-		return true
+		return true, nil
 	}
 	if im.client != nil {
 		if sm := im.client.GetSecurityManager(); sm != nil && sm.IsOwner(userID) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
-	if !im.isUserAuthorizedForInline(q.From.ID) {
+	authorized, err := im.isUserAuthorizedForInline(q.From.ID)
+	if err != nil {
+		L().Warn("[Inline] Failed to authorize inline query", zap.Int64("user_id", q.From.ID), zap.Error(err))
+		return
+	}
+	if !authorized {
 		return
 	}
 	if strings.TrimSpace(q.Query) == "" {
@@ -105,7 +124,7 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 	}
 
 	var result any
-	markup := im.GenerateMarkup(unit.Buttons)
+	markup := im.generateMarkup(unit.Buttons)
 
 	switch {
 	case unit.Photo != "" && unit.Type == "form":
@@ -209,13 +228,13 @@ func (im *InlineManager) handleInlineQuery(q *tgbotapi.InlineQuery) {
 		IsPersonal:    true,
 	}
 
-	_, err := im.request(inlineConf)
+	_, err = im.request(inlineConf)
 	if err != nil {
 		L().Info("[Inline] Failed to answer inline query: {0}", zap.Any("arg0", err))
 	}
 }
 
-func (im *InlineManager) handleCallbackQuery(c *tgbotapi.CallbackQuery) {
+func (im *InlineManager) handleCallbackQuery(ctx context.Context, c *tgbotapi.CallbackQuery) {
 	if strings.HasPrefix(c.Data, "authorize_web_") {
 		token := strings.TrimPrefix(c.Data, "authorize_web_")
 		im.mu.Lock()
@@ -233,6 +252,7 @@ func (im *InlineManager) handleCallbackQuery(c *tgbotapi.CallbackQuery) {
 		FromID:  c.From.ID,
 		Data:    c.Data,
 		Manager: im,
+		leased:  true,
 	}
 
 	if c.Message != nil {
@@ -247,7 +267,7 @@ func (im *InlineManager) handleCallbackQuery(c *tgbotapi.CallbackQuery) {
 
 	// Resolve the unit and check security first, before running any callbacks or handlers
 	im.mu.RLock()
-	btn, exists := im.customMap[c.Data]
+	_, exists := im.customMap[c.Data]
 	unitID := im.buttonUnits[c.Data]
 	if unitID == "" {
 		parts := strings.Split(c.Data, "_")
@@ -276,12 +296,20 @@ func (im *InlineManager) handleCallbackQuery(c *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	im.dispatchModuleCallbacks(cb)
+	im.dispatchModuleCallbacks(ctx, cb)
 
-	if im.HandleGalleryCallback(cb) {
-		return
+	handledComponent := false
+	if unit != nil && unit.Module != "" {
+		if !im.withModule(unit.Module, func(any) {
+			handledComponent = im.HandleGalleryCallback(cb) || im.HandleListCallback(cb)
+		}) {
+			_ = cb.Answer("This module is no longer available", true)
+			return
+		}
+	} else {
+		handledComponent = im.HandleGalleryCallback(cb) || im.HandleListCallback(cb)
 	}
-	if im.HandleListCallback(cb) {
+	if handledComponent {
 		return
 	}
 
@@ -293,7 +321,14 @@ func (im *InlineManager) handleCallbackQuery(c *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	go func() {
+	run := func() {
+		im.mu.RLock()
+		btn, stillExists := im.customMap[c.Data]
+		im.mu.RUnlock()
+		if !stillExists || btn.Handler == nil {
+			_ = cb.Answer("This action is no longer available", true)
+			return
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				L().Info("[Inline] Callback panic: {0}", zap.Any("arg0", r))
@@ -304,60 +339,85 @@ func (im *InlineManager) handleCallbackQuery(c *tgbotapi.CallbackQuery) {
 			L().Info("[Inline] Callback handler error: {0}", zap.Any("arg0", err))
 			_ = cb.Answer(fmt.Sprintf("Error: %v", err), true)
 		}
-	}()
+	}
+	if unit != nil && unit.Module != "" {
+		moduleName := unit.Module
+		im.startHandler(ctx, func(context.Context) {
+			if !im.withModule(moduleName, func(any) { run() }) {
+				_ = cb.Answer("This module is no longer available", true)
+			}
+		})
+		return
+	}
+	im.startHandler(ctx, func(context.Context) { run() })
 }
 
 func (im *InlineManager) handleModuleInlineQuery(q *tgbotapi.InlineQuery, cmd string, parts []string) bool {
-	for _, mod := range im.inlineModules() {
-		handlers := mod.InlineHandlers()
-		handler, ok := handlers[cmd]
-		if !ok {
-			handler, ok = handlers[strings.ToLower(cmd)]
-		}
-		if !ok || handler == nil {
-			continue
-		}
-		args := ""
-		if len(parts) > 1 {
-			args = parts[1]
-		}
-		query := &InlineQuery{QueryID: q.ID, Query: q.Query, Args: args, FromID: q.From.ID, Manager: im}
-		results, err := handler(query)
-		if err != nil {
-			L().Info("[Inline] module inline handler {0} failed: {1}", zap.Any("arg0", cmd), zap.Any("arg1", err))
-			_ = query.E500()
+	for _, name := range im.moduleNames() {
+		handled := false
+		im.withModule(name, func(value any) {
+			mod, ok := value.(ModuleInlineHandlers)
+			if !ok {
+				return
+			}
+			handlers := mod.InlineHandlers()
+			handler, ok := handlers[cmd]
+			if !ok {
+				handler, ok = handlers[strings.ToLower(cmd)]
+			}
+			if !ok || handler == nil {
+				return
+			}
+			handled = true
+			args := ""
+			if len(parts) > 1 {
+				args = parts[1]
+			}
+			query := &InlineQuery{QueryID: q.ID, Query: q.Query, Args: args, FromID: q.From.ID, Manager: im, leased: true}
+			results, err := handler(query)
+			if err != nil {
+				L().Info("[Inline] module inline handler {0} failed: {1}", zap.Any("arg0", cmd), zap.Any("arg1", err))
+				_ = query.E500()
+				return
+			}
+			if len(results) > 0 {
+				if err := query.answerResults(results, 0); err != nil {
+					L().Info("[Inline] failed to answer module inline query {0}: {1}", zap.Any("arg0", cmd), zap.Any("arg1", err))
+				}
+			}
+		})
+		if handled {
 			return true
 		}
-		if len(results) == 0 {
-			return true
-		}
-		if err := query.AnswerResults(results, 0); err != nil {
-			L().Info("[Inline] failed to answer module inline query {0}: {1}", zap.Any("arg0", cmd), zap.Any("arg1", err))
-		}
-		return true
 	}
 	return false
 }
 
 func (im *InlineManager) answerInlineHelp(q *tgbotapi.InlineQuery) {
 	var text strings.Builder
-	for _, mod := range im.inlineModules() {
-		name := "Inline"
-		if named, ok := mod.(interface{ Name() string }); ok {
-			name = named.Name()
-		}
-		help := map[string]string{}
-		if withHelp, ok := mod.(ModuleInlineHelp); ok {
-			help = withHelp.InlineHelp()
-		}
-		for cmd := range mod.InlineHandlers() {
-			desc := help[cmd]
-			if desc == "" {
-				desc = "No description"
+	for _, name := range im.moduleNames() {
+		im.withModule(name, func(value any) {
+			mod, ok := value.(ModuleInlineHandlers)
+			if !ok {
+				return
 			}
-			text.WriteString(fmt.Sprintf("• <code>@%s %s</code> — <b>%s</b>\n", im.BotUsernameStr(), cmd, desc))
-			_ = name
-		}
+			name := "Inline"
+			if named, ok := mod.(interface{ Name() string }); ok {
+				name = named.Name()
+			}
+			help := map[string]string{}
+			if withHelp, ok := mod.(ModuleInlineHelp); ok {
+				help = withHelp.InlineHelp()
+			}
+			for cmd := range mod.InlineHandlers() {
+				desc := help[cmd]
+				if desc == "" {
+					desc = "No description"
+				}
+				text.WriteString(fmt.Sprintf("• <code>@%s %s</code> — <b>%s</b>\n", im.BotUsernameStr(), cmd, desc))
+				_ = name
+			}
+		})
 	}
 	if text.Len() == 0 {
 		return
@@ -371,76 +431,131 @@ func (im *InlineManager) answerInlineHelp(q *tgbotapi.InlineQuery) {
 	}
 }
 
-func (im *InlineManager) dispatchModuleCallbacks(cb CallbackQuery) {
-	for _, mod := range im.callbackModules() {
-		modName := ""
-		if named, ok := mod.(interface{ Name() string }); ok {
-			modName = named.Name()
-		}
-		// Security check: only allow owners or those who have trust on this module
-		if sm := im.getSecurityManager(); sm != nil {
-			if !im.isUserOwnerOrTrustedForModule(sm, cb.FromID, modName) {
-				continue
-			}
-		} else {
-			// fallback if security manager is not available: only owner
-			if cb.FromID != im.ownerID() {
-				continue
-			}
-		}
-
-		for _, handler := range mod.CallbackHandlers() {
-			if handler == nil {
-				continue
-			}
-			go func(h func(CallbackQuery) error) {
-				defer func() {
-					if r := recover(); r != nil {
-						L().Info("[Inline] module callback panic: {0}", zap.Any("arg0", r))
-					}
-				}()
-				if err := h(cb); err != nil {
-					L().Info("[Inline] module callback handler failed: {0}", zap.Any("arg0", err))
+func (im *InlineManager) dispatchModuleCallbacks(ctx context.Context, cb CallbackQuery) {
+	for _, registryName := range im.moduleNames() {
+		registryName := registryName
+		im.startHandler(ctx, func(context.Context) {
+			if !im.withModule(registryName, func(value any) {
+				mod, ok := value.(ModuleCallbackHandlers)
+				if !ok {
+					return
 				}
-			}(handler)
-		}
+				modName := ""
+				if named, ok := mod.(interface{ Name() string }); ok {
+					modName = named.Name()
+				}
+				// Security check: only allow owners or those who have trust on this module
+				if sm := im.getSecurityManager(); sm != nil {
+					if !im.isUserOwnerOrTrustedForModule(sm, cb.FromID, modName) {
+						return
+					}
+				} else {
+					// fallback if security manager is not available: only owner
+					if cb.FromID != im.ownerID() {
+						return
+					}
+				}
+
+				for _, handler := range mod.CallbackHandlers() {
+					if handler == nil {
+						continue
+					}
+					defer func() {
+						if r := recover(); r != nil {
+							L().Info("[Inline] module callback panic: {0}", zap.Any("arg0", r))
+						}
+					}()
+					if err := handler(cb); err != nil {
+						L().Info("[Inline] module callback handler failed: {0}", zap.Any("arg0", err))
+					}
+				}
+			}) {
+				return
+			}
+		})
 	}
 }
 
+func (im *InlineManager) startHandler(ctx context.Context, handler func(context.Context)) {
+	im.mu.RLock()
+	generation := im.generation
+	im.mu.RUnlock()
+	if generation != nil && generation.ctx == ctx {
+		if !generation.submit(generation.callbackJobs, handler) {
+			L().Warn("[Inline] callback queue full; dropping callback")
+		}
+		return
+	}
+	// Direct HandleUpdate calls are retained for embedders and unit tests. They
+	// are synchronous when no managed generation exists, so no worker can leak.
+	handler(ctx)
+}
+
 func (im *InlineManager) inlineModules() []ModuleInlineHandlers {
-	var modules []ModuleInlineHandlers
-	for _, mod := range im.allModuleValues() {
-		if h, ok := mod.(ModuleInlineHandlers); ok {
-			modules = append(modules, h)
+	modules := make([]ModuleInlineHandlers, 0)
+	for _, name := range im.moduleNames() {
+		name := name
+		isInline := false
+		im.withModule(name, func(mod any) { _, isInline = mod.(ModuleInlineHandlers) })
+		if isInline {
+			modules = append(modules, leasedInlineModule{manager: im, name: name})
 		}
 	}
 	return modules
+}
+
+type leasedInlineModule struct {
+	manager *InlineManager
+	name    string
+}
+
+func (m leasedInlineModule) InlineHandlers() map[string]InlineHandler {
+	handlers := make(map[string]InlineHandler)
+	m.manager.withModule(m.name, func(value any) {
+		module, ok := value.(ModuleInlineHandlers)
+		if !ok {
+			return
+		}
+		for command := range module.InlineHandlers() {
+			command := command
+			handlers[command] = func(query *InlineQuery) ([]InlineResult, error) {
+				var results []InlineResult
+				var handlerErr error
+				if !m.manager.withModule(m.name, func(current any) {
+					currentModule, ok := current.(ModuleInlineHandlers)
+					if !ok {
+						handlerErr = fmt.Errorf("inline module %s is no longer available", m.name)
+						return
+					}
+					handler := currentModule.InlineHandlers()[command]
+					if handler == nil {
+						handlerErr = fmt.Errorf("inline handler %s is no longer available", command)
+						return
+					}
+					results, handlerErr = handler(query)
+				}) {
+					return nil, fmt.Errorf("inline module %s is no longer available", m.name)
+				}
+				return results, handlerErr
+			}
+		}
+	})
+	return handlers
 }
 
 func (im *InlineManager) InlineModules() []ModuleInlineHandlers {
 	return im.inlineModules()
 }
 
-func (im *InlineManager) callbackModules() []ModuleCallbackHandlers {
-	var modules []ModuleCallbackHandlers
-	for _, mod := range im.allModuleValues() {
-		if h, ok := mod.(ModuleCallbackHandlers); ok {
-			modules = append(modules, h)
-		}
-	}
-	return modules
-}
-
-func (im *InlineManager) allModuleValues() []any {
+func (im *InlineManager) moduleNames() []string {
 	if im.allModules == nil {
 		return nil
 	}
-	modules := im.allModules.GetModules()
-	var out []any
-	for _, mod := range modules {
-		out = append(out, mod)
-	}
-	return out
+	return im.allModules.ModuleNames()
+}
+
+func (im *InlineManager) withModule(name string, fn func(any)) bool {
+	return im.allModules != nil && im.allModules.WithModule(name, fn)
 }
 
 func (im *InlineManager) findUnitByButtonDataLocked(data string) *Unit {
@@ -539,7 +654,7 @@ func (im *InlineManager) ownerID() int64 {
 	return im.client.TGIDValue()
 }
 
-func (im *InlineManager) handleChosenInlineResult(r *tgbotapi.ChosenInlineResult) {
+func (im *InlineManager) handleChosenInlineResult(ctx context.Context, r *tgbotapi.ChosenInlineResult) {
 	parts := strings.SplitN(r.Query, " ", 2)
 	var switchQuery string
 	if len(parts) > 0 {
@@ -565,6 +680,7 @@ func (im *InlineManager) handleChosenInlineResult(r *tgbotapi.ChosenInlineResult
 			FromID:  r.From.ID,
 			Data:    r.Query,
 			Manager: im,
+			leased:  true,
 		}
 
 		if unitID != "" {
@@ -584,14 +700,31 @@ func (im *InlineManager) handleChosenInlineResult(r *tgbotapi.ChosenInlineResult
 			cb.InlineMessage = NewInlineMessage(im, unitID, r.InlineMessageID)
 		}
 
-		go func() {
+		run := func() {
 			defer func() {
 				if r := recover(); r != nil {
 					L().Info("[Inline] Input handler panic: {0}", zap.Any("arg0", r))
 				}
 			}()
-			_ = btn.InputHandler(cb, inputVal)
-		}()
+			im.mu.RLock()
+			current, exists := im.customMap[switchQuery]
+			im.mu.RUnlock()
+			if exists && current.InputHandler != nil {
+				_ = current.InputHandler(cb, inputVal)
+			}
+		}
+		im.mu.RLock()
+		unit := im.units[unitID]
+		im.mu.RUnlock()
+		if unit != nil && unit.Module != "" {
+			im.startHandler(ctx, func(context.Context) {
+				if !im.withModule(unit.Module, func(any) { run() }) {
+					_ = cb.Answer("This module is no longer available", true)
+				}
+			})
+		} else {
+			im.startHandler(ctx, func(context.Context) { run() })
+		}
 		return
 	}
 
@@ -609,11 +742,13 @@ func (im *InlineManager) handleChosenInlineResult(r *tgbotapi.ChosenInlineResult
 	im.mu.Unlock()
 
 	if exists && unit != nil && unit.StartText != "" {
-		go func() {
-			markup := im.GenerateMarkup(unit.Buttons)
+		im.startHandler(ctx, func(ctx context.Context) {
+			markup := im.generateMarkup(unit.Buttons)
 			for attempt := 1; attempt <= 5; attempt++ {
 				if attempt > 1 {
-					time.Sleep(time.Duration(attempt*250) * time.Millisecond)
+					if sleepContext(ctx, time.Duration(attempt*250)*time.Millisecond) != nil {
+						return
+					}
 				}
 				var err error
 				if r.InlineMessageID != "" {
@@ -630,7 +765,7 @@ func (im *InlineManager) handleChosenInlineResult(r *tgbotapi.ChosenInlineResult
 				L().Debug("Edited start text", zap.String("unit", unitID), zap.String("inline", r.InlineMessageID), zap.Int64("chat", msgInfo.ChatID), zap.Int64("message", msgInfo.MessageID), zap.Int("attempt", attempt))
 				break
 			}
-		}()
+		})
 	}
 
 	if hasCh {
@@ -639,5 +774,5 @@ func (im *InlineManager) handleChosenInlineResult(r *tgbotapi.ChosenInlineResult
 }
 
 func (im *InlineManager) handleBotMessage(m *tgbotapi.Message) {
-	im.HandleBotPM(m)
+	im.handleBotPM(m)
 }

@@ -4,12 +4,12 @@ go 1.24.4
 
 require (
 	github.com/OvyFlash/telegram-bot-api v0.0.0-20260614133753-78a1eb63fa7a
-	github.com/google/uuid v1.6.0
 	github.com/gotd/td v0.120.0
 	github.com/redis/go-redis/v9 v9.20.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/traefik/yaegi v0.16.1
 	go.uber.org/zap v1.27.0
+	golang.org/x/text v0.22.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -25,6 +25,7 @@ require (
 	github.com/go-faster/jx v1.1.0 // indirect
 	github.com/go-faster/xor v1.0.0 // indirect
 	github.com/go-faster/yaml v0.4.6 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/gotd/ige v0.2.2 // indirect
 	github.com/gotd/neo v0.1.5 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
@@ -43,7 +44,6 @@ require (
 	golang.org/x/net v0.35.0 // indirect
 	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
-	golang.org/x/text v0.22.0 // indirect
 	golang.org/x/tools v0.30.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	rsc.io/qr v0.2.0 // indirect

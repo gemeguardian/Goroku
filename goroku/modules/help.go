@@ -268,7 +268,9 @@ func (m *Help) HelphideCmd(msg *goroku.Message) error {
 		}
 	}
 
-	m.db.SetStringSlice("Help", "hide", currentlyHidden)
+	if err := m.db.SetStringSlice("Help", "hide", currentlyHidden); err != nil {
+		return msg.Answer(fmt.Sprintf("❌ Failed to save help visibility: %v", err))
+	}
 
 	var hiddenList []string
 	for _, h := range hidden {

@@ -51,8 +51,19 @@ type mockModules struct {
 	modules map[string]any
 }
 
-func (m *mockModules) GetModules() map[string]any {
-	return m.modules
+func (m *mockModules) ModuleNames() []string {
+	names := make([]string, 0, len(m.modules))
+	for name := range m.modules {
+		names = append(names, name)
+	}
+	return names
+}
+func (m *mockModules) WithModule(name string, fn func(any)) bool {
+	module, ok := m.modules[name]
+	if ok {
+		fn(module)
+	}
+	return ok
 }
 
 type mockPMModule struct {

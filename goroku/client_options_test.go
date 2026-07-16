@@ -1,6 +1,7 @@
 package goroku
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -12,7 +13,7 @@ func TestGetLogChatID(t *testing.T) {
 	}
 
 	// With DB but no channel_id
-	db := NewDatabase(42)
+	db := initializedTestDatabase(t, NewDatabase(42))
 	client.GorokuDB = db
 	if got := client.GetLogChatID(); got != 0 {
 		t.Errorf("GetLogChatID without channel_id = %d; want 0", got)
@@ -40,6 +41,22 @@ func TestGetLogChatID(t *testing.T) {
 	}
 	if got := client.GetLogChatID(); got != 42 {
 		t.Errorf("GetLogChatID with int = %d; want 42", got)
+	}
+}
+
+func TestGetLogChatIDCheckedReportsLifecycleErrors(t *testing.T) {
+	client := &CustomTelegramClient{TGID: 42, GorokuDB: NewDatabase(42)}
+	if _, err := client.GetLogChatIDChecked(); !errors.Is(err, ErrDatabaseNotInitialized) {
+		t.Fatalf("uninitialized lookup error = %v", err)
+	}
+
+	db := initializedTestDatabase(t, NewDatabase(43))
+	client.GorokuDB = db
+	if err := db.Close(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetLogChatIDChecked(); !errors.Is(err, ErrDatabaseClosed) {
+		t.Fatalf("closed lookup error = %v", err)
 	}
 }
 

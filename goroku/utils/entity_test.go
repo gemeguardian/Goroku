@@ -1,8 +1,12 @@
 package utils
 
 import (
+	"errors"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type mockUser struct {
@@ -16,7 +20,8 @@ type mockChannel struct {
 }
 
 type mockDB struct {
-	data map[string]map[string]any
+	data   map[string]map[string]any
+	setErr error
 }
 
 func (m *mockDB) Get(owner, key string, defaultValue any) (any, error) {
@@ -46,16 +51,19 @@ func (m *mockDB) GetAnyMap(owner, key string, def map[string]any) map[string]any
 	return def
 }
 
-func (m *mockDB) SetAnyMap(owner, key string, value map[string]any) bool {
+func (m *mockDB) SetAnyMap(owner, key string, value map[string]any) error {
 	return m.Set(owner, key, value)
 }
 
-func (m *mockDB) Set(owner, key string, value any) bool {
+func (m *mockDB) Set(owner, key string, value any) error {
+	if m.setErr != nil {
+		return m.setErr
+	}
 	if _, ok := m.data[owner]; !ok {
 		m.data[owner] = make(map[string]any)
 	}
 	m.data[owner][key] = value
-	return true
+	return nil
 }
 
 type mockChannelCreator struct {
@@ -66,6 +74,18 @@ type mockChannelCreator struct {
 	CreateForumTopicCalled     bool
 	SearchForumTopicCalled     bool
 	FindChannelByTitleFallback func(string) (any, error)
+}
+
+func resetChannelsCache(t *testing.T) {
+	t.Helper()
+	reset := func() {
+		channelsCacheMu.Lock()
+		channelsCache = make(map[channelCacheKey]CacheEntry)
+		channelCalls = make(map[channelCacheKey]*channelCall)
+		channelsCacheMu.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
 }
 
 func (m *mockChannelCreator) FindChannelByTitle(title string) (any, error) {
@@ -212,36 +232,331 @@ func TestGetLink(t *testing.T) {
 }
 
 func TestAssetChannel(t *testing.T) {
-	// 1. Stub client (not satisfying ChannelCreator)
-	peer, created := AssetChannel(nil, "hikka-test", "desc", false, false, false, false, "", 3600, false, false, "")
-	if !created {
-		t.Error("Expected created=true for first call with stub client")
-	}
-	mPeer, ok := peer.(map[string]any)
-	if !ok || mPeer["Title"] != "goroku-test" {
-		t.Errorf("Expected title 'goroku-test' (with replaced prefix), got %v", peer)
-	}
+	resetChannelsCache(t)
 
-	// Test cache hit
-	peerCache, createdCache := AssetChannel(nil, "hikka-test", "desc", false, false, false, false, "", 3600, false, false, "")
-	if createdCache {
-		t.Error("Expected cache hit (created=false)")
-	}
-	if !reflect.DeepEqual(peer, peerCache) {
-		t.Error("Cache hit returned different peer object")
-	}
-
-	// 2. Creator client
 	creator := &mockChannelCreator{}
-	peerCreator, createdCreator := AssetChannel(creator, "another-channel", "desc", false, false, false, true, "", 3600, false, false, "")
+	peerCreator, createdCreator := AssetChannel(creator, "hikka-test", "desc", false, false, false, true, "", 3600, false, false, "")
 	if createdCreator {
 		t.Error("Expected FindChannelByTitle to succeed and createdCreator=false")
 	}
 	if !creator.FindChannelByTitleCalled || !creator.InviteBotToChannelCalled {
 		t.Errorf("Creator methods not called: Find=%t Invite=%t", creator.FindChannelByTitleCalled, creator.InviteBotToChannelCalled)
 	}
-	if pChan, ok := peerCreator.(mockChannel); !ok || pChan.Title != "another-channel" {
+	if pChan, ok := peerCreator.(mockChannel); !ok || pChan.Title != "goroku-test" {
 		t.Errorf("Expected mockChannel, got %T", peerCreator)
+	}
+
+	peerCache, createdCache := AssetChannel(creator, "hikka-test", "desc", false, false, false, true, "", 3600, false, false, "")
+	if createdCache {
+		t.Error("Expected cache hit (created=false)")
+	}
+	if !reflect.DeepEqual(peerCreator, peerCache) {
+		t.Error("Cache hit returned different peer object")
+	}
+}
+
+func TestAssetChannelRejectsIncompatibleClient(t *testing.T) {
+	resetChannelsCache(t)
+
+	result, created := AssetChannel(nil, "test", "desc", false, false, false, false, "", 3600, false, false, "")
+	if created {
+		t.Error("incompatible client reported a created channel")
+	}
+	err, ok := result.(error)
+	if !ok || !errors.Is(err, ErrIncompatibleChannelClient) {
+		t.Fatalf("result = %#v; want ErrIncompatibleChannelClient", result)
+	}
+}
+
+type concurrentChannelCreator struct {
+	findCalls   atomic.Int32
+	createCalls atomic.Int32
+	createGate  <-chan struct{}
+	accountID   int64
+	peerID      int64
+	panicCreate bool
+}
+
+func (m *concurrentChannelCreator) TGIDValue() int64 { return m.accountID }
+
+func (m *concurrentChannelCreator) FindChannelByTitle(string) (any, error) {
+	m.findCalls.Add(1)
+	return nil, errors.New("not found")
+}
+
+func (m *concurrentChannelCreator) CreateChannel(title, description string, megagroup, forum bool) (any, error) {
+	m.createCalls.Add(1)
+	if m.createGate != nil {
+		<-m.createGate
+	}
+	if m.panicCreate {
+		panic("create panic")
+	}
+	peerID := m.peerID
+	if peerID == 0 {
+		peerID = 9876
+	}
+	return mockChannel{Id: peerID, Title: title}, nil
+}
+
+func (m *concurrentChannelCreator) InviteBotToChannel(any) error { return nil }
+func (m *concurrentChannelCreator) ToggleForum(any, bool) error  { return nil }
+func (m *concurrentChannelCreator) CreateForumTopic(any, string, string, int64) (int64, error) {
+	return 0, nil
+}
+func (m *concurrentChannelCreator) SearchForumTopic(any, string) (int64, error) {
+	return 0, nil
+}
+
+func TestAssetChannelConcurrentSameTitle(t *testing.T) {
+	resetChannelsCache(t)
+
+	gate := make(chan struct{})
+	creator := &concurrentChannelCreator{createGate: gate}
+	const workers = 100
+	start := make(chan struct{})
+	results := make(chan struct {
+		peer    any
+		created bool
+	}, workers)
+
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			peer, created := AssetChannel(creator, "shared-title", "desc", false, false, false, false, "", 3600, false, false, "")
+			results <- struct {
+				peer    any
+				created bool
+			}{peer, created}
+		}()
+	}
+	close(start)
+
+	deadline := time.Now().Add(time.Second)
+	for creator.createCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(gate)
+	wg.Wait()
+	close(results)
+
+	createdCount := 0
+	for result := range results {
+		if result.peer != (mockChannel{Id: 9876, Title: "shared-title"}) {
+			t.Errorf("unexpected peer: %#v", result.peer)
+		}
+		if result.created {
+			createdCount++
+		}
+	}
+	if got := creator.findCalls.Load(); got != 1 {
+		t.Errorf("FindChannelByTitle called %d times; want 1", got)
+	}
+	if got := creator.createCalls.Load(); got != 1 {
+		t.Errorf("CreateChannel called %d times; want 1", got)
+	}
+	if createdCount != 1 {
+		t.Errorf("created=true returned %d times; want 1", createdCount)
+	}
+}
+
+func TestAssetChannelDoesNotLockDuringNetworkWork(t *testing.T) {
+	resetChannelsCache(t)
+
+	gate := make(chan struct{})
+	blocked := &concurrentChannelCreator{createGate: gate}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		AssetChannel(blocked, "blocked-title", "", false, false, false, false, "", 3600, false, false, "")
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for blocked.createCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	fast := &concurrentChannelCreator{}
+	fastDone := make(chan struct{})
+	go func() {
+		defer close(fastDone)
+		AssetChannel(fast, "fast-title", "", false, false, false, false, "", 3600, false, false, "")
+	}()
+
+	select {
+	case <-fastDone:
+	case <-time.After(time.Second):
+		t.Fatal("different title was blocked by network work")
+	}
+	close(gate)
+	<-done
+}
+
+func TestAssetChannelIsolatesAccountsWithSameTitle(t *testing.T) {
+	resetChannelsCache(t)
+
+	gate := make(chan struct{})
+	first := &concurrentChannelCreator{createGate: gate, accountID: 1, peerID: 101}
+	second := &concurrentChannelCreator{createGate: gate, accountID: 2, peerID: 202}
+	type result struct {
+		peer    any
+		created bool
+	}
+	results := make(chan result, 2)
+	for _, creator := range []*concurrentChannelCreator{first, second} {
+		go func() {
+			peer, created := AssetChannel(creator, "same-title", "", false, false, false, false, "", 0, false, false, "")
+			results <- result{peer: peer, created: created}
+		}()
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for (first.createCalls.Load() == 0 || second.createCalls.Load() == 0) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if first.createCalls.Load() != 1 || second.createCalls.Load() != 1 {
+		t.Fatal("same-title calls from different accounts were single-flighted together")
+	}
+	close(gate)
+	<-results
+	<-results
+
+	firstPeer, _ := AssetChannel(first, "same-title", "", false, false, false, false, "", 0, false, false, "")
+	secondPeer, _ := AssetChannel(second, "same-title", "", false, false, false, false, "", 0, false, false, "")
+	if firstPeer != (mockChannel{Id: 101, Title: "same-title"}) {
+		t.Errorf("first account received %#v", firstPeer)
+	}
+	if secondPeer != (mockChannel{Id: 202, Title: "same-title"}) {
+		t.Errorf("second account received %#v", secondPeer)
+	}
+}
+
+func TestAssetChannelUsesStableAccountIdentity(t *testing.T) {
+	resetChannelsCache(t)
+
+	first := &concurrentChannelCreator{accountID: 77, peerID: 707}
+	peer, _ := AssetChannel(first, "account-title", "", false, false, false, false, "", 0, false, false, "")
+	second := &concurrentChannelCreator{accountID: 77, peerID: 999}
+	cached, created := AssetChannel(second, "account-title", "", false, false, false, false, "", 0, false, false, "")
+
+	if cached != peer || created {
+		t.Errorf("same account cache result = (%#v, %t); want (%#v, false)", cached, created, peer)
+	}
+	if second.findCalls.Load() != 0 || second.createCalls.Load() != 0 {
+		t.Error("second client instance did not use the stable account cache key")
+	}
+}
+
+func TestAssetChannelLeaderPanicUnblocksWaiter(t *testing.T) {
+	resetChannelsCache(t)
+
+	gate := make(chan struct{})
+	creator := &concurrentChannelCreator{createGate: gate, panicCreate: true}
+	leaderPanicked := make(chan any, 1)
+	go func() {
+		defer func() { leaderPanicked <- recover() }()
+		AssetChannel(creator, "panic-title", "", false, false, false, false, "", 0, false, false, "")
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for creator.createCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	waiterDone := make(chan any, 1)
+	go func() {
+		peer, _ := AssetChannel(creator, "panic-title", "", false, false, false, false, "", 0, false, false, "")
+		waiterDone <- peer
+	}()
+
+	key := channelCacheKey{client: creator, title: "panic-title"}
+	deadline = time.Now().Add(time.Second)
+	for {
+		channelsCacheMu.Lock()
+		waiters := channelCalls[key].waiters
+		channelsCacheMu.Unlock()
+		if waiters == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("waiter did not join the in-flight call")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(gate)
+
+	select {
+	case recovered := <-leaderPanicked:
+		if recovered != "create panic" {
+			t.Errorf("leader recovered %#v; want create panic", recovered)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("leader did not preserve panic behavior")
+	}
+	select {
+	case peer := <-waiterDone:
+		if peer != nil {
+			t.Errorf("waiter peer = %#v; want nil", peer)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter remained blocked after leader panic")
+	}
+}
+
+func TestAssetChannelRefreshesExpiredEntryAndCleansStaleEntries(t *testing.T) {
+	resetChannelsCache(t)
+
+	creator := &mockChannelCreator{}
+	currentKey := channelCacheKey{client: creator, title: "current"}
+	unrelatedKey := channelCacheKey{client: creator, title: "unrelated"}
+	channelsCacheMu.Lock()
+	channelsCache[currentKey] = CacheEntry{Peer: "old current", Exp: time.Now().Unix() - 1}
+	channelsCache[unrelatedKey] = CacheEntry{Peer: "old unrelated", Exp: time.Now().Unix() - 1}
+	channelsCacheMu.Unlock()
+
+	peer, created := AssetChannel(creator, "current", "", false, false, false, false, "", 3600, false, false, "")
+	if created {
+		t.Error("existing channel reported as newly created")
+	}
+	if peer != (mockChannel{Id: 987, Title: "current"}) {
+		t.Errorf("peer = %#v; want refreshed channel", peer)
+	}
+
+	channelsCacheMu.Lock()
+	current := channelsCache[currentKey]
+	_, unrelatedExists := channelsCache[unrelatedKey]
+	channelsCacheMu.Unlock()
+	if current.Peer != peer || current.Exp <= time.Now().Unix() {
+		t.Errorf("current cache entry was not refreshed: %#v", current)
+	}
+	if unrelatedExists {
+		t.Error("unrelated expired cache entry was not removed")
+	}
+}
+
+func TestAssetChannelTimedEvictionReleasesClientKey(t *testing.T) {
+	resetChannelsCache(t)
+
+	oldTTL := channelCacheTTL
+	channelCacheTTL = 10 * time.Millisecond
+	t.Cleanup(func() { channelCacheTTL = oldTTL })
+	creator := &mockChannelCreator{}
+	AssetChannel(creator, "evicted", "", false, false, false, false, "", 0, false, false, "")
+	key := channelCacheKey{client: creator, title: "evicted"}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		channelsCacheMu.Lock()
+		_, exists := channelsCache[key]
+		channelsCacheMu.Unlock()
+		if !exists {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cache did not evict the client identity after its TTL")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -277,6 +592,17 @@ func TestAssetForumTopic(t *testing.T) {
 	cachedVal := GetTopicID(db, "SearchTopic")
 	if cachedVal != int64(444) {
 		t.Errorf("Expected SearchTopic to be cached in DB as 444, got %v", cachedVal)
+	}
+}
+
+func TestAssetForumTopicPropagatesPersistenceError(t *testing.T) {
+	injected := errors.New("injected persistence failure")
+	db := &mockDB{data: make(map[string]map[string]any), setErr: injected}
+	creator := &mockChannelCreator{}
+	peer := mockChannel{Id: 1, Title: "Forum"}
+
+	if _, err := AssetForumTopic(creator, db, peer, "Topic", "", 0, false); !errors.Is(err, injected) {
+		t.Fatalf("AssetForumTopic error = %v", err)
 	}
 }
 

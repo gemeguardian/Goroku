@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"goroku/goroku"
 	"goroku/goroku/utils"
@@ -13,11 +14,80 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/traefik/yaegi/interp"
 	"github.com/traefik/yaegi/stdlib"
 )
+
+const externalOutputLimit = 256 * 1024
+
+const censoredOutputUnavailable = "[output suppressed: database unavailable]"
+
+var (
+	// Yaegi runs in-process and cannot be cancelled after deadline (M4.2 temporary path).
+	// Concurrency is limited to one slot so a runaway eval does not stack multiple CPUs.
+	yaegiSlots     = make(chan struct{}, 1)
+	errEvalTimeout = errors.New("eval timeout; execution may still be running")
+)
+
+type boundedBuffer struct {
+	mu        sync.Mutex
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func newBoundedBuffer(limit int) *boundedBuffer { return &boundedBuffer{limit: limit} }
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(p)
+	remaining := b.limit - b.buf.Len()
+	if remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		_, _ = b.buf.Write(p[:remaining])
+	}
+	if remaining < len(p) {
+		b.truncated = true
+	}
+	return n, nil
+}
+
+func (b *boundedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}
+
+func (b *boundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.buf.String()
+	if b.truncated {
+		s += "\n[output truncated]"
+	}
+	return s
+}
+
+func (b *boundedBuffer) Truncated() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.truncated
+}
+
+func acquireSlot(ctx context.Context, slots chan struct{}) error {
+	select {
+	case slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 type Eval struct {
 	client     *goroku.CustomTelegramClient
@@ -64,22 +134,37 @@ func (m *Eval) Commands() map[string]goroku.CommandHandler {
 func (m *Eval) CommandMetas() map[string]goroku.CommandMeta {
 	return map[string]goroku.CommandMeta{
 		"eval": {
-			Aliases: []string{"e"},
+			Aliases:   []string{"e"},
+			OnlyOwner: true,
 		},
 		"evalpy": {
-			Aliases: []string{"epy", "py"},
+			Aliases:   []string{"epy", "py"},
+			OnlyOwner: true,
+		},
+		"ec": {
+			OnlyOwner: true,
+		},
+		"ecpp": {
+			OnlyOwner: true,
+		},
+		"enode": {
+			OnlyOwner: true,
 		},
 		"ephp": {
-			Aliases: []string{"php"},
+			Aliases:   []string{"php"},
+			OnlyOwner: true,
 		},
 		"eruby": {
-			Aliases: []string{"ruby"},
+			Aliases:   []string{"ruby"},
+			OnlyOwner: true,
 		},
 		"ebf": {
-			Aliases: []string{"bf"},
+			Aliases:   []string{"bf"},
+			OnlyOwner: true,
 		},
 		"erust": {
-			Aliases: []string{"rust"},
+			Aliases:   []string{"rust"},
+			OnlyOwner: true,
 		},
 	}
 }
@@ -93,14 +178,19 @@ func (m *Eval) getTrans(key, def string) string {
 }
 
 func (m *Eval) censor(text string) string {
+	return censorExecutionOutput(text, m.client, m.db)
+}
+
+func censorExecutionOutput(text string, client *goroku.CustomTelegramClient, db *goroku.Database) string {
 	var extras []string
-	if m.client != nil {
-		extras = append(extras, m.client.APIHash)
-		if u := m.client.GorokuMe; u != nil && u.Phone != "" {
-			extras = append(extras, u.Phone)
+	var phones []string
+	if client != nil {
+		extras = append(extras, client.APIHash)
+		if u := client.GorokuMe; u != nil && u.Phone != "" {
+			phones = append(phones, u.Phone)
 		}
 	}
-	if m.db != nil {
+	if db != nil {
 		for _, item := range [][3]string{
 			{"main", "redis_uri", ""},
 			{"main", "db_uri", ""},
@@ -108,14 +198,16 @@ func (m *Eval) censor(text string) string {
 			{"loader", "token", ""},
 			{"goroku.loader", "token", ""},
 		} {
-			if raw, err := m.db.Get(item[0], item[1], item[2]); err == nil {
-				if val, ok := raw.(string); ok {
-					extras = append(extras, val)
-				}
+			raw, err := db.Get(item[0], item[1], item[2])
+			if err != nil {
+				return censoredOutputUnavailable
+			}
+			if val, ok := raw.(string); ok {
+				extras = append(extras, val)
 			}
 		}
 	}
-	return utils.CensorSensitive(text, extras...)
+	return utils.CensorSensitiveWithPhones(text, phones, extras...)
 }
 
 func formatPythonTraceback(tb string) string {
@@ -197,6 +289,29 @@ func (m *Eval) evalBlockText(errorOccurred bool, emojiID, lang, code, output str
 	)
 }
 
+func (m *Eval) auditEval(msg *goroku.Message, capability, code string, started time.Time, err error, truncated bool) {
+	actor, chat := int64(0), int64(0)
+	if msg != nil {
+		actor, chat = msg.SenderID, msg.ChatID
+	}
+	timedOut := errors.Is(err, errEvalTimeout) || (err != nil && strings.Contains(err.Error(), "timeout"))
+	exit := 0
+	if err != nil {
+		exit = -1
+	}
+	auditExecution(executionAuditEvent{
+		ActorID:    actor,
+		ChatID:     chat,
+		Capability: capability,
+		Digest:     contentSHA256String(code),
+		Duration:   time.Since(started),
+		ExitCode:   exit,
+		TimedOut:   timedOut,
+		Truncated:  truncated,
+		Status:     auditStatus(err, timedOut, false),
+	})
+}
+
 func (m *Eval) EvalCmd(msg *goroku.Message) error {
 	code := evalCodeFromMessage(msg, true)
 	if code == "" {
@@ -205,6 +320,7 @@ func (m *Eval) EvalCmd(msg *goroku.Message) error {
 
 	start := time.Now()
 	result, stdout, stderr, err := m.runYaegiEval(msg, code)
+	m.auditEval(msg, "eval.go", code, start, err, false)
 	execTime := time.Since(start).Seconds()
 	if err != nil {
 		errOut := strings.TrimSpace(err.Error())
@@ -407,7 +523,25 @@ client = c = _ns(_ctx.get("client") or {})
 db = DBProxy(_ctx.get("db") or {})
 
 _code = %q
-_out = io.StringIO()
+class _LimitedIO(io.StringIO):
+    def __init__(self, limit):
+        super().__init__()
+        self.limit = limit
+        self.truncated = False
+    def write(self, value):
+        remaining = self.limit - self.tell()
+        if remaining > 0:
+            super().write(value[:remaining])
+        if len(value) > remaining:
+            self.truncated = True
+        return len(value)
+    def getvalue(self):
+        value = super().getvalue()
+        if self.truncated:
+            value += "\n[output truncated]"
+        return value
+
+_out = _LimitedIO(%d)
 _res_data = {"result": None, "stdout": "", "error": None, "traceback": ""}
 
 try:
@@ -434,22 +568,25 @@ except Exception as e:
     _res_data["traceback"] = traceback.format_exc()
 
 print(json.dumps(_res_data))
-`, string(ctxJSON), code)
+`, string(ctxJSON), code, externalOutputLimit)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "python3", "-c", py) //nolint:gosec
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
-	if err != nil {
-		return nil, fmt.Errorf("python execution error: %v, stderr: %s", err, stderr.String())
+	proc := defaultProcessExecutor.Run(ctx, ProcessSpec{
+		Name:          "python3",
+		Args:          []string{"-c", py},
+		CaptureOutput: true,
+	})
+	if proc.Err != nil {
+		return nil, fmt.Errorf("python execution error: %v, stderr: %s", proc.Err, string(proc.Stderr))
 	}
 
 	var res PythonEvalResult
-	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-		return nil, fmt.Errorf("failed to parse python output: %v, output: %s", err, stdout.String())
+	if proc.Truncated {
+		return nil, fmt.Errorf("python output exceeded %d bytes", externalOutputLimit)
+	}
+	if err := json.Unmarshal(proc.Stdout, &res); err != nil {
+		return nil, fmt.Errorf("failed to parse python output: %v, output: %s", err, string(proc.Stdout))
 	}
 
 	return &res, nil
@@ -463,6 +600,11 @@ func (m *Eval) EvalPyCmd(msg *goroku.Message) error {
 
 	start := time.Now()
 	resData, err := m.runPythonEval(msg, code)
+	auditErr := err
+	if auditErr == nil && resData != nil && resData.Traceback != "" {
+		auditErr = errors.New("python traceback")
+	}
+	m.auditEval(msg, "eval.python", code, start, auditErr, false)
 	execTime := time.Since(start).Seconds()
 
 	if err != nil || (resData != nil && resData.Traceback != "") {
@@ -561,8 +703,8 @@ func isFullPackageGo(code string) bool {
 }
 
 func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, string, error) {
-	var stdout, stderr bytes.Buffer
-	i := interp.New(interp.Options{Stdout: &stdout, Stderr: &stderr})
+	stdout, stderr := newBoundedBuffer(externalOutputLimit), newBoundedBuffer(externalOutputLimit)
+	i := interp.New(interp.Options{Stdout: stdout, Stderr: stderr})
 	if err := i.Use(stdlib.Symbols); err != nil {
 		return "", "", "", err
 	}
@@ -588,7 +730,7 @@ func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, s
 
 	source := m.buildYaegiSource(code, true)
 	value, err := m.evalYaegiWithTimeout(i, source, !isFullPackageGo(code))
-	if err != nil {
+	if err != nil && !errors.Is(err, errEvalTimeout) {
 		source = m.buildYaegiSource(code, false)
 		value, err = m.evalYaegiWithTimeout(i, source, !isFullPackageGo(code))
 	}
@@ -596,7 +738,7 @@ func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, s
 		return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
 	}
 
-	resultText, runErr, multiValuePanic := m.runYaegiRunner(value, &stdout, &stderr)
+	resultText, runErr, multiValuePanic := m.runYaegiRunner(value)
 	if multiValuePanic {
 		// Expression mode compiled but the expression is a multi-value function call.
 		// Retry as a statement so the side effects run without trying to return values.
@@ -605,7 +747,7 @@ func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, s
 		if err != nil {
 			return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
 		}
-		resultText, runErr, _ = m.runYaegiRunner(value, &stdout, &stderr)
+		resultText, runErr, _ = m.runYaegiRunner(value)
 	}
 	if runErr != nil {
 		return "", strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), runErr
@@ -613,17 +755,23 @@ func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, s
 	return resultText, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), nil
 }
 
-func (m *Eval) runYaegiRunner(value reflect.Value, stdout, stderr *bytes.Buffer) (string, error, bool) {
+func (m *Eval) runYaegiRunner(value reflect.Value) (string, error, bool) {
+	if !value.IsValid() || value.Kind() != reflect.Func {
+		return "", fmt.Errorf("invalid yaegi runner signature"), false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := acquireSlot(ctx, yaegiSlots); err != nil {
+		return "", errEvalTimeout, false
+	}
 	runner, ok := value.Interface().(func() any)
 	if !ok {
-		if !value.IsValid() || value.Kind() != reflect.Func {
-			return "", fmt.Errorf("invalid yaegi runner signature"), false
-		}
 		done := make(chan struct{})
 		var result reflect.Value
 		var panicValue any
 		go func() {
 			defer func() {
+				<-yaegiSlots
 				panicValue = recover()
 				close(done)
 			}()
@@ -634,8 +782,8 @@ func (m *Eval) runYaegiRunner(value reflect.Value, stdout, stderr *bytes.Buffer)
 			if panicValue != nil {
 				return "", fmt.Errorf("panic: %v", panicValue), isMultiValuePanic(panicValue)
 			}
-		case <-time.After(15 * time.Second):
-			return "", fmt.Errorf("eval timeout"), false
+		case <-ctx.Done():
+			return "", errEvalTimeout, false
 		}
 		resultText := ""
 		if result.IsValid() && !result.IsNil() {
@@ -648,6 +796,7 @@ func (m *Eval) runYaegiRunner(value reflect.Value, stdout, stderr *bytes.Buffer)
 	var panicValue any
 	go func() {
 		defer func() {
+			<-yaegiSlots
 			panicValue = recover()
 			close(done)
 		}()
@@ -658,8 +807,8 @@ func (m *Eval) runYaegiRunner(value reflect.Value, stdout, stderr *bytes.Buffer)
 		if panicValue != nil {
 			return "", fmt.Errorf("panic: %v", panicValue), isMultiValuePanic(panicValue)
 		}
-	case <-time.After(15 * time.Second):
-		return "", fmt.Errorf("eval timeout"), false
+	case <-ctx.Done():
+		return "", errEvalTimeout, false
 	}
 
 	resultText := ""
@@ -727,10 +876,16 @@ func __run__() any {
 }
 
 func (m *Eval) evalYaegiWithTimeout(i *interp.Interpreter, source string, needRunFunc bool) (reflect.Value, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := acquireSlot(ctx, yaegiSlots); err != nil {
+		return reflect.Value{}, errEvalTimeout
+	}
 	done := make(chan struct{})
 	var value reflect.Value
 	var err error
 	go func() {
+		defer func() { <-yaegiSlots }()
 		value, err = i.Eval(source)
 		if err == nil && needRunFunc {
 			value, err = i.Eval("__run__")
@@ -740,8 +895,8 @@ func (m *Eval) evalYaegiWithTimeout(i *interp.Interpreter, source string, needRu
 	select {
 	case <-done:
 		return value, err
-	case <-time.After(15 * time.Second):
-		return reflect.Value{}, fmt.Errorf("eval compile timeout")
+	case <-ctx.Done():
+		return reflect.Value{}, errEvalTimeout
 	}
 }
 
@@ -803,12 +958,19 @@ func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmdCompile := exec.CommandContext(ctx, compiler, "-o", binFile, srcFile) //nolint:gosec
-	var compileOut bytes.Buffer
-	cmdCompile.Stdout = &compileOut
-	cmdCompile.Stderr = &compileOut
+	cmdCompile, err := secureCommandContext(ctx, compiler, "-o", binFile, srcFile)
+	if err != nil {
+		msg.Text = fmt.Sprintf("❌ Failed to start compiler: %v", err)
+		return nil
+	}
+	compileOut := newBoundedBuffer(externalOutputLimit)
+	cmdCompile.Stdout = compileOut
+	cmdCompile.Stderr = compileOut
 
-	err = cmdCompile.Run()
+	func() {
+		defer releaseCommandSlot()
+		err = cmdCompile.Run()
+	}()
 	if err != nil {
 		errMsg := compileOut.String()
 		if errMsg == "" {
@@ -826,12 +988,19 @@ func (m *Eval) runCCompiler(msg *goroku.Message, isC bool) error {
 	ctxRun, cancelRun := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelRun()
 
-	cmdRun := exec.CommandContext(ctxRun, binFile) //nolint:gosec
-	var runOut bytes.Buffer
-	cmdRun.Stdout = &runOut
-	cmdRun.Stderr = &runOut
+	cmdRun, err := secureCommandContext(ctxRun, binFile)
+	if err != nil {
+		msg.Text = fmt.Sprintf("❌ Failed to start executable: %v", err)
+		return nil
+	}
+	runOut := newBoundedBuffer(externalOutputLimit)
+	cmdRun.Stdout = runOut
+	cmdRun.Stderr = runOut
 
-	err = cmdRun.Run()
+	func() {
+		defer releaseCommandSlot()
+		err = cmdRun.Run()
+	}()
 	output := runOut.String()
 	errorOccurred := false
 	if err != nil {
@@ -883,12 +1052,19 @@ func (m *Eval) ENodeCmd(msg *goroku.Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "node", srcFile) //nolint:gosec
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd, err := secureCommandContext(ctx, "node", srcFile)
+	if err != nil {
+		msg.Text = fmt.Sprintf("❌ Failed to start executable: %v", err)
+		return nil
+	}
+	out := newBoundedBuffer(externalOutputLimit)
+	cmd.Stdout = out
+	cmd.Stderr = out
 
-	err = cmd.Run()
+	func() {
+		defer releaseCommandSlot()
+		err = cmd.Run()
+	}()
 	output := out.String()
 	errorOccurred := false
 	if err != nil {
@@ -962,6 +1138,9 @@ func runBrainfuck(code string) (string, error) {
 		case '-':
 			tape[ptr]--
 		case '.':
+			if out.Len() >= externalOutputLimit {
+				return out.String(), fmt.Errorf("output limit exceeded")
+			}
 			out.WriteByte(tape[ptr])
 		case ',':
 			tape[ptr] = 0
@@ -1039,12 +1218,19 @@ func (m *Eval) EPHPCmd(msg *goroku.Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "php", srcFile) //nolint:gosec
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd, err := secureCommandContext(ctx, "php", srcFile)
+	if err != nil {
+		msg.Text = fmt.Sprintf("❌ Failed to start executable: %v", err)
+		return nil
+	}
+	out := newBoundedBuffer(externalOutputLimit)
+	cmd.Stdout = out
+	cmd.Stderr = out
 
-	err = cmd.Run()
+	func() {
+		defer releaseCommandSlot()
+		err = cmd.Run()
+	}()
 	output := out.String()
 	errorOccurred := false
 	if err != nil {
@@ -1096,12 +1282,19 @@ func (m *Eval) ERubyCmd(msg *goroku.Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ruby", srcFile) //nolint:gosec
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd, err := secureCommandContext(ctx, "ruby", srcFile)
+	if err != nil {
+		msg.Text = fmt.Sprintf("❌ Failed to start executable: %v", err)
+		return nil
+	}
+	out := newBoundedBuffer(externalOutputLimit)
+	cmd.Stdout = out
+	cmd.Stderr = out
 
-	err = cmd.Run()
+	func() {
+		defer releaseCommandSlot()
+		err = cmd.Run()
+	}()
 	output := out.String()
 	errorOccurred := false
 	if err != nil {
@@ -1158,12 +1351,19 @@ func (m *Eval) ERustCmd(msg *goroku.Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmdCompile := exec.CommandContext(ctx, "rustc", "-o", binFile, srcFile) //nolint:gosec
-	var compileOut bytes.Buffer
-	cmdCompile.Stdout = &compileOut
-	cmdCompile.Stderr = &compileOut
+	cmdCompile, err := secureCommandContext(ctx, "rustc", "-o", binFile, srcFile)
+	if err != nil {
+		msg.Text = fmt.Sprintf("❌ Failed to start compiler: %v", err)
+		return nil
+	}
+	compileOut := newBoundedBuffer(externalOutputLimit)
+	cmdCompile.Stdout = compileOut
+	cmdCompile.Stderr = compileOut
 
-	err = cmdCompile.Run()
+	func() {
+		defer releaseCommandSlot()
+		err = cmdCompile.Run()
+	}()
 	if err != nil {
 		errMsg := compileOut.String()
 		if errMsg == "" {
@@ -1181,12 +1381,19 @@ func (m *Eval) ERustCmd(msg *goroku.Message) error {
 	ctxRun, cancelRun := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelRun()
 
-	cmdRun := exec.CommandContext(ctxRun, binFile) //nolint:gosec
-	var runOut bytes.Buffer
-	cmdRun.Stdout = &runOut
-	cmdRun.Stderr = &runOut
+	cmdRun, err := secureCommandContext(ctxRun, binFile)
+	if err != nil {
+		msg.Text = fmt.Sprintf("❌ Failed to start executable: %v", err)
+		return nil
+	}
+	runOut := newBoundedBuffer(externalOutputLimit)
+	cmdRun.Stdout = runOut
+	cmdRun.Stderr = runOut
 
-	err = cmdRun.Run()
+	func() {
+		defer releaseCommandSlot()
+		err = cmdRun.Run()
+	}()
 	output := runOut.String()
 	errorOccurred := false
 	if err != nil {

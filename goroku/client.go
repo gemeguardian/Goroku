@@ -149,16 +149,29 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 }
 
 func (c *CustomTelegramClient) Connect() error {
+	return c.ConnectContext(context.Background())
+}
+
+// ConnectContext connects the client and aborts authentication/startup when ctx
+// is canceled. The resulting client connection also inherits ctx.
+func (c *CustomTelegramClient) ConnectContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if c.APIID == 0 || c.APIHash == "" {
 		return fmt.Errorf("telegram api_id/api_hash is not configured")
 	}
 
 	// Cancel any previous connection attempt so we don't leak goroutines or
 	// race against an old client.Run.
-	if c.cancel != nil {
-		c.cancel()
+	if err := c.Close(ctx); err != nil {
+		return fmt.Errorf("close previous Telegram connection: %w", err)
 	}
-	c.ctx, c.cancel = context.WithCancel(context.Background())
+	runCtx, runCancel := context.WithCancel(ctx)
+	c.runMu.Lock()
+	c.ctx, c.cancel = runCtx, runCancel
+	c.runErr = nil
+	c.runMu.Unlock()
 
 	connectResult := make(chan error, 1)
 	sessionPath := c.SessionPath
@@ -270,11 +283,14 @@ func (c *CustomTelegramClient) Connect() error {
 
 	c.client = client
 	c.rawAPI = client.API()
-	c.runDone = make(chan struct{})
+	runDone := make(chan struct{})
+	c.runMu.Lock()
+	c.runDone = runDone
+	c.runMu.Unlock()
 
 	go func() {
-		defer close(c.runDone)
-		err := client.Run(c.ctx, func(ctx context.Context) error {
+		defer close(runDone)
+		err := client.Run(runCtx, func(ctx context.Context) error {
 			status, err := client.Auth().Status(ctx)
 			if err != nil {
 				select {
@@ -311,17 +327,22 @@ func (c *CustomTelegramClient) Connect() error {
 			default:
 			}
 		}
+		c.runMu.Lock()
+		c.runErr = err
+		c.runMu.Unlock()
 	}()
 
+	connectCtx, connectCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer connectCancel()
 	select {
 	case err := <-connectResult:
 		if err != nil {
-			c.cancel()
+			runCancel()
 		}
 		return err
-	case <-time.After(30 * time.Second):
-		c.cancel()
-		return fmt.Errorf("connection timeout")
+	case <-connectCtx.Done():
+		runCancel()
+		return fmt.Errorf("connect Telegram client: %w", connectCtx.Err())
 	}
 }
 
@@ -388,21 +409,36 @@ func (c *CustomTelegramClient) CheckBot(username string) (bool, error) {
 	return false, fmt.Errorf("inline manager not available or does not support CheckBot")
 }
 
-func (c *CustomTelegramClient) GetLogChatID() int64 {
+func (c *CustomTelegramClient) GetLogChatIDChecked() (int64, error) {
 	if c.GorokuDB == nil {
-		return 0
+		return 0, databaseError("get", "goroku.forums", "channel_id", "", ErrDatabaseNotInitialized, nil)
 	}
-	if val, _ := c.GorokuDB.Get("goroku.forums", "channel_id", nil); val != nil {
+	val, err := c.GorokuDB.Get("goroku.forums", "channel_id", nil)
+	if err != nil {
+		return 0, err
+	}
+	if val != nil {
 		switch v := val.(type) {
 		case float64:
-			return int64(v)
+			return int64(v), nil
 		case int64:
-			return v
+			return v, nil
 		case int:
-			return int64(v)
+			return int64(v), nil
 		}
 	}
-	return 0
+	return 0, nil
+}
+
+// GetLogChatID keeps the historical zero fallback. Routing code that can
+// return an error should use GetLogChatIDChecked.
+func (c *CustomTelegramClient) GetLogChatID() int64 {
+	id, err := c.GetLogChatIDChecked()
+	if err != nil {
+		L().Warn("Log chat lookup failed; disabling log-chat routing", zap.Error(err))
+		return 0
+	}
+	return id
 }
 
 func getRawChannelID(id int64) int64 {
@@ -510,6 +546,10 @@ func planLongAnswer(rawText string, canUseInline bool) answerPlan {
 
 func (m *Message) Answer(text string, opts ...MsgOption) error {
 	m.Answered = true
+	ctx := m.Context()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if m.GrepQuery != "" {
 		lines := strings.Split(text, "\n")
 		var matchingLines []string
@@ -562,14 +602,18 @@ func (m *Message) Answer(text string, opts ...MsgOption) error {
 		chunks := splitPlainTextForTelegram(plainText, telegramMessageLimit)
 		for i, chunk := range chunks {
 			chunk = stdhtml.EscapeString(chunk)
+			var err error
 			if i == 0 {
 				if m.Out {
-					_, _ = m.Client.EditMessage(ChatRefID(m.ChatID), m.ID, chunk, opts...)
+					_, err = m.Client.EditMessageContext(ctx, ChatRefID(m.ChatID), m.ID, chunk, opts...)
 				} else {
-					_, _ = m.Client.SendMessageWithOptions(ChatRefID(m.ChatID), chunk, opts...)
+					_, err = m.Client.SendMessageWithOptionsContext(ctx, ChatRefID(m.ChatID), chunk, opts...)
 				}
 			} else {
-				_, _ = m.Client.SendMessageWithOptions(ChatRefID(m.ChatID), chunk, opts...)
+				_, err = m.Client.SendMessageWithOptionsContext(ctx, ChatRefID(m.ChatID), chunk, opts...)
+			}
+			if err != nil && ctx.Err() != nil {
+				return ctx.Err()
 			}
 		}
 		return nil
@@ -578,6 +622,9 @@ func (m *Message) Answer(text string, opts ...MsgOption) error {
 	plan := planLongAnswer(text, m.GrepQuery == "")
 	switch plan.mode {
 	case answerModeInlineList:
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if m.Client != nil {
 			if im := m.Client.InlineManager(); im != nil && im.IsComplete() {
 				if _, err := im.List(m, plan.pages); err == nil {
@@ -592,24 +639,27 @@ func (m *Message) Answer(text string, opts ...MsgOption) error {
 			fileText = plainText
 		}
 		if m.Out {
-			_, _ = m.Client.EditMessage(ChatRefID(m.ChatID), m.ID, "💾 <i>Output is too long. Sending as file...</i>")
+			_, _ = m.Client.EditMessageContext(ctx, ChatRefID(m.ChatID), m.ID, "💾 <i>Output is too long. Sending as file...</i>")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		tmpFile, err := os.CreateTemp("", "command_result_*.txt")
 		if err == nil {
 			defer func() { _ = os.Remove(tmpFile.Name()) }()
 			_, _ = tmpFile.WriteString(fileText)
 			_ = tmpFile.Close()
-			_, err = m.Client.SendFile(ChatRefID(m.ChatID), tmpFile.Name(), "💾 Output too long")
+			_, err = m.Client.SendFileContext(ctx, ChatRefID(m.ChatID), tmpFile.Name(), "💾 Output too long")
 			return err
 		}
-		_, err = m.Client.SendFile(ChatRefID(m.ChatID), []byte(fileText), "💾 Output too long")
+		_, err = m.Client.SendFileContext(ctx, ChatRefID(m.ChatID), []byte(fileText), "💾 Output too long")
 		return err
 	}
 	if m.Out {
-		_, err := m.Client.EditMessage(ChatRefID(m.ChatID), m.ID, text, opts...)
+		_, err := m.Client.EditMessageContext(ctx, ChatRefID(m.ChatID), m.ID, text, opts...)
 		return err
 	}
-	_, err := m.Client.SendMessageWithOptions(ChatRefID(m.ChatID), text, opts...)
+	_, err := m.Client.SendMessageWithOptionsContext(ctx, ChatRefID(m.ChatID), text, opts...)
 	return err
 }
 
@@ -700,7 +750,18 @@ func splitText(text string, length int) []string {
 }
 
 func (c *CustomTelegramClient) GetMessage(chat ChatRef, msgID int64) (*Message, error) {
-	peer, err := c.ResolvePeerRef(chat)
+	return c.GetMessageContext(nil, chat, msgID)
+}
+
+func (c *CustomTelegramClient) GetMessageContext(ctx context.Context, chat ChatRef, msgID int64) (*Message, error) {
+	if c.rawAPI == nil {
+		return nil, ErrClientNotInitialized
+	}
+	ctx = c.rpcContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	peer, err := c.ResolvePeerRefContext(ctx, chat)
 	if err != nil {
 		return nil, err
 	}
@@ -711,12 +772,12 @@ func (c *CustomTelegramClient) GetMessage(chat ChatRef, msgID int64) (*Message, 
 			ChannelID:  peerChan.ChannelID,
 			AccessHash: peerChan.AccessHash,
 		}
-		res, err = c.rawAPI.ChannelsGetMessages(c.ctx, &tg.ChannelsGetMessagesRequest{
+		res, err = c.rawAPI.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
 			Channel: inputChannel,
 			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: int(msgID)}},
 		})
 	} else {
-		res, err = c.rawAPI.MessagesGetMessages(c.ctx, []tg.InputMessageClass{&tg.InputMessageID{ID: int(msgID)}})
+		res, err = c.rawAPI.MessagesGetMessages(ctx, []tg.InputMessageClass{&tg.InputMessageID{ID: int(msgID)}})
 	}
 
 	if err != nil {
@@ -750,12 +811,24 @@ func (c *CustomTelegramClient) GetMessage(chat ChatRef, msgID int64) (*Message, 
 	}
 
 	hMsg := c.buildMessageFromTG(tgMsg)
+	hMsg.ctx = ctx
 
 	return hMsg, nil
 }
 
 // DownloadMedia downloads the document media of a message into a writer.
 func (c *CustomTelegramClient) DownloadMedia(media tg.MessageMediaClass, writer io.Writer) error {
+	return c.DownloadMediaContext(nil, media, writer)
+}
+
+func (c *CustomTelegramClient) DownloadMediaContext(ctx context.Context, media tg.MessageMediaClass, writer io.Writer) error {
+	if c.rawAPI == nil {
+		return ErrClientNotInitialized
+	}
+	ctx = c.rpcContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	mediaDoc, ok := media.(*tg.MessageMediaDocument)
 	if !ok {
 		return fmt.Errorf("media is not a document")
@@ -771,7 +844,7 @@ func (c *CustomTelegramClient) DownloadMedia(media tg.MessageMediaClass, writer 
 		FileReference: doc.FileReference,
 	}
 
-	_, err := downloader.NewDownloader().Download(c.rawAPI, loc).Stream(c.ctx, writer)
+	_, err := downloader.NewDownloader().Download(c.rawAPI, loc).Stream(ctx, writer)
 	return err
 }
 

@@ -40,6 +40,45 @@ func CensorSensitive(text string, extras ...string) string {
 	return text
 }
 
+func CensorSensitiveWithPhones(text string, phones []string, extras ...string) string {
+	text = CensorSensitive(text, extras...)
+	for _, phone := range phones {
+		var digits strings.Builder
+		for _, r := range phone {
+			if r >= '0' && r <= '9' {
+				digits.WriteRune(r)
+			}
+		}
+		if digits.Len() < 7 {
+			continue
+		}
+
+		parts := strings.Split(digits.String(), "")
+		matches := regexp.MustCompile(`\+?`+strings.Join(parts, `[\t ().-]*`)).FindAllStringIndex(text, -1)
+		if len(matches) == 0 {
+			continue
+		}
+
+		var censored strings.Builder
+		last := 0
+		for _, match := range matches {
+			start, end := match[0], match[1]
+			if (start > 0 && text[start-1] >= '0' && text[start-1] <= '9') ||
+				(end < len(text) && text[end] >= '0' && text[end] <= '9') {
+				continue
+			}
+			censored.WriteString(text[last:start])
+			censored.WriteString("[REDACTED]")
+			last = end
+		}
+		if last > 0 {
+			censored.WriteString(text[last:])
+			text = censored.String()
+		}
+	}
+	return text
+}
+
 func SecureFile(path string) {
 	if strings.TrimSpace(path) == "" {
 		return

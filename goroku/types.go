@@ -42,6 +42,21 @@ type Message struct {
 	IsForwarded  bool
 	Answered     bool
 	ViaBotID     int64
+	ctx          context.Context
+}
+
+// Context is canceled when dispatcher shutdown begins. Existing handlers
+// remain source-compatible and may opt into cancellation gradually.
+func (m *Message) Context() context.Context {
+	if m != nil {
+		if m.ctx != nil {
+			return m.ctx
+		}
+		if m.Client != nil {
+			return m.Client.rpcContext(nil)
+		}
+	}
+	return context.Background()
 }
 
 func (m *Message) GetChatID() int64 {
@@ -65,6 +80,8 @@ type RegisteredWatcher struct {
 	Handler    WatcherHandler
 	ModuleName string
 	Meta       CommandMeta
+	ownerKey   string
+	lease      *moduleLease
 }
 
 type Module interface {
@@ -176,6 +193,8 @@ type CustomTelegramClient struct {
 	FloodWaitLock      bool
 
 	runDone chan struct{}
+	runMu   sync.Mutex
+	runErr  error
 }
 
 // TGIDValue returns the Telegram user ID associated with the client.
@@ -226,36 +245,52 @@ func (c *CustomTelegramClient) GetMe() (any, error) {
 }
 
 func (c *CustomTelegramClient) Disconnect() error {
-	if c.cancel != nil {
-		c.cancel()
-	}
-	if c.runDone != nil {
-		select {
-		case <-c.runDone:
-		case <-time.After(5 * time.Second):
-			L().Warn("client run did not finish in time", zap.Int64("tg_id", c.TGID))
-		}
-	}
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return c.Close(ctx)
 }
 
-// GracefulStop stops the client gracefully within the given context timeout.
-func (c *CustomTelegramClient) GracefulStop(ctx context.Context) {
-	done := make(chan struct{})
-	go func() {
-		_ = c.Disconnect()
-		close(done)
-	}()
-
+// Close cancels client.Run and waits without creating a wrapper goroutine.
+func (c *CustomTelegramClient) Close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.runMu.Lock()
+	cancel := c.cancel
+	done := c.runDone
+	c.runMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done == nil {
+		return nil
+	}
 	select {
 	case <-done:
-		L().Info("Client stopped gracefully", zap.Int64("tg_id", c.TGID))
-	case <-ctx.Done():
-		L().Warn("Client stop timeout, forcing shutdown", zap.Int64("tg_id", c.TGID))
-		if c.cancel != nil {
-			c.cancel()
-		}
+		c.runMu.Lock()
+		err := c.runErr
+		c.runMu.Unlock()
+		return err
+	default:
 	}
+	select {
+	case <-done:
+		c.runMu.Lock()
+		err := c.runErr
+		c.runMu.Unlock()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// GracefulStop preserves the historical logging wrapper.
+func (c *CustomTelegramClient) GracefulStop(ctx context.Context) {
+	if err := c.Close(ctx); err != nil {
+		L().Warn("Client stop failed", zap.Int64("tg_id", c.TGID), zap.Error(err))
+		return
+	}
+	L().Info("Client stopped gracefully", zap.Int64("tg_id", c.TGID))
 }
 
 // AnimateMessage cycles through frames in a Telegram message.
@@ -296,7 +331,7 @@ func (msg *Message) GetReplyMessage() (*Message, error) {
 	if msg.ReplyToMsgID == 0 {
 		return nil, ErrNoReply
 	}
-	return msg.Client.GetMessage(ChatRefID(msg.ChatID), msg.ReplyToMsgID)
+	return msg.Client.GetMessageContext(msg.Context(), ChatRefID(msg.ChatID), msg.ReplyToMsgID)
 }
 
 type MsgOption func(req any)
@@ -317,7 +352,7 @@ func (m *Message) Reply(text string, opts ...MsgOption) error {
 	if m.Client == nil {
 		return fmt.Errorf("no client attached")
 	}
-	_, err := m.Client.SendMessageWithOptions(ChatRefID(m.ChatID), text, opts...)
+	_, err := m.Client.SendMessageWithOptionsContext(m.Context(), ChatRefID(m.ChatID), text, opts...)
 	return err
 }
 
@@ -325,35 +360,15 @@ func (m *Message) Edit(text string, opts ...MsgOption) error {
 	if m.Client == nil {
 		return fmt.Errorf("no client attached")
 	}
-	_, err := m.Client.EditMessage(ChatRefID(m.ChatID), m.ID, text, opts...)
+	_, err := m.Client.EditMessageContext(m.Context(), ChatRefID(m.ChatID), m.ID, text, opts...)
 	return err
 }
 
 func (m *Message) Delete() error {
-	if m.Client == nil || m.Client.rawAPI == nil {
+	if m.Client == nil {
 		return fmt.Errorf("no client attached")
 	}
-	peer, err := m.Client.ResolvePeerRef(ChatRefID(m.ChatID))
-	if err != nil {
-		return err
-	}
-	if ch, ok := peer.(*tg.InputPeerChannel); ok {
-		_, err = m.Client.rawAPI.ChannelsDeleteMessages(m.Client.ctx,
-			&tg.ChannelsDeleteMessagesRequest{
-				Channel: &tg.InputChannel{
-					ChannelID:  ch.ChannelID,
-					AccessHash: ch.AccessHash,
-				},
-				ID: []int{int(m.ID)},
-			})
-		return err
-	}
-	_, err = m.Client.rawAPI.MessagesDeleteMessages(m.Client.ctx,
-		&tg.MessagesDeleteMessagesRequest{
-			Revoke: true,
-			ID:     []int{int(m.ID)},
-		})
-	return err
+	return m.Client.DeleteMessageContext(m.Context(), ChatRefID(m.ChatID), m.ID)
 }
 
 func (m *Message) IsOut() bool {

@@ -43,8 +43,7 @@ func (m *GorokuSecurity) Init(client *goroku.CustomTelegramClient, db *goroku.Da
 }
 
 func (m *GorokuSecurity) ClientReady() error {
-	m.applyGroupsToManager()
-	return nil
+	return m.applyGroupsToManager()
 }
 func (m *GorokuSecurity) OnUnload() error { return nil }
 func (m *GorokuSecurity) OnDlmod() error  { return nil }
@@ -98,39 +97,52 @@ type securityGroup struct {
 	Permissions []map[string]any `json:"permissions"`
 }
 
-func (m *GorokuSecurity) loadGroups() map[string]securityGroup {
-	raw, _ := m.db.Get("goroku.security", "sgroups", nil)
+func (m *GorokuSecurity) loadGroups() (map[string]securityGroup, error) {
+	raw, err := m.db.Get("goroku.security", "sgroups", nil)
+	if err != nil {
+		return nil, err
+	}
 	if raw == nil {
-		raw, _ = m.db.Get("goroku.security", "security_groups", map[string]any{})
+		raw, err = m.db.Get("goroku.security", "security_groups", map[string]any{})
+		if err != nil {
+			return nil, err
+		}
 	}
 	result := make(map[string]securityGroup)
 
 	rawMap, ok := raw.(map[string]any)
 	if !ok {
-		return result
+		return nil, fmt.Errorf("goroku.security sgroups has type %T, want map", raw)
 	}
 
 	for name, val := range rawMap {
 		bytes, err := json.Marshal(val)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("marshal security group %q: %w", name, err)
 		}
 		var sg securityGroup
 		if err := json.Unmarshal(bytes, &sg); err != nil {
-			continue
+			return nil, fmt.Errorf("decode security group %q: %w", name, err)
 		}
 		result[name] = sg
 	}
-	return result
+	return result, nil
 }
 
-func (m *GorokuSecurity) saveGroups(groups map[string]securityGroup) {
-	out := make(map[string]any, len(groups))
-	for k, v := range groups {
-		out[k] = v
+func (m *GorokuSecurity) saveGroups(groups map[string]securityGroup) error {
+	sm := m.getSecurityManager()
+	if sm == nil {
+		out := make(map[string]any, len(groups))
+		for k, v := range groups {
+			out[k] = v
+		}
+		return m.db.Set("goroku.security", "sgroups", out)
 	}
-	m.db.Set("goroku.security", "sgroups", out)
-	m.applyGroupsToManager()
+	smGroups := make(map[string]goroku.SecurityGroup, len(groups))
+	for name, group := range groups {
+		smGroups[name] = goroku.SecurityGroup{Name: name, Users: group.Users, Permissions: group.Permissions}
+	}
+	return sm.ApplySgroups(smGroups)
 }
 
 func (m *GorokuSecurity) getOwnerList() *goroku.PointerList[int64] {
@@ -246,18 +258,20 @@ func pointerContainsID(pl *goroku.PointerList[int64], id int64) bool {
 	return false
 }
 
-func pointerRemoveID(pl *goroku.PointerList[int64], id int64) bool {
+func pointerRemoveID(pl *goroku.PointerList[int64], id int64) (bool, error) {
 	if pl == nil {
-		return false
+		return false, nil
 	}
 	slice := pl.ToSlice()
 	for i, item := range slice {
 		if item == id {
-			pl.Remove(i)
-			return true
+			if err := pl.Remove(i); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func interfaceToInt64(v any) int64 {
@@ -357,12 +371,12 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 
 	im := m.client.GorokuInline
 	if im == nil || !im.IsComplete() {
-		ol := m.getOwnerList()
-		if ol != nil && !pointerContainsID(ol, user.ID) {
-			ol.Append(user.ID)
+		sm := m.getSecurityManager()
+		if sm == nil {
+			return fmt.Errorf("security manager not available")
 		}
-		if sm := m.getSecurityManager(); sm != nil {
-			sm.ReloadRights()
+		if _, err := sm.AddOwner(user.ID); err != nil {
+			return err
 		}
 		template := m.getTrans("owner_added", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> добавлен в группу</b> <code>owner</code>")
 		return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), utils.EscapeHTML(user.Name)))
@@ -382,12 +396,12 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 			{
 				Text: m.getTrans("confirm", "👑 Подтвердить"),
 				Handler: func(call inline.CallbackQuery) error {
-					ol := m.getOwnerList()
-					if ol != nil && !pointerContainsID(ol, user.ID) {
-						ol.Append(user.ID)
+					sm := m.getSecurityManager()
+					if sm == nil {
+						return fmt.Errorf("security manager not available")
 					}
-					if sm := m.getSecurityManager(); sm != nil {
-						sm.ReloadRights()
+					if _, err := sm.AddOwner(user.ID); err != nil {
+						return err
 					}
 
 					addedTemplate := m.getTrans("owner_added", "добавлен в группу owner")
@@ -417,7 +431,9 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 									}
 									if !alreadyIn {
 										list = append(list, user.ID)
-										m.db.SetInt64Slice("goroku.main", "nonickusers", list)
+										if err := m.db.SetInt64Slice("goroku.main", "nonickusers", list); err != nil {
+											return err
+										}
 									}
 
 									nnTemplate := m.getTrans("user_nn", "NoNick для ... включен")
@@ -447,9 +463,12 @@ func (m *GorokuSecurity) DelownerCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</tg-emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
-	pointerRemoveID(m.getOwnerList(), user.ID)
-	if sm := m.getSecurityManager(); sm != nil {
-		sm.ReloadRights()
+	sm := m.getSecurityManager()
+	if sm == nil {
+		return fmt.Errorf("security manager not available")
+	}
+	if _, err := sm.RemoveOwner(user.ID); err != nil {
+		return err
 	}
 	template := m.getTrans("owner_removed", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> удален из группы</b> <code>owner</code>")
 	return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), utils.EscapeHTML(user.Name)))
@@ -496,7 +515,9 @@ func (m *GorokuSecurity) AddsudoCmd(msg *goroku.Message) error {
 	}
 	if !alreadyPresent {
 		sudoList = append(sudoList, user.ID)
-		m.db.SetInt64Slice("goroku.security", "sudo", sudoList)
+		if err := m.db.SetInt64Slice("goroku.security", "sudo", sudoList); err != nil {
+			return err
+		}
 		if sm := m.getSecurityManager(); sm != nil {
 			sm.ReloadRights()
 		}
@@ -527,7 +548,9 @@ func (m *GorokuSecurity) DelsudoCmd(msg *goroku.Message) error {
 	}
 	if foundIdx != -1 {
 		sudoList := append(raw[:foundIdx], raw[foundIdx+1:]...)
-		m.db.SetInt64Slice("goroku.security", "sudo", sudoList)
+		if err := m.db.SetInt64Slice("goroku.security", "sudo", sudoList); err != nil {
+			return err
+		}
 		if sm := m.getSecurityManager(); sm != nil {
 			sm.ReloadRights()
 		}
@@ -619,7 +642,10 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 			return msg.Answer(m.getTrans("no_target", "Не указана цель правила безопасности"))
 		}
 		targetName = args[1]
-		groups := m.loadGroups()
+		groups, err := m.loadGroups()
+		if err != nil {
+			return err
+		}
 		if _, exists := groups[targetName]; !exists {
 			template := m.getTrans("sgroup_not_found", "Группа безопасности {0} не найдена")
 			return msg.Answer(formatTrans(template, targetName))
@@ -811,7 +837,10 @@ func (m *GorokuSecurity) TtsecCmd(msg *goroku.Message) error {
 		groupName := args[1]
 		ruleName := args[2]
 
-		groups := m.loadGroups()
+		groups, err := m.loadGroups()
+		if err != nil {
+			return err
+		}
 		group, exists := groups[groupName]
 		if !exists {
 			template := m.getTrans("sgroup_not_found", "Группа безопасности {0} не найдена")
@@ -831,7 +860,9 @@ func (m *GorokuSecurity) TtsecCmd(msg *goroku.Message) error {
 		}
 
 		groups[groupName] = group
-		m.saveGroups(groups)
+		if err := m.saveGroups(groups); err != nil {
+			return err
+		}
 
 		template := m.getTrans("rule_removed", "Удалено правило безопасности для...")
 		return msg.Answer(formatTrans(template, "", utils.EscapeHTML(groupName), utils.EscapeHTML(ruleName)))
@@ -893,7 +924,10 @@ func (m *GorokuSecurity) TtsecCmd(msg *goroku.Message) error {
 	}
 
 	ruleName := args[len(args)-1]
-	removed := sm.RemoveRule(targetType, targetID, ruleName)
+	removed, err := sm.RemoveRule(targetType, targetID, ruleName)
+	if err != nil {
+		return err
+	}
 	if removed {
 		template := m.getTrans("rule_removed", "Удалено правило безопасности...")
 		return msg.Answer(formatTrans(template, targetURL, utils.EscapeHTML(targetName), utils.EscapeHTML(ruleName)))
@@ -909,7 +943,10 @@ func (m *GorokuSecurity) NewsgroupCmd(msg *goroku.Message) error {
 	}
 
 	name := strings.TrimSpace(parts[1])
-	groups := m.loadGroups()
+	groups, err := m.loadGroups()
+	if err != nil {
+		return err
+	}
 
 	if _, exists := groups[name]; exists {
 		template := m.getTrans("sgroup_already_exists", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>уже существует</b>")
@@ -920,14 +957,19 @@ func (m *GorokuSecurity) NewsgroupCmd(msg *goroku.Message) error {
 		Users:       []int64{},
 		Permissions: []map[string]any{},
 	}
-	m.saveGroups(groups)
+	if err := m.saveGroups(groups); err != nil {
+		return err
+	}
 
 	template := m.getTrans("created_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Создана группа безопасности</b> <code>{0}</code>")
 	return msg.Answer(formatTrans(template, name))
 }
 
 func (m *GorokuSecurity) SgroupsCmd(msg *goroku.Message) error {
-	groups := m.loadGroups()
+	groups, err := m.loadGroups()
+	if err != nil {
+		return err
+	}
 
 	if len(groups) == 0 {
 		return msg.Answer(m.getTrans("no_rules", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Нет таргетированных правил безопасности</b>"))
@@ -973,7 +1015,10 @@ func (m *GorokuSecurity) SgroupaddCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
 	}
 
-	groups := m.loadGroups()
+	groups, err := m.loadGroups()
+	if err != nil {
+		return err
+	}
 	sg, exists := groups[groupName]
 	if !exists {
 		template := m.getTrans("sgroup_not_found", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>не найдена</b>")
@@ -989,7 +1034,9 @@ func (m *GorokuSecurity) SgroupaddCmd(msg *goroku.Message) error {
 
 	sg.Users = append(sg.Users, targetUserID)
 	groups[groupName] = sg
-	m.saveGroups(groups)
+	if err := m.saveGroups(groups); err != nil {
+		return err
+	}
 
 	template := m.getTrans("user_added_to_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Пользователь</b> <code>{0}</code> <b>добавлен в группу безопасности</b> <code>{1}</code>")
 	return msg.Answer(formatTrans(template, targetUserName, groupName))
@@ -1024,7 +1071,10 @@ func (m *GorokuSecurity) SgroupdelCmd(msg *goroku.Message) error {
 		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
 	}
 
-	groups := m.loadGroups()
+	groups, err := m.loadGroups()
+	if err != nil {
+		return err
+	}
 	sg, exists := groups[groupName]
 	if !exists {
 		template := m.getTrans("sgroup_not_found", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>не найдена</b>")
@@ -1046,18 +1096,23 @@ func (m *GorokuSecurity) SgroupdelCmd(msg *goroku.Message) error {
 
 	sg.Users = append(sg.Users[:foundIdx], sg.Users[foundIdx+1:]...)
 	groups[groupName] = sg
-	m.saveGroups(groups)
+	if err := m.saveGroups(groups); err != nil {
+		return err
+	}
 
 	template := m.getTrans("user_removed_from_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Пользователь</b> <code>{0}</code> <b>удален из группы</b> <code>{1}</code>")
 	return msg.Answer(formatTrans(template, targetUserName, groupName))
 }
 
-func (m *GorokuSecurity) applyGroupsToManager() {
+func (m *GorokuSecurity) applyGroupsToManager() error {
 	sm := m.getSecurityManager()
 	if sm == nil {
-		return
+		return nil
 	}
-	groups := m.loadGroups()
+	groups, err := m.loadGroups()
+	if err != nil {
+		return err
+	}
 	smGroups := make(map[string]goroku.SecurityGroup)
 	for name, g := range groups {
 		smGroups[name] = goroku.SecurityGroup{
@@ -1066,7 +1121,7 @@ func (m *GorokuSecurity) applyGroupsToManager() {
 			Permissions: g.Permissions,
 		}
 	}
-	sm.ApplySgroups(smGroups)
+	return sm.ApplySgroups(smGroups)
 }
 
 func (m *GorokuSecurity) SgroupCmd(msg *goroku.Message) error {
@@ -1076,7 +1131,10 @@ func (m *GorokuSecurity) SgroupCmd(msg *goroku.Message) error {
 	}
 
 	name := strings.TrimSpace(parts[1])
-	groups := m.loadGroups()
+	groups, err := m.loadGroups()
+	if err != nil {
+		return err
+	}
 
 	sg, exists := groups[name]
 	if !exists {
@@ -1138,7 +1196,10 @@ func (m *GorokuSecurity) DelsgroupCmd(msg *goroku.Message) error {
 	}
 
 	name := strings.TrimSpace(parts[1])
-	groups := m.loadGroups()
+	groups, err := m.loadGroups()
+	if err != nil {
+		return err
+	}
 
 	if _, exists := groups[name]; !exists {
 		template := m.getTrans("sgroup_not_found", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>не найдена</b>")
@@ -1146,7 +1207,9 @@ func (m *GorokuSecurity) DelsgroupCmd(msg *goroku.Message) error {
 	}
 
 	delete(groups, name)
-	m.saveGroups(groups)
+	if err := m.saveGroups(groups); err != nil {
+		return err
+	}
 
 	template := m.getTrans("deleted_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Группа безопасности</b> <code>{0}</code> <b>удалена</b>")
 	return msg.Answer(formatTrans(template, name))
@@ -1232,7 +1295,10 @@ func (m *GorokuSecurity) TsecclrCmd(msg *goroku.Message) error {
 			return msg.Answer(m.getTrans("no_target", "Не указана цель"))
 		}
 		groupName := args[1]
-		groups := m.loadGroups()
+		groups, err := m.loadGroups()
+		if err != nil {
+			return err
+		}
 		group, exists := groups[groupName]
 		if !exists {
 			template := m.getTrans("sgroup_not_found", "Группа безопасности {0} не найдена")
@@ -1241,7 +1307,9 @@ func (m *GorokuSecurity) TsecclrCmd(msg *goroku.Message) error {
 
 		group.Permissions = []map[string]any{}
 		groups[groupName] = group
-		m.saveGroups(groups)
+		if err := m.saveGroups(groups); err != nil {
+			return err
+		}
 
 		template := m.getTrans("rules_removed", "Правила безопасности для... удалены")
 		return msg.Answer(formatTrans(template, "", utils.EscapeHTML(groupName)))
@@ -1298,7 +1366,10 @@ func (m *GorokuSecurity) TsecclrCmd(msg *goroku.Message) error {
 		return msg.Answer("Security manager not available")
 	}
 
-	removed := sm.RemoveRules(targetType, targetID)
+	removed, err := sm.RemoveRules(targetType, targetID)
+	if err != nil {
+		return err
+	}
 	if removed {
 		template := m.getTrans("rules_removed", "Правила безопасности для... удалены")
 		return msg.Answer(formatTrans(template, targetURL, utils.EscapeHTML(targetName)))
@@ -1522,7 +1593,9 @@ func (m *GorokuSecurity) buildMarkupGlobal(isInline bool) [][]inline.Button {
 				} else {
 					newMask |= bit
 				}
-				m.db.SetInt("goroku.security", "bounding_mask", newMask)
+				if err := m.db.SetInt("goroku.security", "bounding_mask", newMask); err != nil {
+					return err
+				}
 				_ = call.Answer("Bounding mask value set!", false)
 
 				im := m.client.GorokuInline
@@ -1582,7 +1655,9 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 				}
 				masks[key] = newMask
 				masks[strings.ToLower(key)] = newMask
-				m.db.SetStringMapInt("goroku.security", "masks", masks)
+				if err := m.db.SetStringMapInt("goroku.security", "masks", masks); err != nil {
+					return err
+				}
 
 				bounding := m.getBoundingMask()
 				if (bounding&bit) == 0 && !hasBit {
@@ -1623,7 +1698,9 @@ func (m *GorokuSecurity) buildMarkupQuerysec() [][]inline.Button {
 				Text: btnText,
 				Handler: func(call inline.CallbackQuery) error {
 					newVal := !allowQuery
-					m.db.SetBool("goroku.security", "allow_inline_query", newVal)
+					if err := m.db.SetBool("goroku.security", "allow_inline_query", newVal); err != nil {
+						return err
+					}
 					_ = call.Answer("Inline query permission set!", false)
 
 					im := m.client.GorokuInline
@@ -1674,7 +1751,10 @@ func (m *GorokuSecurity) listAllRules(msg *goroku.Message) error {
 		lines = append(lines, line)
 	}
 
-	groups := m.loadGroups()
+	groups, err := m.loadGroups()
+	if err != nil {
+		return err
+	}
 	for name, sg := range groups {
 		for _, perm := range sg.Permissions {
 			ruleType, _ := perm["rule_type"].(string)
@@ -1712,7 +1792,10 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 	im := m.client.GorokuInline
 	if im == nil || !im.IsComplete() {
 		if targetType == "sgroup" {
-			groups := m.loadGroups()
+			groups, err := m.loadGroups()
+			if err != nil {
+				return err
+			}
 			sg, ok := groups[targetName]
 			if ok {
 				var expires int64
@@ -1728,12 +1811,16 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 					"entity_url":  "",
 				})
 				groups[targetName] = sg
-				m.saveGroups(groups)
+				if err := m.saveGroups(groups); err != nil {
+					return err
+				}
 			}
 		} else {
 			sm := m.getSecurityManager()
 			if sm != nil {
-				sm.AddRule(targetType, targetID, strings.Split(rule, "/")[0], strings.Split(rule, "/")[1], duration)
+				if err := sm.AddRule(targetType, targetID, strings.Split(rule, "/")[0], strings.Split(rule, "/")[1], duration); err != nil {
+					return err
+				}
 			}
 		}
 		template := m.getTrans("rule_added", "Вы выдали право...")
@@ -1766,7 +1853,10 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 				Text: m.getTrans("confirm", "👑 Подтвердить"),
 				Handler: func(call inline.CallbackQuery) error {
 					if targetType == "sgroup" {
-						groups := m.loadGroups()
+						groups, err := m.loadGroups()
+						if err != nil {
+							return err
+						}
 						sg, ok := groups[targetName]
 						if ok {
 							var expires int64
@@ -1782,7 +1872,9 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 								"entity_url":  "",
 							})
 							groups[targetName] = sg
-							m.saveGroups(groups)
+							if err := m.saveGroups(groups); err != nil {
+								return err
+							}
 						}
 					} else {
 						sm := m.getSecurityManager()
@@ -1811,7 +1903,9 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 								EntityURL:  entityURL,
 							}
 							if targetType == "user" || targetType == "chat" {
-								sm.AddSecurityRule(targetType, newRule)
+								if err := sm.AddSecurityRule(targetType, newRule); err != nil {
+									return err
+								}
 							}
 						}
 					}

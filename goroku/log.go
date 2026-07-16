@@ -2,6 +2,7 @@ package goroku
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -23,13 +24,25 @@ import (
 )
 
 type TelegramLogsHandler struct {
-	mu        sync.Mutex
-	buf       []string
-	client    *CustomTelegramClient
-	logChatID int64
-	stopCh    chan struct{}
-	active    bool
+	mu              sync.Mutex
+	flushMu         sync.Mutex
+	buf             []string
+	client          *CustomTelegramClient
+	logChatID       int64
+	stopCh          chan struct{}
+	done            chan struct{}
+	active          bool
+	closing         bool
+	flushErr        error
+	closeErr        error
+	deliver         func([]string) error
+	previousOutput  io.Writer
+	previousFlags   int
+	previousOwned   bool
+	installedOutput *ownedLogWriter
 }
+
+type ownedLogWriter struct{ io.Writer }
 
 func (h *TelegramLogsHandler) Write(p []byte) (n int, err error) {
 	h.mu.Lock()
@@ -54,34 +67,116 @@ func (h *TelegramLogsHandler) InstallTGLog(client *CustomTelegramClient, logChat
 	h.logChatID = logChatID
 	if !h.active {
 		h.active = true
+		h.closing = false
+		h.flushErr = nil
+		h.closeErr = nil
 		h.stopCh = make(chan struct{})
-		go h.startPolling()
+		h.done = make(chan struct{})
+		go h.startPolling(h.stopCh, h.done)
 	}
 }
 
-func (h *TelegramLogsHandler) startPolling() {
+func (h *TelegramLogsHandler) startPolling(stop <-chan struct{}, done chan<- struct{}) {
 	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
+	defer func() {
+		ticker.Stop()
+		h.mu.Lock()
+		h.active = false
+		h.closing = false
+		h.mu.Unlock()
+		close(done)
+	}()
 	for {
 		select {
 		case <-ticker.C:
-			h.flush()
-		case <-h.stopCh:
-			h.flush()
+			_ = h.flush()
+		case <-stop:
+			err := h.flush()
+			h.mu.Lock()
+			h.closeErr = err
+			h.mu.Unlock()
 			return
 		}
 	}
 }
 
-func (h *TelegramLogsHandler) flush() {
-	h.mu.Lock()
-	if len(h.buf) == 0 || h.client == nil || h.logChatID == 0 {
-		h.mu.Unlock()
-		return
+// Close stops polling, performs its final flush, and waits for completion.
+func (h *TelegramLogsHandler) Close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	records := h.buf
-	h.buf = nil
+	h.mu.Lock()
+	if !h.active {
+		err := h.closeErr
+		h.mu.Unlock()
+		return err
+	}
+	if !h.closing {
+		h.closing = true
+		close(h.stopCh)
+	}
+	done := h.done
 	h.mu.Unlock()
+	select {
+	case <-done:
+		h.mu.Lock()
+		err := h.closeErr
+		h.mu.Unlock()
+		return err
+	default:
+	}
+	select {
+	case <-done:
+		h.mu.Lock()
+		err := h.closeErr
+		h.mu.Unlock()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *TelegramLogsHandler) flush() error {
+	h.flushMu.Lock()
+	defer h.flushMu.Unlock()
+	h.mu.Lock()
+	if h.flushErr != nil {
+		err := h.flushErr
+		h.mu.Unlock()
+		return err
+	}
+	if len(h.buf) == 0 {
+		h.mu.Unlock()
+		return nil
+	}
+	records := append([]string(nil), h.buf...)
+	deliver := h.deliver
+	h.mu.Unlock()
+	if deliver == nil {
+		deliver = h.deliverRecords
+	}
+	if err := deliver(records); err != nil {
+		h.mu.Lock()
+		h.flushErr = err
+		h.mu.Unlock()
+		return err
+	}
+	h.mu.Lock()
+	if len(h.buf) >= len(records) {
+		h.buf = h.buf[len(records):]
+	}
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *TelegramLogsHandler) deliverRecords(records []string) error {
+	h.mu.Lock()
+	client := h.client
+	logChatID := h.logChatID
+	h.mu.Unlock()
+	if client == nil || logChatID == 0 {
+		return fmt.Errorf("Telegram log destination is not configured")
+	}
 
 	var chunks []string
 	var current strings.Builder
@@ -96,9 +191,9 @@ func (h *TelegramLogsHandler) flush() {
 		chunks = append(chunks, current.String())
 	}
 
-	peer, err := h.client.ResolvePeer(h.logChatID)
+	peer, err := client.ResolvePeer(logChatID)
 	if err != nil {
-		cid := h.logChatID
+		cid := logChatID
 		if cid < -1000000000000 {
 			cid = -cid - 1000000000000
 		} else if cid < 0 {
@@ -109,8 +204,13 @@ func (h *TelegramLogsHandler) flush() {
 
 	// Retrieve "Logs" topic ID if available from the database cache
 	var topicID int64
-	if h.client.GorokuDB != nil {
-		forumsCacheVal, _ := h.client.GorokuDB.Get("goroku.forums", "forums_cache", nil)
+	if client.GorokuDB != nil {
+		forumsCacheVal, readErr := client.GorokuDB.Get("goroku.forums", "forums_cache", nil)
+		if readErr != nil {
+			// Telegram logging cannot return this error and logging through the
+			// standard logger here would feed this handler recursively.
+			L().Warn("Log topic lookup failed; sending without a topic", zap.Error(readErr))
+		}
 		if forumsCache, ok := forumsCacheVal.(map[string]any); ok {
 			if subCacheVal, ok := forumsCache["goroku-userbot"]; ok {
 				if subCache, ok := subCacheVal.(map[string]any); ok {
@@ -131,14 +231,14 @@ func (h *TelegramLogsHandler) flush() {
 
 	// Route logs through the helper inline bot if it is complete and ready
 	var botClient *tgbotapi.BotAPI
-	if h.client.GorokuInline != nil {
-		if h.client.GorokuInline.IsComplete() {
-			botClient = h.client.GorokuInline.GetBotAPI()
+	if client.GorokuInline != nil {
+		if client.GorokuInline.IsComplete() {
+			botClient = client.GorokuInline.GetBotAPI()
 		}
 	}
 
 	if botClient != nil {
-		targetBotChatID := h.client.ToBotAPIChatID(h.logChatID)
+		targetBotChatID := client.ToBotAPIChatID(logChatID)
 		if len(chunks) > 5 {
 			allText := strings.Join(records, "")
 			fileBytes := tgbotapi.FileBytes{Name: "goroku-logs.txt", Bytes: []byte(allText)}
@@ -146,17 +246,19 @@ func (h *TelegramLogsHandler) flush() {
 			if err != nil {
 				L().Info("Failed to send logs file via bot: {0}", zap.Any("arg0", err))
 			}
-			return
+			return err
 		}
 
+		var sendErrs []error
 		for _, chunk := range chunks {
 			msgText := fmt.Sprintf("<code>%s</code>", html.EscapeString(chunk))
 			_, err = SendMessageWithTopic(botClient, targetBotChatID, msgText, int(topicID))
 			if err != nil {
 				L().Info("Failed to send logs message via bot: {0}", zap.Any("arg0", err))
+				sendErrs = append(sendErrs, err)
 			}
 		}
-		return
+		return errors.Join(sendErrs...)
 	}
 
 	var replyTo tg.InputReplyToClass
@@ -170,10 +272,13 @@ func (h *TelegramLogsHandler) flush() {
 
 	if len(chunks) > 5 {
 		allText := strings.Join(records, "")
-		up := uploader.NewUploader(h.client.rawAPI)
-		inputFile, err := up.FromBytes(h.client.ctx, "goroku-logs.txt", []byte(allText))
+		if client.rawAPI == nil {
+			return ErrClientNotInitialized
+		}
+		up := uploader.NewUploader(client.rawAPI)
+		inputFile, err := up.FromBytes(client.ctx, "goroku-logs.txt", []byte(allText))
 		if err == nil {
-			_, err = h.client.rawAPI.MessagesSendMedia(h.client.ctx, &tg.MessagesSendMediaRequest{
+			_, err = client.rawAPI.MessagesSendMedia(client.ctx, &tg.MessagesSendMediaRequest{
 				Peer: peer,
 				Media: &tg.InputMediaUploadedDocument{
 					File:     inputFile,
@@ -192,13 +297,17 @@ func (h *TelegramLogsHandler) flush() {
 		} else {
 			L().Info("Failed to upload logs file: {0}", zap.Any("arg0", err))
 		}
-		return
+		return err
 	}
 
+	if client.rawAPI == nil {
+		return ErrClientNotInitialized
+	}
+	var sendErrs []error
 	for _, chunk := range chunks {
 		msg := fmt.Sprintf("<code>%s</code>", chunk)
 		plainText, entities := parseHTML(msg)
-		_, err := h.client.rawAPI.MessagesSendMessage(h.client.ctx, &tg.MessagesSendMessageRequest{
+		_, err := client.rawAPI.MessagesSendMessage(client.ctx, &tg.MessagesSendMessageRequest{
 			Peer:     peer,
 			Message:  plainText,
 			Entities: entities,
@@ -207,8 +316,10 @@ func (h *TelegramLogsHandler) flush() {
 		})
 		if err != nil {
 			L().Info("Failed to send logs message: {0}", zap.Any("arg0", err))
+			sendErrs = append(sendErrs, err)
 		}
 	}
+	return errors.Join(sendErrs...)
 }
 
 func (h *TelegramLogsHandler) Dump() []string {
@@ -299,9 +410,12 @@ func (cw *ColoredStdoutWriter) Write(p []byte) (n int, err error) {
 	return cw.w.Write(p)
 }
 
-var TGLogHandler *TelegramLogsHandler
+var (
+	TGLogHandler *TelegramLogsHandler
+	loggingMu    sync.Mutex
+)
 
-func InitLogging() {
+func InitLogging() *TelegramLogsHandler {
 	InitZapLogging()
 
 	fileWriter := &lumberjack.Logger{
@@ -311,13 +425,39 @@ func InitLogging() {
 		LocalTime:  true,
 	}
 
-	TGLogHandler = &TelegramLogsHandler{
-		buf: make([]string, 0),
-	}
+	handler := &TelegramLogsHandler{buf: make([]string, 0)}
 
 	coloredStdout := &ColoredStdoutWriter{w: os.Stdout}
-	log.SetOutput(io.MultiWriter(coloredStdout, fileWriter, TGLogHandler))
+	loggingMu.Lock()
+	handler.previousOutput = log.Writer()
+	handler.previousFlags = log.Flags()
+	_, handler.previousOwned = handler.previousOutput.(*ownedLogWriter)
+	handler.installedOutput = &ownedLogWriter{Writer: io.MultiWriter(coloredStdout, fileWriter, handler)}
+	TGLogHandler = handler
+	log.SetOutput(handler.installedOutput)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	loggingMu.Unlock()
+	return handler
+}
+
+func releaseLogging(handler *TelegramLogsHandler) {
+	if handler == nil {
+		return
+	}
+	loggingMu.Lock()
+	if TGLogHandler == handler {
+		TGLogHandler = nil
+		if log.Writer() == handler.installedOutput {
+			if handler.previousOwned {
+				log.SetOutput(os.Stderr)
+				log.SetFlags(log.LstdFlags)
+			} else {
+				log.SetOutput(handler.previousOutput)
+				log.SetFlags(handler.previousFlags)
+			}
+		}
+	}
+	loggingMu.Unlock()
 }
 
 var cleanLogRegex = regexp.MustCompile(`(?i)(Failed to fetch updates|Sleep)`)

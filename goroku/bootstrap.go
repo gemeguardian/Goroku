@@ -5,13 +5,14 @@ import (
 	cryptoRand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -58,6 +59,7 @@ type Goroku struct {
 	QRLogin     bool
 	NoAuth      bool
 	Sandbox     bool
+	SSHTunnel   bool
 	ProxyHost   string
 	ProxyPort   int
 	ProxySecret string
@@ -66,55 +68,570 @@ type Goroku struct {
 	DBs         []*Database
 	Loaders     []*Modules
 	Web         *web.WebCore
+	TGLogs      *TelegramLogsHandler
+
+	// ShutdownTimeout bounds how long Run waits for the shared teardown worker.
+	// The worker continues safely if external code ignores cancellation.
+	ShutdownTimeout time.Duration
+
+	lifecycleMu      sync.Mutex
+	shuttingDown     bool
+	shutdownStarted  bool
+	shutdownDone     chan struct{}
+	shutdownErr      error
+	start            func(context.Context) error
+	requestCh        chan struct{}
+	request          lifecycleRequest
+	runStarted       bool
+	runDone          chan struct{}
+	runErr           error
+	runCancel        context.CancelFunc
+	runContext       context.Context
+	startupActive    bool
+	startupDone      chan struct{}
+	connectClient    func(context.Context, *CustomTelegramClient) error
+	ownsGlobal       bool
+	lifecycleOps     int
+	lifecycleOpsDone chan struct{}
 }
 
+type lifecycleRequest uint8
+
+const (
+	requestNone lifecycleRequest = iota
+	requestStop
+	requestRestart
+)
+
+// ErrRestartRequested tells the process owner to replace or relaunch Goroku
+// after coordinated shutdown has completed.
+var ErrRestartRequested = errors.New("goroku restart requested")
+var ErrAppAlreadyRunning = errors.New("another Goroku application is already running")
+
+const defaultShutdownTimeout = 30 * time.Second
+
 func NewGoroku() *Goroku {
+	opsDone := make(chan struct{})
+	close(opsDone)
 	return &Goroku{
-		Clients: make([]*CustomTelegramClient, 0),
-		DBs:     make([]*Database, 0),
-		Loaders: make([]*Modules, 0),
+		Clients:          make([]*CustomTelegramClient, 0),
+		DBs:              make([]*Database, 0),
+		Loaders:          make([]*Modules, 0),
+		shutdownDone:     make(chan struct{}),
+		requestCh:        make(chan struct{}),
+		runDone:          make(chan struct{}),
+		ShutdownTimeout:  defaultShutdownTimeout,
+		lifecycleOpsDone: opsDone,
 	}
 }
 
-func GetConfigKey(key string) any {
+// NewApp creates the production application. Startup is performed by Run.
+func NewApp(customModules []Module) *Goroku {
+	h := NewGoroku()
+	h.start = func(ctx context.Context) error { return h.startup(ctx, customModules) }
+	return h
+}
+
+// Run starts the application, waits for cancellation or a lifecycle request,
+// and performs coordinated shutdown. A Goroku value can be run only once;
+// concurrent and repeated callers observe the same result.
+func (h *Goroku) Run(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+	h.lifecycleMu.Lock()
+	if h.runStarted {
+		done := h.runDone
+		h.lifecycleMu.Unlock()
+		runCancel()
+		<-done
+		h.lifecycleMu.Lock()
+		err := h.runErr
+		h.lifecycleMu.Unlock()
+		return err
+	}
+	h.runStarted = true
+	if h.shutdownStarted {
+		h.lifecycleMu.Unlock()
+		runCancel()
+		return h.completeRun(h.waitForShutdown())
+	}
+	h.runCancel = runCancel
+	h.runContext = runCtx
+	h.startupActive = true
+	h.startupDone = make(chan struct{})
+	start := h.start
+	h.lifecycleMu.Unlock()
+
+	if !setActiveApp(h) {
+		h.finishStartup()
+		runCancel()
+		return h.completeRun(ErrAppAlreadyRunning)
+	}
+	h.lifecycleMu.Lock()
+	h.ownsGlobal = true
+	h.lifecycleMu.Unlock()
+
+	startResult := make(chan error, 1)
+	go func() {
+		var err error
+		if !h.isShuttingDown() && start != nil {
+			err = start(runCtx)
+		}
+		h.finishStartup()
+		startResult <- err
+	}()
+
+	var result error
+	startupFinished := false
+	select {
+	case result = <-startResult:
+		startupFinished = true
+	case <-runCtx.Done():
+		result = h.requestResult(runCtx.Err())
+	case <-h.requestCh:
+		result = h.requestResult(nil)
+	}
+
+	if startupFinished {
+		result = h.requestResult(result)
+	}
+	if startupFinished && result == nil {
+		select {
+		case <-runCtx.Done():
+			result = h.requestResult(runCtx.Err())
+		case <-h.requestCh:
+			result = h.requestResult(nil)
+		}
+	}
+	shutdownErr := h.waitForShutdown()
+	if result == nil {
+		result = shutdownErr
+	} else if shutdownErr != nil {
+		result = errors.Join(result, shutdownErr)
+	}
+
+	return h.completeRun(result)
+}
+
+func (h *Goroku) requestResult(fallback error) error {
+	h.lifecycleMu.Lock()
+	request := h.request
+	h.lifecycleMu.Unlock()
+	if request == requestNone {
+		return fallback
+	}
+	if request == requestRestart {
+		if fallback != nil && !errors.Is(fallback, context.Canceled) {
+			return errors.Join(fallback, ErrRestartRequested)
+		}
+		return ErrRestartRequested
+	}
+	if errors.Is(fallback, context.Canceled) {
+		return nil
+	}
+	return fallback
+}
+
+func (h *Goroku) finishStartup() {
+	h.lifecycleMu.Lock()
+	if h.startupActive {
+		h.startupActive = false
+		close(h.startupDone)
+	}
+	h.lifecycleMu.Unlock()
+}
+
+func (h *Goroku) completeRun(err error) error {
+	h.lifecycleMu.Lock()
+	h.runCancel = nil
+	h.runContext = nil
+	h.runErr = err
+	select {
+	case <-h.runDone:
+	default:
+		close(h.runDone)
+	}
+	h.lifecycleMu.Unlock()
+	return err
+}
+
+func (h *Goroku) waitForShutdown() error {
+	timeout := h.ShutdownTimeout
+	if timeout <= 0 {
+		timeout = defaultShutdownTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return h.Shutdown(ctx)
+}
+
+func (h *Goroku) isShuttingDown() bool {
+	h.lifecycleMu.Lock()
+	defer h.lifecycleMu.Unlock()
+	return h.shuttingDown
+}
+
+func (h *Goroku) lifecycleContext() context.Context {
+	h.lifecycleMu.Lock()
+	defer h.lifecycleMu.Unlock()
+	if h.runContext != nil {
+		return h.runContext
+	}
+	return context.Background()
+}
+
+func (h *Goroku) beginLifecycleOperation() error {
+	h.lifecycleMu.Lock()
+	defer h.lifecycleMu.Unlock()
+	if h.shuttingDown {
+		return context.Canceled
+	}
+	if h.lifecycleOps == 0 {
+		h.lifecycleOpsDone = make(chan struct{})
+	}
+	h.lifecycleOps++
+	return nil
+}
+
+func (h *Goroku) endLifecycleOperation() {
+	h.lifecycleMu.Lock()
+	h.lifecycleOps--
+	if h.lifecycleOps == 0 {
+		close(h.lifecycleOpsDone)
+	}
+	h.lifecycleMu.Unlock()
+}
+
+// RequestStop asks Run to shut down. The first lifecycle request wins.
+func (h *Goroku) RequestStop() bool { return h.requestLifecycle(requestStop) }
+
+// RequestRestart asks Run to shut down and return ErrRestartRequested.
+func (h *Goroku) RequestRestart() bool { return h.requestLifecycle(requestRestart) }
+
+func (h *Goroku) requestLifecycle(request lifecycleRequest) bool {
+	h.lifecycleMu.Lock()
+	if h.request != requestNone || h.shutdownStarted {
+		h.lifecycleMu.Unlock()
+		return false
+	}
+	h.request = request
+	close(h.requestCh)
+	cancel := h.runCancel
+	h.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return true
+}
+
+// Shutdown stops all runtime components. It is safe to call concurrently or repeatedly.
+func (h *Goroku) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	h.lifecycleMu.Lock()
+	if h.shutdownDone == nil {
+		h.shutdownDone = make(chan struct{})
+	}
+	if !h.shutdownStarted {
+		h.shutdownStarted = true
+		h.shuttingDown = true
+		if h.request == requestNone {
+			h.request = requestStop
+			close(h.requestCh)
+		}
+		go h.finishShutdown()
+	}
+	cancel := h.runCancel
+	done := h.shutdownDone
+	h.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+
+	select {
+	case <-done:
+		h.lifecycleMu.Lock()
+		err := h.shutdownErr
+		h.lifecycleMu.Unlock()
+		return err
+	default:
+	}
+	select {
+	case <-done:
+		h.lifecycleMu.Lock()
+		err := h.shutdownErr
+		h.lifecycleMu.Unlock()
+		return err
+	case <-ctx.Done():
+		h.lifecycleMu.Lock()
+		err := h.shutdownErr
+		h.lifecycleMu.Unlock()
+		return errors.Join(ctx.Err(), err)
+	}
+}
+
+func (h *Goroku) finishShutdown() {
+	h.lifecycleMu.Lock()
+	startupDone := h.startupDone
+	startupActive := h.startupActive
+	h.lifecycleMu.Unlock()
+	if startupActive && startupDone != nil {
+		<-startupDone
+	}
+	h.lifecycleMu.Lock()
+	operationsDone := h.lifecycleOpsDone
+	h.lifecycleMu.Unlock()
+	if operationsDone != nil {
+		<-operationsDone
+	}
+
+	h.lifecycleMu.Lock()
+	webCore := h.Web
+	clients := append([]*CustomTelegramClient(nil), h.Clients...)
+	dbs := append([]*Database(nil), h.DBs...)
+	loaders := append([]*Modules(nil), h.Loaders...)
+	logHandler := h.TGLogs
+	h.lifecycleMu.Unlock()
+
+	var errs []error
+	recordError := func(err error) {
+		if err == nil {
+			return
+		}
+		errs = append(errs, err)
+		h.lifecycleMu.Lock()
+		h.shutdownErr = errors.Join(h.shutdownErr, err)
+		h.lifecycleMu.Unlock()
+	}
+	// A fully stopped HTTP server is the application intake boundary. It is
+	// closed first so no new auth or runtime work can enter during draining.
+	if webCore != nil {
+		if err := webCore.Close(context.Background()); err != nil {
+			recordError(fmt.Errorf("stop web: %w", err))
+		}
+		for _, client := range clients {
+			if client != nil {
+				webCore.UnregisterClient(client.TGIDValue())
+			}
+		}
+	}
+
+	for _, loader := range loaders {
+		if loader != nil {
+			if dispatcher := loader.GetDispatcher(); dispatcher != nil {
+				dispatcher.Stop()
+			}
+		}
+	}
+
+	// Inline callbacks can execute module code and access the database. Drain
+	// them before module unload or database close so a caller timeout cannot
+	// tear dependencies out from under an active inline worker.
+	for _, client := range clients {
+		if client == nil {
+			continue
+		}
+		if inlineManager, ok := client.GorokuInline.(interface{ Close(context.Context) error }); ok {
+			if err := inlineManager.Close(context.Background()); err != nil {
+				recordError(err)
+			}
+		}
+	}
+	for _, loader := range loaders {
+		if loader == nil {
+			continue
+		}
+		if dispatcher := loader.GetDispatcher(); dispatcher != nil {
+			if err := dispatcher.Close(context.Background()); err != nil {
+				recordError(err)
+			}
+		}
+		if err := loader.Shutdown(context.Background()); err != nil {
+			recordError(err)
+		}
+	}
+	if logHandler != nil {
+		if err := logHandler.Close(context.Background()); err != nil {
+			recordError(fmt.Errorf("close Telegram log poller: %w", err))
+		}
+	}
+	if webCore != nil {
+		web.ReleaseInstance(webCore)
+	}
+	for _, client := range clients {
+		if client == nil {
+			continue
+		}
+		if err := client.Close(context.Background()); err != nil {
+			recordError(fmt.Errorf("disconnect Telegram client %d: %w", client.TGIDValue(), err))
+		}
+	}
+	for _, db := range dbs {
+		if db != nil {
+			if err := db.Close(context.Background()); err != nil {
+				recordError(err)
+			}
+		}
+	}
+	if err := L().Sync(); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTTY) {
+		recordError(fmt.Errorf("sync logger: %w", err))
+	}
+	releaseLogging(logHandler)
+	h.lifecycleMu.Lock()
+	if len(errs) == 0 {
+		h.shutdownErr = nil
+	}
+	owned := h.ownsGlobal
+	h.ownsGlobal = false
+	h.lifecycleMu.Unlock()
+	if owned {
+		clearActiveApp(h)
+	}
+	close(h.shutdownDone)
+}
+
+func readConfigLastValid() (map[string]any, bool, string) {
+	path := lastValidPath(ConfigPath)
+	content, err := os.ReadFile(path) //nolint:gosec
+	if err != nil {
+		return nil, false, ""
+	}
+	var data map[string]any
+	if err := json.Unmarshal(content, &data); err != nil || data == nil {
+		return nil, false, ""
+	}
+	return data, true, fileGenerationLabel(path, content)
+}
+
+func repairConfig(data map[string]any) {
+	bytes, err := json.MarshalIndent(data, "", "    ")
+	if err != nil {
+		L().Warn("Config recovery repair marshal failed", zap.String("path", ConfigPath), zap.Error(err))
+		return
+	}
+	if err := writeFileAtomic(ConfigPath, bytes); err != nil && !errors.Is(err, errAtomicWriteCommitted) {
+		L().Warn("Config recovery repair write failed", zap.String("path", ConfigPath), zap.Error(err))
+		return
+	}
+	utils.SecureFile(ConfigPath)
+}
+
+// loadConfigData loads main config.json, recovering from the durable last-valid
+// sibling when the primary is missing or corrupt. A corrupt primary without
+// recovery returns an error so callers do not rewrite from an empty map.
+func loadConfigData() (map[string]any, error) {
 	content, err := os.ReadFile(ConfigPath) //nolint:gosec
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			if data, ok, label := readConfigLastValid(); ok {
+				L().Warn("Config primary missing; recovered from last-valid copy",
+					zap.String("path", ConfigPath),
+					zap.String("backup", lastValidPath(ConfigPath)),
+					zap.String("generation", label))
+				repairConfig(data)
+				return data, nil
+			}
+			return make(map[string]any), nil
+		}
+		// Unreadable primary (permission/IO): attempt last-valid like Database.
+		if data, ok, label := readConfigLastValid(); ok {
+			L().Warn("Config primary unreadable; recovered from last-valid copy",
+				zap.String("path", ConfigPath),
+				zap.String("backup", lastValidPath(ConfigPath)),
+				zap.String("generation", label),
+				zap.Error(err))
+			repairConfig(data)
+			return data, nil
+		}
+		return nil, err
 	}
 	var data map[string]any
 	if err := json.Unmarshal(content, &data); err != nil {
+		if recovered, ok, label := readConfigLastValid(); ok {
+			L().Warn("Config recovered from last-valid copy",
+				zap.String("path", ConfigPath),
+				zap.String("backup", lastValidPath(ConfigPath)),
+				zap.String("generation", label),
+				zap.Error(err))
+			repairConfig(recovered)
+			return recovered, nil
+		}
+		return nil, err
+	}
+	if data == nil {
+		data = make(map[string]any)
+	}
+	return data, nil
+}
+
+func GetConfigKey(key string) any {
+	data, err := loadConfigData()
+	if err != nil || data == nil {
 		return nil
 	}
 	return data[key]
 }
 
 func SaveConfigKey(key string, value any) bool {
-	var data map[string]any
-	content, err := os.ReadFile(ConfigPath) //nolint:gosec
-	if err == nil {
-		if err := json.Unmarshal(content, &data); err != nil {
-			L().Warn("failed to unmarshal config", zap.Error(err))
-		}
-	}
-	if data == nil {
-		data = make(map[string]any)
+	data, err := loadConfigData()
+	if err != nil {
+		L().Warn("failed to load config for save; refusing to clobber", zap.Error(err))
+		return false
 	}
 	data[key] = value
 	bytes, err := json.MarshalIndent(data, "", "    ")
 	if err != nil {
 		return false
 	}
-	err = os.WriteFile(ConfigPath, bytes, 0600)
+	err = writeFileAtomic(ConfigPath, bytes)
+	if err != nil && !errors.Is(err, errAtomicWriteCommitted) {
+		return false
+	}
 	utils.SecureFile(ConfigPath)
-	return err == nil
+	return true
 }
 
-func randomSetupToken() string {
+func randomSetupToken() (string, error) {
 	buf := make([]byte, 24)
 	if _, err := cryptoRand.Read(buf); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
+		return "", err
 	}
-	return hex.EncodeToString(buf)
+	return hex.EncodeToString(buf), nil
+}
+
+func configWebSetupCompleted() bool {
+	switch v := GetConfigKey("web_setup_completed").(type) {
+	case bool:
+		return v
+	case string:
+		s := strings.ToLower(strings.TrimSpace(v))
+		return s == "1" || s == "true" || s == "yes"
+	case float64:
+		return v != 0
+	default:
+		return false
+	}
+}
+
+func hasExistingTelegramSessions(dataRoot string) bool {
+	for _, pattern := range []string{
+		filepath.Join(dataRoot, "goroku-*.session"),
+		filepath.Join(dataRoot, "heroku-*.session"),
+		filepath.Join(dataRoot, "hikka-*.session"),
+	} {
+		files, _ := filepath.Glob(pattern)
+		for _, f := range files {
+			base := filepath.Base(f)
+			if base != "goroku-0.session" && base != "hikka-0.session" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *Goroku) ParseArguments() {
@@ -125,6 +642,7 @@ func (h *Goroku) ParseArguments() {
 	qrLoginFlag := flag.Bool("qr-login", false, "Use QR code login")
 	noAuthFlag := flag.Bool("no-auth", false, "Skip interactive auth")
 	sandboxFlag := flag.Bool("sandbox", false, "Sandbox mode: disable restarts")
+	sshTunnelFlag := flag.Bool("ssh-tunnel", false, "Expose the web panel through an SSH tunnel")
 	dataRootFlag := flag.String("data-root", "", "Custom path to data directory")
 	proxyHostFlag := flag.String("proxy-host", "", "MTProto proxy host")
 	proxyPortFlag := flag.Int("proxy-port", 0, "MTProto proxy port")
@@ -138,6 +656,7 @@ func (h *Goroku) ParseArguments() {
 	h.QRLogin = *qrLoginFlag
 	h.NoAuth = *noAuthFlag
 	h.Sandbox = *sandboxFlag
+	h.SSHTunnel = *sshTunnelFlag
 	h.ProxyHost = *proxyHostFlag
 	h.ProxyPort = *proxyPortFlag
 	h.ProxySecret = *proxySecretFlag
@@ -145,7 +664,6 @@ func (h *Goroku) ParseArguments() {
 
 	if *dataRootFlag != "" {
 		BaseDir = *dataRootFlag
-		BasePath = BaseDir
 		ConfigPath = filepath.Join(BaseDir, "config.json")
 	}
 
@@ -154,9 +672,14 @@ func (h *Goroku) ParseArguments() {
 	}
 }
 
-func Main(customModules []Module) {
-	h := NewGoroku()
+func (h *Goroku) startup(ctx context.Context, customModules []Module) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	h.ParseArguments()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	utils.SecureFile(ConfigPath)
 
 	fmt.Println("🪐 Starting Goroku Go Userbot...")
@@ -203,7 +726,13 @@ func Main(customModules []Module) {
 		h.APIHash = fmt.Sprintf("%v", apiHashVal)
 	}
 
-	InitLogging()
+	h.lifecycleMu.Lock()
+	if h.shuttingDown {
+		h.lifecycleMu.Unlock()
+		return context.Canceled
+	}
+	h.TGLogs = InitLogging()
+	h.lifecycleMu.Unlock()
 
 	zeroSession := filepath.Join(BaseDir, "goroku-0.session")
 	if _, err := os.Stat(zeroSession); err == nil && h.APIID != 0 && h.APIHash != "" {
@@ -212,10 +741,14 @@ func Main(customModules []Module) {
 		client.APIID = h.APIID
 		client.APIHash = h.APIHash
 		client.SessionPath = zeroSession
-		if err := client.Connect(); err == nil {
+		if err := client.ConnectContext(ctx); err == nil {
 			realID := client.TGID
 			_ = client.Disconnect()
-			time.Sleep(500 * time.Millisecond)
+			select {
+			case <-time.After(500 * time.Millisecond):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 			newPath := filepath.Join(BaseDir, fmt.Sprintf("goroku-%d.session", realID))
 			_ = os.Rename(zeroSession, newPath)
 			utils.SecureFile(newPath)
@@ -226,21 +759,33 @@ func Main(customModules []Module) {
 	}
 
 	if !h.DisableWeb {
-		setupToken := strings.TrimSpace(os.Getenv("GOROKU_SETUP_TOKEN"))
-		if setupToken == "" {
-			setupToken = randomSetupToken()
-			_ = os.Setenv("GOROKU_SETUP_TOKEN", setupToken)
+		hasExistingSessions := hasExistingTelegramSessions(BaseDir)
+		setupCompleted := hasExistingSessions || web.SetupCompleted(BaseDir) || configWebSetupCompleted()
+		setupToken := ""
+		if !setupCompleted {
+			setupToken = strings.TrimSpace(os.Getenv("GOROKU_SETUP_TOKEN"))
+			if setupToken == "" {
+				minted, err := randomSetupToken()
+				if err != nil {
+					return fmt.Errorf("mint web setup token: %w", err)
+				}
+				setupToken = minted
+				_ = os.Setenv("GOROKU_SETUP_TOKEN", setupToken)
+			}
+		} else {
+			// Onboarding already done: never re-arm setup from a leftover env token.
+			_ = os.Unsetenv("GOROKU_SETUP_TOKEN")
 		}
 		apiToken := ""
 		if h.APIID != 0 && h.APIHash != "" {
 			apiToken = h.APIHash
 		}
-		h.Web = web.NewWebCore(web.WebConfig{
+		webCore := web.NewWebCore(web.WebConfig{
 			ApiToken:   apiToken,
 			SetupToken: setupToken,
 			DataRoot:   BaseDir,
 			SaveConfig: SaveConfigKey,
-			Restart:    Restart,
+			Restart:    func() { h.RequestRestart() },
 			OnLogin: func(client webiface.TelegramClient) error {
 				return h.finishWebLogin(client, customModules)
 			},
@@ -270,29 +815,20 @@ func Main(customModules []Module) {
 				return c
 			},
 		})
-		h.Web.SetPort(h.Port)
-		go h.Web.Start(h.Port, true)
-		setupURL := h.Web.GetURL(true)
-		logURL := setupURL
-		hasExistingSessions := false
-		for _, pattern := range []string{
-			filepath.Join(BaseDir, "goroku-*.session"),
-			filepath.Join(BaseDir, "heroku-*.session"),
-			filepath.Join(BaseDir, "hikka-*.session"),
-		} {
-			files, _ := filepath.Glob(pattern)
-			for _, f := range files {
-				base := filepath.Base(f)
-				if base != "goroku-0.session" && base != "hikka-0.session" {
-					hasExistingSessions = true
-					break
-				}
-			}
-			if hasExistingSessions {
-				break
-			}
+		h.lifecycleMu.Lock()
+		if h.shuttingDown {
+			h.lifecycleMu.Unlock()
+			return context.Canceled
 		}
-		if !hasExistingSessions {
+		h.Web = webCore
+		h.lifecycleMu.Unlock()
+		webCore.SetPort(h.Port)
+		if err := webCore.StartContext(ctx, h.Port, h.SSHTunnel); err != nil {
+			return fmt.Errorf("start web server: %w", err)
+		}
+		setupURL := webCore.GetURL(h.SSHTunnel)
+		logURL := setupURL
+		if setupToken != "" && !setupCompleted {
 			sep := "?"
 			if strings.Contains(setupURL, "?") {
 				sep = "&"
@@ -306,7 +842,7 @@ func Main(customModules []Module) {
 				L().Warn("Failed to save initial setup URL", zap.Error(err))
 			}
 		}
-		L().Info("Web mode ready", zap.String("url", logURL), zap.Bool("setup_token_required", !hasExistingSessions))
+		L().Info("Web mode ready", zap.String("url", logURL), zap.Bool("setup_token_required", setupToken != "" && !setupCompleted))
 	}
 
 	sessionPatterns := []string{
@@ -330,19 +866,24 @@ func Main(customModules []Module) {
 
 	if len(activeSessions) == 0 {
 		if h.DisableWeb {
-			h.startCliLogin(customModules)
+			if err := h.startCliLogin(ctx, customModules); err != nil {
+				return err
+			}
 		} else {
 			L().Info("No active sessions found, please use the Web dashboard to log in")
 		}
 	} else {
 		for _, sessionFile := range activeSessions {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			tgID, err := getTGIDFromSessionPath(sessionFile)
 			if err != nil {
 				L().Warn("Skip invalid session file", zap.String("file", sessionFile), zap.Error(err))
 				continue
 			}
 			L().Info("Booting userbot", zap.Int64("tg_id", tgID))
-			client, err := h.initClient(tgID, sessionFile, customModules)
+			client, err := h.initClientContext(ctx, tgID, sessionFile, customModules)
 			if err != nil {
 				L().Error("Failed to init client", zap.Int64("tg_id", tgID), zap.Error(err))
 				if strings.Contains(err.Error(), "AUTH_KEY_UNREGISTERED") {
@@ -351,34 +892,20 @@ func Main(customModules []Module) {
 				continue
 			}
 			if h.Web != nil {
-				loader := h.Loaders[len(h.Loaders)-1]
-				db := h.DBs[len(h.DBs)-1]
-				h.Web.AddLoader(client, loader, db)
+				if err := h.registerWebRuntime(client); err != nil {
+					L().Error("Failed to register web runtime", zap.Int64("tg_id", client.TGID), zap.Error(err))
+				}
 			}
 		}
 	}
+	return ctx.Err()
+}
 
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-		sig := <-sigCh
-		L().Info("Received signal, initiating graceful shutdown", zap.String("signal", sig.String()))
-
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		// Stop all clients gracefully
-		for _, client := range h.Clients {
-			if client != nil {
-				client.GracefulStop(shutdownCtx)
-			}
-		}
-
-		// Flush logs
-		_ = L().Sync()
-
-		os.Exit(0)
-	}()
-
-	select {}
+// Main is retained for source compatibility. New programs should use
+// NewApp(customModules).Run(ctx); signal policy belongs to the caller.
+// Deprecated: use NewApp and Run.
+func Main(customModules []Module) {
+	if err := NewApp(customModules).Run(context.Background()); err != nil {
+		L().Error("Goroku stopped with an error", zap.Error(err))
+	}
 }

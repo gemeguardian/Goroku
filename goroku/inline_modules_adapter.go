@@ -16,12 +16,10 @@ func NewInlineModulesAdapter(m *Modules) *InlineModulesAdapter {
 	return &InlineModulesAdapter{modules: m}
 }
 
-// GetModules returns a copy of the registered modules as map[string]any.
-func (a *InlineModulesAdapter) GetModules() map[string]any {
-	mods := a.modules.GetModules()
-	result := make(map[string]any, len(mods))
-	for k, v := range mods {
-		result[k] = v
-	}
-	return result
+func (a *InlineModulesAdapter) ModuleNames() []string {
+	return a.modules.ModuleNames()
+}
+
+func (a *InlineModulesAdapter) WithModule(name string, fn func(any)) bool {
+	return a.modules.WithModule(name, func(module Module) { fn(module) })
 }

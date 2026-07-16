@@ -1,6 +1,7 @@
 package goroku
 
 import (
+	"context"
 	"fmt"
 	stdhtml "html"
 	"sort"
@@ -15,14 +16,25 @@ import (
 )
 
 func (c *CustomTelegramClient) ResolvePeer(chat any) (tg.InputPeerClass, error) {
-	return c.resolvePeerInternal(chat)
+	return c.ResolvePeerContext(nil, chat)
+}
+
+func (c *CustomTelegramClient) ResolvePeerContext(ctx context.Context, chat any) (tg.InputPeerClass, error) {
+	return c.resolvePeerInternal(c.rpcContext(ctx), chat)
 }
 
 func (c *CustomTelegramClient) ResolvePeerRef(chat ChatRef) (tg.InputPeerClass, error) {
-	return c.resolvePeerInternal(chat.AsLegacy())
+	return c.ResolvePeerRefContext(nil, chat)
 }
 
-func (c *CustomTelegramClient) resolvePeerInternal(chat any) (tg.InputPeerClass, error) {
+func (c *CustomTelegramClient) ResolvePeerRefContext(ctx context.Context, chat ChatRef) (tg.InputPeerClass, error) {
+	return c.resolvePeerInternal(c.rpcContext(ctx), chat.AsLegacy())
+}
+
+func (c *CustomTelegramClient) resolvePeerInternal(ctx context.Context, chat any) (tg.InputPeerClass, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if peer, ok := chat.(tg.InputPeerClass); ok {
 		return peer, nil
 	}
@@ -58,8 +70,10 @@ func (c *CustomTelegramClient) resolvePeerInternal(chat any) (tg.InputPeerClass,
 	switch v := chat.(type) {
 	case int64:
 		id := v
-		if peer, err := c.resolvePeerFromTelegram(id); err == nil {
+		if peer, err := c.resolvePeerFromTelegram(ctx, id); err == nil {
 			return peer, nil
+		} else if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 		idStr := strconv.FormatInt(id, 10)
 		if strings.HasPrefix(idStr, "-100") {
@@ -81,8 +95,10 @@ func (c *CustomTelegramClient) resolvePeerInternal(chat any) (tg.InputPeerClass,
 				return peer, nil
 			}
 		}
-		if peer, err := c.resolvePeerFromTelegram(id); err == nil {
+		if peer, err := c.resolvePeerFromTelegram(ctx, id); err == nil {
 			return peer, nil
+		} else if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 		idStr := strconv.FormatInt(id, 10)
 		if strings.HasPrefix(idStr, "-100") {
@@ -94,7 +110,7 @@ func (c *CustomTelegramClient) resolvePeerInternal(chat any) (tg.InputPeerClass,
 	case string:
 		v = strings.TrimPrefix(v, "@")
 		vLower := strings.ToLower(v)
-		res, err := c.rawAPI.ContactsResolveUsername(c.ctx, &tg.ContactsResolveUsernameRequest{Username: v})
+		res, err := c.rawAPI.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: v})
 		if err != nil {
 			return nil, err
 		}
@@ -141,14 +157,14 @@ func (c *CustomTelegramClient) resolvePeerInternal(chat any) (tg.InputPeerClass,
 	return nil, fmt.Errorf("cannot resolve peer: %v", chat)
 }
 
-func (c *CustomTelegramClient) resolvePeerFromTelegram(id int64) (tg.InputPeerClass, error) {
+func (c *CustomTelegramClient) resolvePeerFromTelegram(ctx context.Context, id int64) (tg.InputPeerClass, error) {
 	idStr := strconv.FormatInt(id, 10)
 	if strings.HasPrefix(idStr, "-100") {
 		rawChanID, err := strconv.ParseInt(strings.TrimPrefix(idStr, "-100"), 10, 64)
 		if err != nil {
 			return nil, err
 		}
-		res, err := c.rawAPI.ChannelsGetChannels(c.ctx, []tg.InputChannelClass{&tg.InputChannel{ChannelID: rawChanID, AccessHash: 0}})
+		res, err := c.rawAPI.ChannelsGetChannels(ctx, []tg.InputChannelClass{&tg.InputChannel{ChannelID: rawChanID, AccessHash: 0}})
 		if err != nil {
 			return nil, err
 		}
@@ -177,7 +193,7 @@ func (c *CustomTelegramClient) resolvePeerFromTelegram(id int64) (tg.InputPeerCl
 			}
 		}
 	} else if id < 0 {
-		res, err := c.rawAPI.MessagesGetChats(c.ctx, []int64{-id})
+		res, err := c.rawAPI.MessagesGetChats(ctx, []int64{-id})
 		if err != nil {
 			return nil, err
 		}
@@ -206,7 +222,7 @@ func (c *CustomTelegramClient) resolvePeerFromTelegram(id int64) (tg.InputPeerCl
 			}
 		}
 	} else {
-		res, err := c.rawAPI.UsersGetUsers(c.ctx, []tg.InputUserClass{&tg.InputUser{UserID: id, AccessHash: 0}})
+		res, err := c.rawAPI.UsersGetUsers(ctx, []tg.InputUserClass{&tg.InputUser{UserID: id, AccessHash: 0}})
 		if err != nil {
 			return nil, err
 		}

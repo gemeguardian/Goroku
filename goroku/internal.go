@@ -6,68 +6,56 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 )
 
-var restarting int32
+var activeAppState struct {
+	sync.Mutex
+	app *Goroku
+}
 
 func FwProtect() {
 	time.Sleep(time.Duration(1000) * time.Millisecond)
 }
 
+// Die is a compatibility shim that requests a coordinated application stop.
 func Die() {
-	if os.Getenv("DOCKER") != "" {
-		os.Exit(0)
+	activeAppState.Lock()
+	app := activeAppState.app
+	activeAppState.Unlock()
+	if app != nil {
+		app.RequestStop()
 	}
-	sysDie()
 }
 
+// Restart is a compatibility shim that requests coordinated shutdown. Process
+// replacement is the responsibility of the package main that called Run.
 func Restart() {
-	if !atomic.CompareAndSwapInt32(&restarting, 0, 1) {
-		select {}
+	activeAppState.Lock()
+	app := activeAppState.app
+	activeAppState.Unlock()
+	if app != nil {
+		app.RequestRestart()
 	}
+}
 
-	for _, arg := range os.Args {
-		if arg == "--sandbox" {
-			os.Exit(0)
-		}
+func setActiveApp(app *Goroku) bool {
+	activeAppState.Lock()
+	defer activeAppState.Unlock()
+	if activeAppState.app != nil && activeAppState.app != app {
+		return false
 	}
+	activeAppState.app = app
+	return true
+}
 
-	if os.Getenv("GOROKU_DO_NOT_RESTART2") != "" {
-		fmt.Println("GorokuTL version 1.0.2 or higher is required.")
-		os.Exit(0)
+func clearActiveApp(app *Goroku) {
+	activeAppState.Lock()
+	if activeAppState.app == app {
+		activeAppState.app = nil
 	}
-
-	if os.Getenv("GOROKU_DO_NOT_RESTART") == "" {
-		_ = os.Setenv("GOROKU_DO_NOT_RESTART", "1")
-	} else {
-		_ = os.Setenv("GOROKU_DO_NOT_RESTART2", "1")
-	}
-
-	execPath, err := os.Executable()
-	if err != nil {
-		os.Exit(1)
-	}
-
-	// Try compiling the new binary before executing it if main.go exists
-	projectDir := filepath.Dir(execPath)
-	if _, err := os.Stat(filepath.Join(projectDir, "main.go")); err == nil {
-		fmt.Println("🔨 Compiling new binary before restart...")
-		buildCmd := exec.Command("go", "build", "-o", filepath.Base(execPath)) //nolint:gosec
-		buildCmd.Dir = projectDir
-		buildCmd.Stdout = os.Stdout
-		buildCmd.Stderr = os.Stderr
-		if err := buildCmd.Run(); err != nil {
-			fmt.Printf("⚠️ Compilation failed: %v. Restarting with old binary...\n", err)
-		} else {
-			fmt.Println("✅ Compilation successful!")
-		}
-	}
-
-	fmt.Println("🔄 Restarting...")
-
-	sysRestart(execPath)
+	activeAppState.Unlock()
 }
 
 func PrintBanner(banner string) {

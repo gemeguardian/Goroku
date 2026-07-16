@@ -5,6 +5,8 @@
 package inlineiface
 
 import (
+	"context"
+
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 
 	"goroku/goroku/inline"
@@ -18,6 +20,7 @@ import (
 // directly.
 type InlineManager interface {
 	RegisterManager(afterBreak bool, ignoreTokenChecks bool) error
+	Close(context.Context) error
 	IsComplete() bool
 	GetBotAPI() *tgbotapi.BotAPI
 	GetUnit(unitID string) (*inline.Unit, bool)

@@ -58,25 +58,55 @@ func getTrans(t *goroku.Translator, modName, key, def string) string {
 
 func RegisterModulesAndRebuild(msg *goroku.Message, structNames []string) error {
 	if msg != nil && msg.Client != nil {
-		_ = msg.Answer("⚠️ <b>Security warning:</b> Go modules are arbitrary code and may be malicious. Review the source before loading modules from people or repositories you do not fully trust.")
+		// Native plugins cannot be fully unloaded from process memory after load.
+		if !hasInstallConfirmToken(msg) {
+			return msg.Answer("⚠️ <b>Security:</b> native modules are arbitrary code and stay in process memory after unload. Review source, then re-run with <code>-confirm</code>.")
+		}
 		return RegisterModulesHot(msg, structNames)
 	}
 	return fmt.Errorf("client is required for hot module loading")
 }
 
-func findModuleSource(structName string) (string, error) {
-	modulesDir := filepath.Join(goroku.BasePath, "goroku", "modules")
-	preferred := filepath.Join(modulesDir, structName+".go")
-	if _, err := os.Stat(preferred); err == nil {
-		return preferred, nil
-	}
+func runtimeModuleSourceDir() string {
+	return filepath.Join(goroku.BaseDir, "modules")
+}
 
-	files, err := filepath.Glob(filepath.Join(modulesDir, "*.go"))
+func legacyModuleSourceDir() string {
+	return filepath.Join(goroku.BasePath, "goroku", "modules")
+}
+
+func runtimeModuleSourcePath(moduleName string) (string, error) {
+	if moduleName == "" || filepath.Base(moduleName) != moduleName || strings.ContainsAny(moduleName, `/\`) {
+		return "", fmt.Errorf("invalid module name %q", moduleName)
+	}
+	return filepath.Join(runtimeModuleSourceDir(), moduleName+".go"), nil
+}
+
+func ensureRuntimeModuleSourceDir() error {
+	return os.MkdirAll(runtimeModuleSourceDir(), 0700)
+}
+
+func findInstalledModuleSource(moduleName string) (string, error) {
+	runtimePath, err := runtimeModuleSourcePath(moduleName)
 	if err != nil {
 		return "", err
 	}
+	if info, err := os.Stat(runtimePath); err == nil && !info.IsDir() {
+		return runtimePath, nil
+	}
+	return "", fmt.Errorf("source for module %s not found", moduleName)
+}
+
+func findModuleSource(structName string) (string, error) {
+	if preferred, err := findInstalledModuleSource(structName); err == nil {
+		return preferred, nil
+	}
 
 	typeRe := regexp.MustCompile(`(?m)^\s*type\s+` + regexp.QuoteMeta(structName) + `\s+struct\b`)
+	files, err := filepath.Glob(filepath.Join(runtimeModuleSourceDir(), "*.go"))
+	if err != nil {
+		return "", err
+	}
 	for _, file := range files {
 		content, err := os.ReadFile(file) //nolint:gosec
 		if err != nil {

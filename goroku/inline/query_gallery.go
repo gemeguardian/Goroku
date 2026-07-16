@@ -11,6 +11,11 @@ func (im *InlineManager) QueryGallery(
 	queryID string,
 	items []QueryGalleryItem,
 ) error {
+	generation, _, err := im.claimIntake()
+	if err != nil {
+		return err
+	}
+	defer generation.release()
 	var results []any
 
 	for _, item := range items {
@@ -53,13 +58,16 @@ func (im *InlineManager) QueryGallery(
 		IsPersonal:    true,
 	}
 
-	_, err := im.request(answer)
+	_, err = im.request(answer)
 	return err
 }
 
 func (im *InlineManager) PopQueryGallery(id string) (QueryGalleryItem, bool) {
 	im.mu.Lock()
 	defer im.mu.Unlock()
+	if im.closed {
+		return QueryGalleryItem{}, false
+	}
 	item, ok := im.QueryGalleries[id]
 	if ok {
 		delete(im.QueryGalleries, id)

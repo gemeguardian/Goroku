@@ -15,6 +15,11 @@ func (im *InlineManager) List(
 	stringsList []string,
 	opts ...FormOpt,
 ) (*InlineMessage, error) {
+	generation, _, err := im.claimIntake()
+	if err != nil {
+		return nil, err
+	}
+	defer generation.release()
 	if len(stringsList) == 0 {
 		return nil, fmt.Errorf("list cannot be empty")
 	}
@@ -70,19 +75,21 @@ func (im *InlineManager) List(
 				_, err = c.InlineMessage.Delete()
 			}
 			im.mu.Lock()
-			im.removeUnitLocked(unitID)
+			unload := im.removeUnitLocked(unitID)
 			im.mu.Unlock()
+			im.runUnitUnload(unload)
 			return err
 		},
 	}
 	im.mu.Unlock()
 
 	// Invoke unit
-	err := im.InvokeUnit(unitID, chatID, replyToMsgID)
+	err = im.InvokeUnit(unitID, chatID, replyToMsgID)
 	if err != nil {
 		im.mu.Lock()
-		im.removeUnitLocked(unitID)
+		unload := im.removeUnitLocked(unitID)
 		im.mu.Unlock()
+		im.runUnitUnload(unload)
 		return nil, err
 	}
 
@@ -132,7 +139,7 @@ func (im *InlineManager) updateListPage(unitID string, page int, c CallbackQuery
 	im.mu.Lock()
 	unit.CurrentPage = page
 	unit.Buttons = im.generateListButtons(unitID, page, unit.TotalPages)
-	markup := im.GenerateMarkup(unit.Buttons)
+	markup := im.generateMarkup(unit.Buttons)
 	im.mu.Unlock()
 
 	var editMsg tgbotapi.EditMessageTextConfig
@@ -165,6 +172,11 @@ func (im *InlineManager) updateListPage(unitID string, page int, c CallbackQuery
 
 // HandleListCallback handles paging callbacks for list.
 func (im *InlineManager) HandleListCallback(c CallbackQuery) bool {
+	generation, _, claimErr := im.claimIntake()
+	if claimErr != nil {
+		return false
+	}
+	defer generation.release()
 	if !strings.HasPrefix(c.Data, "lst_") {
 		return false
 	}

@@ -1,6 +1,8 @@
 package goroku
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -63,6 +65,8 @@ type SecurityManager struct {
 	sgroups              map[string]SecurityGroup
 	rightsReloadInterval time.Duration
 	stopCh               chan struct{}
+	stopOnce             sync.Once
+	done                 chan struct{}
 	// adminCache caches per-chat/per-user admin rights lookups (5-min TTL, mirrors Python security.py)
 	adminCache map[string]adminCacheEntry
 }
@@ -72,42 +76,88 @@ type adminCacheEntry struct {
 	exp    int64
 }
 
-func NewSecurityManager(client *CustomTelegramClient, db *Database) *SecurityManager {
+func NewSecurityManagerChecked(client *CustomTelegramClient, db *Database) (*SecurityManager, error) {
 	anyAdmin := db.GetBool("goroku.security", "any_admin", false)
 	defaultMask := db.GetInt("goroku.security", "default", OWNER)
+	tsecChat, err := NewPointerListChecked[SecurityRule](db, "goroku.security", "tsec_chat", nil)
+	if err != nil {
+		return nil, err
+	}
+	tsecUser, err := NewPointerListChecked[SecurityRule](db, "goroku.security", "tsec_user", nil)
+	if err != nil {
+		return nil, err
+	}
+	owner, err := NewPointerListChecked[int64](db, "goroku.security", "owner", nil)
+	if err != nil {
+		return nil, err
+	}
+	allUsers, err := NewPointerListChecked[int64](db, "goroku.security", "all_users", nil)
+	if err != nil {
+		return nil, err
+	}
 
 	sm := &SecurityManager{
 		client:               client,
 		db:                   db,
 		anyAdmin:             anyAdmin,
 		defaultMask:          defaultMask,
-		tsecChat:             NewPointerList[SecurityRule](db, "goroku.security", "tsec_chat", nil),
-		tsecUser:             NewPointerList[SecurityRule](db, "goroku.security", "tsec_user", nil),
-		owner:                NewPointerList[int64](db, "goroku.security", "owner", nil),
-		allUsers:             NewPointerList[int64](db, "goroku.security", "all_users", nil),
+		tsecChat:             tsecChat,
+		tsecUser:             tsecUser,
+		owner:                owner,
+		allUsers:             allUsers,
 		sgroups:              make(map[string]SecurityGroup),
 		adminCache:           make(map[string]adminCacheEntry),
 		rightsReloadInterval: time.Minute,
 		stopCh:               make(chan struct{}),
+		done:                 make(chan struct{}),
 	}
 
-	sm.reloadRights()
+	if err := sm.reloadRights(); err != nil {
+		return nil, fmt.Errorf("persist initial security state: %w", err)
+	}
 	sm.startRightsReloader()
+	return sm, nil
+}
+
+// NewSecurityManager preserves the original constructor contract. Failures are
+// logged and produce a stopped, deny-by-default manager; production startup
+// uses NewSecurityManagerChecked and propagates the failure.
+func NewSecurityManager(client *CustomTelegramClient, db *Database) *SecurityManager {
+	sm, err := NewSecurityManagerChecked(client, db)
+	if err == nil {
+		return sm
+	}
+	L().Error("Security state initialization failed; using deny-by-default fallback", zap.Error(err))
+	sm = &SecurityManager{
+		client: client, db: db, defaultMask: 0,
+		tsecChat: &PointerList[SecurityRule]{db: db, module: "goroku.security", key: "tsec_chat", values: []SecurityRule{}},
+		tsecUser: &PointerList[SecurityRule]{db: db, module: "goroku.security", key: "tsec_user", values: []SecurityRule{}},
+		owner:    &PointerList[int64]{db: db, module: "goroku.security", key: "owner", values: []int64{}},
+		allUsers: &PointerList[int64]{db: db, module: "goroku.security", key: "all_users", values: []int64{}},
+		sgroups:  make(map[string]SecurityGroup), adminCache: make(map[string]adminCacheEntry),
+		rightsReloadInterval: 0, stopCh: make(chan struct{}),
+		done: make(chan struct{}),
+	}
+	close(sm.done)
 	return sm
 }
 
 func (sm *SecurityManager) startRightsReloader() {
 	if sm.rightsReloadInterval <= 0 {
+		close(sm.done)
 		return
 	}
 
 	ticker := time.NewTicker(sm.rightsReloadInterval)
 	go func() {
 		defer ticker.Stop()
+		defer close(sm.done)
 		for {
 			select {
 			case <-ticker.C:
-				sm.reloadRights()
+				if err := sm.reloadRights(); err != nil {
+					L().Error("Failed to persist periodic security reload", zap.Error(err))
+				}
 			case <-sm.stopCh:
 				return
 			}
@@ -116,62 +166,80 @@ func (sm *SecurityManager) startRightsReloader() {
 }
 
 func (sm *SecurityManager) Stop() {
+	sm.stopOnce.Do(func() { close(sm.stopCh) })
+}
+
+// Close requests worker shutdown and waits for completion.
+func (sm *SecurityManager) Close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sm.Stop()
 	select {
-	case <-sm.stopCh:
+	case <-sm.done:
+		return nil
 	default:
-		close(sm.stopCh)
+	}
+	select {
+	case <-sm.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
 func (sm *SecurityManager) ReloadRights() {
-	sm.reloadRights()
+	if err := sm.reloadRights(); err != nil {
+		L().Error("Failed to reload security state", zap.Error(err))
+	}
 }
 
-func (sm *SecurityManager) reloadRights() {
+func (sm *SecurityManager) ReloadRightsErr() error {
+	return sm.reloadRights()
+}
+
+func (sm *SecurityManager) reloadRights() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sm.reloadRightsLocked()
+	return sm.reloadRightsLocked(sm.owner.ToSlice(), sm.tsecUser.ToSlice(), sm.tsecChat.ToSlice(), sm.sgroups, false)
 }
 
-func (sm *SecurityManager) reloadRightsLocked() {
+func (sm *SecurityManager) reloadRightsLocked(owner []int64, userRules, chatRules []SecurityRule, groups map[string]SecurityGroup, persistGroups bool) error {
+	groups = clonePointerValue(groups)
 	// Ensure client owner ID is in the list of owners
 	hasOwner := false
-	for _, id := range sm.owner.ToSlice() {
+	for _, id := range owner {
 		if id == sm.client.TGID {
 			hasOwner = true
 			break
 		}
 	}
 	if !hasOwner {
-		sm.owner.Append(sm.client.TGID)
+		owner = append(owner, sm.client.TGID)
 	}
 
 	// Clean up expired rules
 	now := time.Now().Unix()
-	userRules := sm.GetUserRules()
 	for i := len(userRules) - 1; i >= 0; i-- {
 		if userRules[i].Expires > 0 && userRules[i].Expires < now {
-			sm.tsecUser.Remove(i)
+			userRules = append(userRules[:i], userRules[i+1:]...)
 		}
 	}
 
-	chatRules := sm.GetChatRules()
 	for i := len(chatRules) - 1; i >= 0; i-- {
 		if chatRules[i].Expires > 0 && chatRules[i].Expires < now {
-			sm.tsecChat.Remove(i)
+			chatRules = append(chatRules[:i], chatRules[i+1:]...)
 		}
 	}
 	// Rebuild all_users list (mirrors Python _reload_rights)
 	var sgroupUsers []int64
-	for _, g := range sm.sgroups {
+	for _, g := range groups {
 		sgroupUsers = append(sgroupUsers, g.Users...)
 	}
 	var tsecUsers []int64
-	for _, rule := range sm.GetUserRules() {
+	for _, rule := range userRules {
 		tsecUsers = append(tsecUsers, rule.Target)
 	}
-	ownerUsers := sm.owner.ToSlice()
-
 	allUsersSet := make(map[int64]struct{})
 	for _, id := range sgroupUsers {
 		allUsersSet[id] = struct{}{}
@@ -179,16 +247,13 @@ func (sm *SecurityManager) reloadRightsLocked() {
 	for _, id := range tsecUsers {
 		allUsersSet[id] = struct{}{}
 	}
-	for _, id := range ownerUsers {
+	for _, id := range owner {
 		allUsersSet[id] = struct{}{}
 	}
 	var allUsersList []int64
 	for id := range allUsersSet {
 		allUsersList = append(allUsersList, id)
 	}
-	sm.allUsers.Clear()
-	sm.allUsers.Extend(allUsersList)
-
 	// Cleanup command_prefixes for users no longer in all_users (mirrors Python security.py:209-215)
 	prefixes := sm.db.GetStringMap("goroku.main", "command_prefixes", nil)
 	for idStr := range prefixes {
@@ -200,17 +265,65 @@ func (sm *SecurityManager) reloadRightsLocked() {
 			delete(prefixes, idStr)
 		}
 	}
-	sm.db.SetStringMap("goroku.main", "command_prefixes", prefixes)
+	securityUpdates := map[string]any{
+		"owner":     owner,
+		"tsec_user": userRules,
+		"tsec_chat": chatRules,
+		"all_users": allUsersList,
+	}
+	if persistGroups {
+		securityUpdates["sgroups"] = groups
+	}
+	err := sm.db.Update(map[string]map[string]any{
+		"goroku.security": securityUpdates,
+		"goroku.main":     {"command_prefixes": prefixes},
+	})
+	if err != nil && !errors.Is(err, ErrDatabaseCommitUncertain) {
+		return err
+	}
+	ownerPointer, loadErr := NewPointerListChecked[int64](sm.db, "goroku.security", "owner", nil)
+	if loadErr != nil {
+		return errors.Join(err, loadErr)
+	}
+	userPointer, loadErr := NewPointerListChecked[SecurityRule](sm.db, "goroku.security", "tsec_user", nil)
+	if loadErr != nil {
+		return errors.Join(err, loadErr)
+	}
+	chatPointer, loadErr := NewPointerListChecked[SecurityRule](sm.db, "goroku.security", "tsec_chat", nil)
+	if loadErr != nil {
+		return errors.Join(err, loadErr)
+	}
+	allUsersPointer, loadErr := NewPointerListChecked[int64](sm.db, "goroku.security", "all_users", nil)
+	if loadErr != nil {
+		return errors.Join(err, loadErr)
+	}
+	sm.owner = ownerPointer
+	sm.tsecUser = userPointer
+	sm.tsecChat = chatPointer
+	sm.allUsers = allUsersPointer
+	sm.sgroups = groups
+	return err
 }
 
-func (sm *SecurityManager) ApplySgroups(sgroups map[string]SecurityGroup) {
+func (sm *SecurityManager) ApplySgroups(sgroups map[string]SecurityGroup) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sm.sgroups = sgroups
-	sm.reloadRightsLocked()
+	return sm.reloadRightsLocked(sm.owner.ToSlice(), sm.tsecUser.ToSlice(), sm.tsecChat.ToSlice(), sgroups, true)
 }
 
 func (sm *SecurityManager) Check(msg *Message, command string) bool {
+	var reg *commandRegistration
+	if sm.client.Loader != nil {
+		reg, _ = sm.client.Loader.resolveCommand(command)
+	}
+	return sm.checkCommand(msg, command, reg)
+}
+
+func (sm *SecurityManager) checkRegistration(msg *Message, reg *commandRegistration) bool {
+	return sm.checkCommand(msg, reg.Name, reg)
+}
+
+func (sm *SecurityManager) checkCommand(msg *Message, command string, reg *commandRegistration) bool {
 	L().Info("[Security] Check: SenderID={0}, Out={1}, client.TGID={2}, command={3}", zap.Any("arg0", msg.SenderID), zap.Any("arg1", msg.Out), zap.Any("arg2", sm.client.TGID), zap.Any("arg3", command))
 	// First, if owner/client, bypass security check
 	if msg.SenderID == sm.client.TGID || msg.Out {
@@ -232,7 +345,7 @@ func (sm *SecurityManager) Check(msg *Message, command string) bool {
 	}
 
 	// Get mask config for the command
-	config := sm.getFlagsForCommand(command)
+	config := sm.getFlagsForRegistration(command, reg)
 
 	if (config & SUDO) != 0 {
 		for _, id := range sm.db.GetInt64Slice("goroku.security", "sudo", nil) {
@@ -255,7 +368,7 @@ func (sm *SecurityManager) Check(msg *Message, command string) bool {
 			}
 			// If rule is module-wide
 			if rule.RuleType == "module" {
-				if sm.isCommandInModule(command, rule.Rule) {
+				if registrationInModule(reg, rule.Rule) {
 					return true
 				}
 			}
@@ -268,7 +381,7 @@ func (sm *SecurityManager) Check(msg *Message, command string) bool {
 			if rule.RuleType == "command" && rule.Rule == command {
 				return true
 			}
-			if rule.RuleType == "module" && sm.isCommandInModule(command, rule.Rule) {
+			if rule.RuleType == "module" && registrationInModule(reg, rule.Rule) {
 				return true
 			}
 		}
@@ -292,7 +405,7 @@ func (sm *SecurityManager) Check(msg *Message, command string) bool {
 					sm.mu.RUnlock()
 					return true
 				}
-				if ruleType == "module" && sm.isCommandInModule(command, ruleName) {
+				if ruleType == "module" && registrationInModule(reg, ruleName) {
 					sm.mu.RUnlock()
 					return true
 				}
@@ -453,35 +566,61 @@ func (sm *SecurityManager) setAdminCache(key string, result bool) {
 }
 
 func (sm *SecurityManager) getFlagsForCommand(command string) int {
+	var reg *commandRegistration
+	if sm.client.Loader != nil {
+		reg, _ = sm.client.Loader.resolveCommand(command)
+	}
+	return sm.getFlagsForRegistration(command, reg)
+}
+
+func (sm *SecurityManager) getFlagsForRegistration(command string, reg *commandRegistration) int {
 	boundingMask := sm.getBoundingMask()
-	if mask, ok := sm.getMaskOverride(command); ok {
-		return mask & boundingMask
-	}
-
-	if sm.client.Loader == nil {
-		return sm.defaultMask & boundingMask
-	}
-	modules := sm.client.Loader
-
-	for _, mod := range modules.GetModules() {
-		if _, exists := mod.Commands()[command]; exists {
-			for _, key := range []string{
-				fmt.Sprintf("%s.%s", mod.Name(), command),
-				fmt.Sprintf("%s.%s", strings.ToLower(mod.Name()), strings.ToLower(command)),
-			} {
-				if mask, ok := sm.getMaskOverride(key); ok {
-					return mask & boundingMask
-				}
+	if reg != nil {
+		for _, key := range []string{
+			fmt.Sprintf("%s.%s", reg.OwnerName, reg.Name),
+			fmt.Sprintf("%s.%s", reg.ownerKey, reg.Name),
+		} {
+			if mask, ok := sm.getMaskOverride(key); ok {
+				return mask & boundingMask
 			}
-			if secMod, ok := mod.(SecuredModule); ok {
-				if mask, ok := secMod.CommandPermissions()[command]; ok {
-					return mask & boundingMask
-				}
-			}
-			break
 		}
 	}
+	if mask, ok := sm.getMaskOverride(command); ok {
+		// Compatibility: an unqualified legacy mask is bound on first use to
+		// its current owner. Unresolved commands still use bare masks, but a
+		// later owner must have an explicit owner-qualified policy.
+		if reg == nil || sm.bareMaskApplies(command, reg.ownerKey) {
+			return mask & boundingMask
+		}
+	}
+
+	if reg == nil {
+		return sm.defaultMask & boundingMask
+	}
+	if reg.hasPermission {
+		return reg.Permission & boundingMask
+	}
 	return sm.defaultMask & boundingMask
+}
+
+func (sm *SecurityManager) bareMaskApplies(command, ownerKey string) bool {
+	command = strings.ToLower(command)
+	ownerKey = strings.ToLower(ownerKey)
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	owners := sm.db.GetStringMap("goroku.security", "mask_owners", nil)
+	if owner, ok := owners[command]; ok {
+		return strings.EqualFold(owner, ownerKey)
+	}
+	if owners == nil {
+		owners = make(map[string]string)
+	}
+	owners[command] = ownerKey
+	if err := sm.db.SetStringMap("goroku.security", "mask_owners", owners); err != nil {
+		L().Error("Failed to bind legacy security mask owner", zap.String("command", command), zap.Error(err))
+		return false
+	}
+	return true
 }
 
 func (sm *SecurityManager) getBoundingMask() int {
@@ -520,19 +659,15 @@ func (sm *SecurityManager) isCommandInModule(command, moduleName string) bool {
 	if sm.client.Loader == nil {
 		return false
 	}
-	modules := sm.client.Loader
-
-	for _, mod := range modules.GetModules() {
-		if strings.EqualFold(mod.Name(), moduleName) {
-			if _, exists := mod.Commands()[command]; exists {
-				return true
-			}
-		}
-	}
-	return false
+	reg, ok := sm.client.Loader.resolveCommand(command)
+	return ok && registrationInModule(reg, moduleName)
 }
 
-func (sm *SecurityManager) AddRule(targetType string, targetID int64, ruleType, ruleName string, duration int) {
+func registrationInModule(reg *commandRegistration, moduleName string) bool {
+	return reg != nil && strings.EqualFold(reg.OwnerName, moduleName)
+}
+
+func (sm *SecurityManager) AddRule(targetType string, targetID int64, ruleType, ruleName string, duration int) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -550,80 +685,98 @@ func (sm *SecurityManager) AddRule(targetType string, targetID int64, ruleType, 
 		EntityURL:  "",
 	}
 
-	if targetType == "user" {
-		sm.tsecUser.Append(newRule)
-	} else if targetType == "chat" {
-		sm.tsecChat.Append(newRule)
-	}
-
-	sm.reloadRightsLocked()
+	return sm.addSecurityRuleLocked(targetType, newRule)
 }
 
-func (sm *SecurityManager) AddSecurityRule(targetType string, rule SecurityRule) {
+func (sm *SecurityManager) AddSecurityRule(targetType string, rule SecurityRule) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	return sm.addSecurityRuleLocked(targetType, rule)
+}
+
+func (sm *SecurityManager) addSecurityRuleLocked(targetType string, rule SecurityRule) error {
+	userRules := sm.tsecUser.ToSlice()
+	chatRules := sm.tsecChat.ToSlice()
 	if targetType == "user" {
-		sm.tsecUser.Append(rule)
+		userRules = append(userRules, rule)
 	} else if targetType == "chat" {
-		sm.tsecChat.Append(rule)
+		chatRules = append(chatRules, rule)
+	} else {
+		return fmt.Errorf("invalid security target type %q", targetType)
 	}
-	sm.reloadRightsLocked()
+	return sm.reloadRightsLocked(sm.owner.ToSlice(), userRules, chatRules, sm.sgroups, false)
 }
 
 // RemoveRules removes all security rules for a given target ID.
-func (sm *SecurityManager) RemoveRules(targetType string, targetID int64) bool {
+func (sm *SecurityManager) RemoveRules(targetType string, targetID int64) (bool, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	var list *PointerList[SecurityRule]
+	userRules := sm.tsecUser.ToSlice()
+	chatRules := sm.tsecChat.ToSlice()
+	var list []SecurityRule
 	if targetType == "user" {
-		list = sm.tsecUser
+		list = userRules
 	} else if targetType == "chat" {
-		list = sm.tsecChat
+		list = chatRules
 	} else {
-		return false
+		return false, nil
 	}
 
 	found := false
-	slice := list.ToSlice()
-	for i := len(slice) - 1; i >= 0; i-- {
-		if slice[i].Target == targetID {
-			list.Remove(i)
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i].Target == targetID {
+			list = append(list[:i], list[i+1:]...)
 			found = true
 		}
 	}
 	if found {
-		sm.reloadRightsLocked()
+		if targetType == "user" {
+			userRules = list
+		} else {
+			chatRules = list
+		}
+		if err := sm.reloadRightsLocked(sm.owner.ToSlice(), userRules, chatRules, sm.sgroups, false); err != nil {
+			return false, err
+		}
 	}
-	return found
+	return found, nil
 }
 
 // RemoveRule removes a specific security rule for a given target ID and rule name.
-func (sm *SecurityManager) RemoveRule(targetType string, targetID int64, ruleName string) bool {
+func (sm *SecurityManager) RemoveRule(targetType string, targetID int64, ruleName string) (bool, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	var list *PointerList[SecurityRule]
+	userRules := sm.tsecUser.ToSlice()
+	chatRules := sm.tsecChat.ToSlice()
+	var list []SecurityRule
 	if targetType == "user" {
-		list = sm.tsecUser
+		list = userRules
 	} else if targetType == "chat" {
-		list = sm.tsecChat
+		list = chatRules
 	} else {
-		return false
+		return false, nil
 	}
 
 	found := false
-	slice := list.ToSlice()
-	for i := len(slice) - 1; i >= 0; i-- {
-		if slice[i].Target == targetID && slice[i].Rule == ruleName {
-			list.Remove(i)
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i].Target == targetID && list[i].Rule == ruleName {
+			list = append(list[:i], list[i+1:]...)
 			found = true
 		}
 	}
 	if found {
-		sm.reloadRightsLocked()
+		if targetType == "user" {
+			userRules = list
+		} else {
+			chatRules = list
+		}
+		if err := sm.reloadRightsLocked(sm.owner.ToSlice(), userRules, chatRules, sm.sgroups, false); err != nil {
+			return false, err
+		}
 	}
-	return found
+	return found, nil
 }
 
 func (sm *SecurityManager) GetUserRules() []SecurityRule {
@@ -635,6 +788,18 @@ func (sm *SecurityManager) GetChatRules() []SecurityRule {
 }
 
 func (sm *SecurityManager) CheckTsec(userID int64, command string) bool {
+	var reg *commandRegistration
+	if sm.client.Loader != nil {
+		reg, _ = sm.client.Loader.resolveCommand(command)
+	}
+	return sm.checkTsec(userID, command, reg)
+}
+
+func (sm *SecurityManager) checkTsecRegistration(userID int64, reg *commandRegistration) bool {
+	return sm.checkTsec(userID, reg.Name, reg)
+}
+
+func (sm *SecurityManager) checkTsec(userID int64, command string, reg *commandRegistration) bool {
 	sm.mu.RLock()
 	for _, sgroup := range sm.sgroups {
 		hasUser := false
@@ -652,7 +817,7 @@ func (sm *SecurityManager) CheckTsec(userID int64, command string) bool {
 					sm.mu.RUnlock()
 					return true
 				}
-				if ruleType == "module" && sm.isCommandInModule(command, ruleName) {
+				if ruleType == "module" && registrationInModule(reg, ruleName) {
 					sm.mu.RUnlock()
 					return true
 				}
@@ -666,7 +831,7 @@ func (sm *SecurityManager) CheckTsec(userID int64, command string) bool {
 			if rule.RuleType == "command" && rule.Rule == command {
 				return true
 			}
-			if rule.RuleType == "module" && sm.isCommandInModule(command, rule.Rule) {
+			if rule.RuleType == "module" && registrationInModule(reg, rule.Rule) {
 				return true
 			}
 		}
@@ -685,7 +850,10 @@ func (sm *SecurityManager) CheckTsecInline(userID int64, command string) bool {
 }
 
 func (sm *SecurityManager) IsOwner(userID int64) bool {
-	if userID == sm.client.TGID {
+	if sm == nil || sm.client == nil || userID == 0 {
+		return false
+	}
+	if userID == sm.client.TGID || sm.client.GorokuMe != nil && userID == sm.client.GorokuMe.ID {
 		return true
 	}
 	for _, id := range sm.owner.ToSlice() {
@@ -694,6 +862,45 @@ func (sm *SecurityManager) IsOwner(userID int64) bool {
 		}
 	}
 	return false
+}
+
+// IsAccountOwner checks identity only. It intentionally ignores outgoing
+// status, command masks, sudo, temporary rules, and EVERYONE permissions.
+func (sm *SecurityManager) IsAccountOwner(msg *Message) bool {
+	return msg != nil && sm.IsOwner(msg.SenderID)
+}
+
+func (sm *SecurityManager) AddOwner(userID int64) (bool, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	owners := sm.owner.ToSlice()
+	for _, id := range owners {
+		if id == userID {
+			return false, nil
+		}
+	}
+	owners = append(owners, userID)
+	if err := sm.reloadRightsLocked(owners, sm.tsecUser.ToSlice(), sm.tsecChat.ToSlice(), sm.sgroups, false); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (sm *SecurityManager) RemoveOwner(userID int64) (bool, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	owners := sm.owner.ToSlice()
+	for i, id := range owners {
+		if id != userID {
+			continue
+		}
+		owners = append(owners[:i], owners[i+1:]...)
+		if err := sm.reloadRightsLocked(owners, sm.tsecUser.ToSlice(), sm.tsecChat.ToSlice(), sm.sgroups, false); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func (sm *SecurityManager) GetOwnerList() *PointerList[int64] {

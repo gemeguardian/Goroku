@@ -6,24 +6,29 @@ on:
   pull_request:
     branches: [ master ]
 
+# M9.1: checkout before setup-go, pin Go patch, pin actions by SHA,
+# pin golangci-lint, go mod tidy diff, clean binary build, package parity.
+
 jobs:
   build:
     name: Build & Test
     runs-on: ubuntu-latest
 
     steps:
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-        cache: true
-
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+    - name: Set up Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      with:
+        go-version-file: go.mod
+        cache: true
 
     - name: Check Formatting (gofmt)
       run: |
-        unformatted=$(gofmt -l .)
+        # Only files in main-module packages (gofmt -l on repo root walks runtime trees).
+        files=$(go list -f '{{range .GoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .TestGoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .XTestGoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}' ./...)
+        unformatted=$(printf '%s\n' "$files" | sed '/^$/d' | tr '\n' '\0' | xargs -0 gofmt -l || true)
         if [ -n "$unformatted" ]; then
           echo "The following files are not formatted. Run 'go fmt ./...':"
           echo "$unformatted"
@@ -33,13 +38,24 @@ jobs:
     - name: Verify dependencies
       run: go mod verify
 
+    - name: Check go mod tidy
+      run: |
+        go mod tidy
+        git diff --exit-code go.mod go.sum
+
+    - name: Package parity (ignored sources must not alter build)
+      run: bash scripts/check-package-parity.sh
+
     - name: Run go vet
       run: go vet ./...
 
     - name: Run golangci-lint
-      uses: golangci/golangci-lint-action@v6
+      uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6
       with:
-        version: latest
+        version: v1.64.8
+
+    - name: Build main binary
+      run: go build -o "${TMPDIR:-/tmp}/goroku_bin" .
 
     - name: Run tests
-      run: go test -v -race ./...
+      run: go test -race ./...

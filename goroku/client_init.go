@@ -1,19 +1,37 @@
 package goroku
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
 	"reflect"
+	"time"
 
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
+	"goroku/goroku/web"
 
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
 )
 
 func (h *Goroku) initClient(tgID int64, sessionPath string, customModules []Module) (*CustomTelegramClient, error) {
+	return h.initClientContext(context.Background(), tgID, sessionPath, customModules)
+}
+
+func (h *Goroku) initClientContext(ctx context.Context, tgID int64, sessionPath string, customModules []Module) (*CustomTelegramClient, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := h.beginLifecycleOperation(); err != nil {
+		return nil, err
+	}
+	defer h.endLifecycleOperation()
 	utils.SecureFile(sessionPath)
 	db := NewDatabase(tgID)
 	redisURI := os.Getenv("REDIS_URL")
@@ -22,7 +40,12 @@ func (h *Goroku) initClient(tgID int64, sessionPath string, customModules []Modu
 			redisURI = fmt.Sprintf("%v", val)
 		}
 	}
-	_ = db.Init(redisURI)
+	if err := db.Init(redisURI); err != nil {
+		return nil, joinDatabaseCloseError(fmt.Errorf("initialize database: %w", err), db)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, joinDatabaseCloseError(err, db)
+	}
 
 	client := NewCustomTelegramClient(tgID)
 	client.APIID = h.APIID
@@ -31,8 +54,16 @@ func (h *Goroku) initClient(tgID int64, sessionPath string, customModules []Modu
 	client.GorokuDB = db
 	db.client = client
 
-	if err := client.Connect(); err != nil {
-		return nil, err
+	connect := h.connectClient
+	if connect == nil {
+		connect = func(ctx context.Context, client *CustomTelegramClient) error { return client.ConnectContext(ctx) }
+	}
+	if err := connect(ctx, client); err != nil {
+		_ = client.Disconnect()
+		return nil, joinDatabaseCloseError(err, db)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(err, h.cleanupUnregisteredRuntime(client, nil, db))
 	}
 
 	loader := NewModules(client, db)
@@ -43,23 +74,169 @@ func (h *Goroku) initClient(tgID int64, sessionPath string, customModules []Modu
 
 	h.registerBuiltInModules(loader)
 	for _, mod := range customModules {
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(err, h.cleanupUnregisteredRuntime(client, loader, db))
+		}
 		if err := loader.RegisterModule(cloneModule(mod)); err != nil {
 			L().Error("Failed to register module", zap.String("module", mod.Name()), zap.Error(err))
 		}
 	}
 
-	disp := NewCommandDispatcher(loader, client, db)
+	disp, err := NewCommandDispatcherChecked(loader, client, db)
+	if err != nil {
+		cleanupErr := h.cleanupUnregisteredRuntime(client, loader, db)
+		return nil, errors.Join(fmt.Errorf("initialize command dispatcher: %w", err), cleanupErr)
+	}
 	loader.SetDispatcher(disp)
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(err, h.cleanupUnregisteredRuntime(client, loader, db))
+	}
 
 	loader.SendReady()
 
 	h.sendBadge(client, db)
 
+	h.lifecycleMu.Lock()
+	if h.shuttingDown {
+		h.lifecycleMu.Unlock()
+		cleanupErr := h.removeAndShutdownRuntime(context.Background(), client, loader, db)
+		return nil, errors.Join(fmt.Errorf("goroku is shutting down"), cleanupErr)
+	}
 	h.Clients = append(h.Clients, client)
 	h.DBs = append(h.DBs, db)
 	h.Loaders = append(h.Loaders, loader)
+	h.lifecycleMu.Unlock()
 
 	return client, nil
+}
+
+func (h *Goroku) cleanupUnregisteredRuntime(client *CustomTelegramClient, loader *Modules, db *Database) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return h.removeAndShutdownRuntime(ctx, client, loader, db)
+}
+
+type contextCloser interface {
+	Close(context.Context) error
+}
+
+// ErrRuntimeCleanupDeferred reports that teardown is continuing in the
+// background because the caller's context expired at a lifecycle barrier.
+var ErrRuntimeCleanupDeferred = errors.New("runtime cleanup deferred")
+
+func joinDatabaseCloseError(primary error, closer contextCloser) error {
+	if closer == nil {
+		return primary
+	}
+	return errors.Join(primary, closer.Close(context.Background()))
+}
+
+func (h *Goroku) registerWebRuntime(client *CustomTelegramClient) error {
+	if h.Web == nil || client == nil {
+		return nil
+	}
+	loader := client.Loader
+	db := client.GorokuDB
+	h.lifecycleMu.Lock()
+	if h.shuttingDown {
+		h.lifecycleMu.Unlock()
+		return errors.Join(context.Canceled, h.cleanupUnregisteredRuntime(client, loader, db))
+	}
+	err := h.Web.RegisterClient(web.RuntimeClient{ID: client.TGIDValue(), Client: client, Loader: loader, Database: db})
+	h.lifecycleMu.Unlock()
+	if err == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cleanupErr := h.removeAndShutdownRuntime(ctx, client, loader, db)
+	return errors.Join(fmt.Errorf("register web runtime: %w", err), cleanupErr)
+}
+
+func (h *Goroku) removeAndShutdownRuntime(ctx context.Context, client *CustomTelegramClient, loader *Modules, db *Database) error {
+	h.lifecycleMu.Lock()
+	for i, existing := range h.Clients {
+		if existing == client {
+			h.Clients = append(h.Clients[:i], h.Clients[i+1:]...)
+			break
+		}
+	}
+	for i, existing := range h.Loaders {
+		if existing == loader {
+			h.Loaders = append(h.Loaders[:i], h.Loaders[i+1:]...)
+			break
+		}
+	}
+	for i, existing := range h.DBs {
+		if existing == db {
+			h.DBs = append(h.DBs[:i], h.DBs[i+1:]...)
+			break
+		}
+	}
+	h.lifecycleMu.Unlock()
+
+	cleanup := func(waitCtx context.Context) (error, bool) {
+		var cleanupErrs []error
+		if loader != nil {
+			if dispatcher := loader.GetDispatcher(); dispatcher != nil {
+				if err := dispatcher.Close(waitCtx); err != nil {
+					cleanupErrs = append(cleanupErrs, err)
+					if waitCtx.Err() != nil {
+						return errors.Join(cleanupErrs...), true
+					}
+				}
+			}
+		}
+		if client != nil {
+			if inlineManager, ok := client.GorokuInline.(contextCloser); ok {
+				if err := inlineManager.Close(waitCtx); err != nil {
+					cleanupErrs = append(cleanupErrs, err)
+					if waitCtx.Err() != nil {
+						return errors.Join(cleanupErrs...), true
+					}
+				}
+			}
+		}
+		if loader != nil {
+			if err := loader.Shutdown(waitCtx); err != nil {
+				cleanupErrs = append(cleanupErrs, err)
+				if waitCtx.Err() != nil {
+					return errors.Join(cleanupErrs...), true
+				}
+			}
+		}
+		if err := waitCtx.Err(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+			return errors.Join(cleanupErrs...), true
+		}
+		if client != nil {
+			client.GracefulStop(waitCtx)
+		}
+		if err := waitCtx.Err(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+			return errors.Join(cleanupErrs...), true
+		}
+		if db != nil {
+			if err := db.Close(waitCtx); err != nil {
+				cleanupErrs = append(cleanupErrs, err)
+				if waitCtx.Err() != nil {
+					return errors.Join(cleanupErrs...), true
+				}
+			}
+		}
+		return errors.Join(cleanupErrs...), false
+	}
+	cleanupErr, deferred := cleanup(ctx)
+	if deferred {
+		go func() {
+			if deferredErr, _ := cleanup(context.Background()); deferredErr != nil {
+				L().Error("Deferred runtime cleanup failed", zap.Error(deferredErr))
+			}
+		}()
+		return errors.Join(ErrRuntimeCleanupDeferred, cleanupErr)
+	}
+	return cleanupErr
 }
 
 func cloneModule(mod Module) Module {

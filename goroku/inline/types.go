@@ -59,6 +59,7 @@ type CallbackQuery struct {
 	InlineMessage *InlineMessage
 	BotMessage    *BotInlineMessage
 	Manager       *InlineManager
+	leased        bool
 }
 
 type ConfigurableMessage interface {
@@ -75,7 +76,19 @@ func (c CallbackQuery) Answer(text string, showAlert bool) error {
 		Text:            text,
 		ShowAlert:       showAlert,
 	}
-	_, err := c.Manager.request(callbackConfig)
+	if c.Manager == nil {
+		return fmt.Errorf("inline manager is nil")
+	}
+	if c.leased {
+		_, err := c.Manager.requestUnleased(callbackConfig)
+		return err
+	}
+	generation, _, err := c.Manager.claimIntake()
+	if err != nil {
+		return err
+	}
+	defer generation.release()
+	_, err = c.Manager.requestUnleased(callbackConfig)
 	return err
 }
 
@@ -106,6 +119,11 @@ func NewInlineMessage(im *InlineManager, unitID, inlineMessageID string) *Inline
 }
 
 func (m *InlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarkup) error {
+	generation, _, err := m.InlineManager.claimIntake()
+	if err != nil {
+		return err
+	}
+	defer generation.release()
 	if m.UnitID != "" && m.InlineManager != nil {
 		m.InlineManager.mu.Lock()
 		for _, row := range markup.InlineKeyboard {
@@ -136,7 +154,7 @@ func (m *InlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarkup) 
 		Text:      text,
 		ParseMode: tgbotapi.ModeHTML,
 	}
-	_, err := m.InlineManager.request(editMsg)
+	_, err = m.InlineManager.request(editMsg)
 	return err
 }
 
@@ -145,6 +163,11 @@ type deletableClient interface {
 }
 
 func (m *InlineMessage) Delete() (bool, error) {
+	generation, _, claimErr := m.InlineManager.claimIntake()
+	if claimErr != nil {
+		return false, claimErr
+	}
+	defer generation.release()
 	// First check if we have mapped ChatID and MessageID for this Unit ID
 	m.InlineManager.mu.RLock()
 	info, hasInfo := m.InlineManager.activeMessageIDs[m.UnitID]
@@ -197,6 +220,11 @@ func NewBotInlineMessage(im *InlineManager, unitID string, chatID, messageID int
 }
 
 func (m *BotInlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarkup) error {
+	generation, _, err := m.InlineManager.claimIntake()
+	if err != nil {
+		return err
+	}
+	defer generation.release()
 	if m.UnitID != "" && m.InlineManager != nil {
 		m.InlineManager.mu.Lock()
 		for _, row := range markup.InlineKeyboard {
@@ -230,11 +258,16 @@ func (m *BotInlineMessage) Edit(text string, markup tgbotapi.InlineKeyboardMarku
 		Text:      text,
 		ParseMode: tgbotapi.ModeHTML,
 	}
-	_, err := m.InlineManager.request(editMsg)
+	_, err = m.InlineManager.request(editMsg)
 	return err
 }
 
 func (m *BotInlineMessage) Delete() (bool, error) {
+	generation, _, claimErr := m.InlineManager.claimIntake()
+	if claimErr != nil {
+		return false, claimErr
+	}
+	defer generation.release()
 	delMsg := tgbotapi.DeleteMessageConfig{
 		BaseChatMessage: tgbotapi.BaseChatMessage{
 			ChatConfig: tgbotapi.ChatConfig{ChatID: m.ChatID},
@@ -272,6 +305,7 @@ type InlineQuery struct {
 	Args    string
 	FromID  int64
 	Manager *InlineManager
+	leased  bool
 }
 
 type InlineResult struct {
@@ -300,6 +334,20 @@ type ModuleCallbackHandlers interface {
 }
 
 func (q *InlineQuery) Answer(results []tgbotapi.InlineQueryResultArticle, cacheTime int) error {
+	if q == nil || q.Manager == nil {
+		return fmt.Errorf("inline manager is nil")
+	}
+	if !q.leased {
+		generation, _, err := q.Manager.claimIntake()
+		if err != nil {
+			return err
+		}
+		defer generation.release()
+	}
+	return q.answer(results, cacheTime)
+}
+
+func (q *InlineQuery) answer(results []tgbotapi.InlineQueryResultArticle, cacheTime int) error {
 	// Convert slice of articles to slice of any for tgbotapi
 	var iResults []any
 	for _, res := range results {
@@ -312,15 +360,29 @@ func (q *InlineQuery) Answer(results []tgbotapi.InlineQueryResultArticle, cacheT
 		CacheTime:     cacheTime,
 		IsPersonal:    true,
 	}
-	_, err := q.Manager.request(answer)
+	_, err := q.Manager.requestUnleased(answer)
 	return err
 }
 
 func (q *InlineQuery) AnswerResults(results []InlineResult, cacheTime int) error {
+	if q == nil || q.Manager == nil {
+		return fmt.Errorf("inline manager is nil")
+	}
+	if !q.leased {
+		generation, _, err := q.Manager.claimIntake()
+		if err != nil {
+			return err
+		}
+		defer generation.release()
+	}
+	return q.answerResults(results, cacheTime)
+}
+
+func (q *InlineQuery) answerResults(results []InlineResult, cacheTime int) error {
 	var iResults []any
 	for _, res := range results {
 		id := localRandStr(20)
-		markup := q.Manager.GenerateMarkup(res.ReplyMarkup)
+		markup := q.Manager.generateMarkup(res.ReplyMarkup)
 		switch {
 		case res.Message != "":
 			article := tgbotapi.NewInlineQueryResultArticle(id, res.Title, res.Message)
@@ -365,7 +427,7 @@ func (q *InlineQuery) AnswerResults(results []InlineResult, cacheTime int) error
 		}
 	}
 	answer := tgbotapi.InlineConfig{InlineQueryID: q.QueryID, Results: iResults, CacheTime: cacheTime, IsPersonal: true}
-	_, err := q.Manager.request(answer)
+	_, err := q.Manager.requestUnleased(answer)
 	return err
 }
 

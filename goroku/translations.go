@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -116,9 +117,12 @@ func NewTranslator(client *CustomTelegramClient, db *Database) *Translator {
 	return globalTranslator
 }
 
-func (t *Translator) Init() bool {
+func (t *Translator) InitChecked() (bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.db == nil {
+		return false, databaseError("get", "goroku.translations", "lang", "", ErrDatabaseNotInitialized, nil)
+	}
 
 	bt := &BaseTranslator{}
 
@@ -141,7 +145,10 @@ func (t *Translator) Init() bool {
 	}
 
 	// Try custom config lang
-	langVal, _ := t.db.Get("goroku.translations", "lang", "en")
+	langVal, err := t.db.Get("goroku.translations", "lang", "en")
+	if err != nil {
+		return len(t.data) > 0, err
+	}
 	if langStr, ok := langVal.(string); ok {
 		for _, language := range strings.Fields(langStr) {
 			if strings.HasPrefix(language, "http://") || strings.HasPrefix(language, "https://") {
@@ -190,7 +197,17 @@ func (t *Translator) Init() bool {
 		}
 	}
 
-	return len(t.data) > 0
+	return len(t.data) > 0, nil
+}
+
+// Init keeps the historical boolean contract. English remains available when
+// the configured-language read fails, and the lifecycle error is made visible.
+func (t *Translator) Init() bool {
+	ok, err := t.InitChecked()
+	if err != nil {
+		L().Warn("Translator language lookup failed; using English fallback", zap.Error(err))
+	}
+	return ok
 }
 
 func (t *Translator) GetKey(key string) any {

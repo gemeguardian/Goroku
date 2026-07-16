@@ -10,6 +10,7 @@ import (
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
@@ -92,6 +93,16 @@ func (m *InlineStuff) CommandMetas() map[string]goroku.CommandMeta {
 
 func (m *InlineStuff) getTrans(key, def string) string {
 	return getTrans(m.translator, m.Name(), key, def)
+}
+
+func (m *InlineStuff) messagePersistenceFailure(msg *goroku.Message, err error) error {
+	msg.Text = "❌ <b>Could not save inline settings</b>"
+	if msg.Client != nil {
+		if _, editErr := msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text); editErr != nil {
+			goroku.L().Warn("failed to report inline persistence error", zap.Error(editErr), zap.Error(err))
+		}
+	}
+	return fmt.Errorf("persist inline settings: %w", err)
 }
 
 func (m *InlineStuff) checkBot(username string) bool {
@@ -247,8 +258,14 @@ func (m *InlineStuff) ChGorokuBotCmd(msg *goroku.Message) error {
 		}
 	}
 
-	m.db.SetString("goroku.inline", "custom_bot", rawArgs)
-	m.db.SetString("goroku.inline", "bot_token", "")
+	if err := m.db.Update(map[string]map[string]any{
+		"goroku.inline": {
+			"custom_bot": rawArgs,
+			"bot_token":  "",
+		},
+	}); err != nil {
+		return m.messagePersistenceFailure(msg, err)
+	}
 	msg.Text = m.getTrans("bot_updated", "<tg-emoji emoji-id=6318792204118656433>🎉</tg-emoji> <b>Config successfully saved. Restart userbot to apply changes</b>")
 	if msg.Client != nil {
 		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
@@ -272,7 +289,9 @@ func (m *InlineStuff) ChBotTokenCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	m.db.SetString("goroku.inline", "bot_token", token)
+	if err := m.db.SetString("goroku.inline", "bot_token", token); err != nil {
+		return m.messagePersistenceFailure(msg, err)
+	}
 	msg.Text = m.getTrans("bot_updated", "<tg-emoji emoji-id=6318792204118656433>🎉</tg-emoji> <b>Config successfully saved. Restart userbot to apply changes</b>")
 	if msg.Client != nil {
 		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
@@ -399,9 +418,16 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 					Text: "Reset prefix",
 					Data: "reset_prefix_cmd_" + genRandStr(4),
 					Handler: func(c inline.CallbackQuery) error {
-						m.db.Set("goroku.main", "command_prefix", ".")
+						if err := m.db.Set("goroku.main", "command_prefix", "."); err != nil {
+							if answerErr := c.Answer("Could not reset prefix", true); answerErr != nil {
+								goroku.L().Warn("failed to report prefix persistence error", zap.Error(answerErr), zap.Error(err))
+							}
+							return fmt.Errorf("persist prefix reset: %w", err)
+						}
 						replyMsg := tgbotapi.NewMessage(c.ChatID, m.getTrans("prefix_reset", "🔀 Prefix reset!"))
-						_, _ = im.GetBotAPI().Send(replyMsg)
+						if _, err := im.GetBotAPI().Send(replyMsg); err != nil {
+							return fmt.Errorf("send prefix reset confirmation: %w", err)
+						}
 						return nil
 					},
 				},

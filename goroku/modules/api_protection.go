@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"fmt"
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
@@ -62,32 +63,42 @@ func (m *APIProtection) ConfigDefaults() map[string]any {
 }
 
 func (m *APIProtection) ConfigReady(config map[string]any) error {
-	m.updateForbiddenMethods(config)
-	return nil
+	return m.updateForbiddenMethods(config)
 }
 
-func (m *APIProtection) updateForbiddenMethods(config map[string]any) {
+func (m *APIProtection) updateForbiddenMethods(config map[string]any) error {
 	var forbidden []string
 	if raw, ok := config["forbidden_methods"]; ok {
 		if arr, ok := raw.([]any); ok {
 			for _, item := range arr {
 				if str, ok := item.(string); ok {
 					forbidden = append(forbidden, str)
+				} else {
+					return fmt.Errorf("APILimiter forbidden_methods contains type %T, want string", item)
 				}
 			}
 		} else if arr, ok := raw.([]string); ok {
 			forbidden = arr
+		} else {
+			return fmt.Errorf("APILimiter forbidden_methods has type %T, want string slice", raw)
 		}
 	} else {
-		rawVal, _ := m.db.Get("APILimiter", "forbidden_methods", []any{"joinChannel", "importChatInvite"})
+		rawVal, err := m.db.Get("APILimiter", "forbidden_methods", []any{"joinChannel", "importChatInvite"})
+		if err != nil {
+			return err
+		}
 		if arr, ok := rawVal.([]any); ok {
 			for _, item := range arr {
 				if str, ok := item.(string); ok {
 					forbidden = append(forbidden, str)
+				} else {
+					return fmt.Errorf("APILimiter forbidden_methods contains type %T, want string", item)
 				}
 			}
 		} else if arr, ok := rawVal.([]string); ok {
 			forbidden = arr
+		} else {
+			return fmt.Errorf("APILimiter forbidden_methods has type %T, want string slice", rawVal)
 		}
 	}
 
@@ -108,6 +119,7 @@ func (m *APIProtection) updateForbiddenMethods(config map[string]any) {
 	if m.client != nil {
 		m.client.ForbiddenConstructors = typeIDs
 	}
+	return nil
 }
 
 func (m *APIProtection) Commands() map[string]goroku.CommandHandler {
@@ -133,13 +145,18 @@ func (m *APIProtection) Watchers() []goroku.WatcherHandler {
 }
 
 func (m *APIProtection) AntifloodCmd(msg *goroku.Message) error {
-	rawVal, _ := m.db.Get("APILimiter", "disable_protection", true)
+	rawVal, err := m.db.Get("APILimiter", "disable_protection", true)
+	if err != nil {
+		return err
+	}
 	disable, ok := rawVal.(bool)
 	if !ok {
-		disable = true
+		return fmt.Errorf("APILimiter disable_protection has type %T, want bool", rawVal)
 	}
 	newDisable := !disable
-	m.db.Set("APILimiter", "disable_protection", newDisable)
+	if err := m.db.Set("APILimiter", "disable_protection", newDisable); err != nil {
+		return err
+	}
 
 	var statusKey string
 	var statusDef string
@@ -176,10 +193,18 @@ func (m *APIProtection) APIFWProtectionCmd(msg *goroku.Message) error {
 						Text: m.getTrans("btn_yes", "✅ Yes"),
 						Data: "api_fw_yes",
 						Handler: func(c inline.CallbackQuery) error {
-							rawVal, _ := m.db.Get("APILimiter", "disable_protection", true)
-							disable, _ := rawVal.(bool)
+							rawVal, err := m.db.Get("APILimiter", "disable_protection", true)
+							if err != nil {
+								return err
+							}
+							disable, ok := rawVal.(bool)
+							if !ok {
+								return fmt.Errorf("APILimiter disable_protection has type %T, want bool", rawVal)
+							}
 							newDisable := !disable
-							m.db.Set("APILimiter", "disable_protection", newDisable)
+							if err := m.db.Set("APILimiter", "disable_protection", newDisable); err != nil {
+								return err
+							}
 
 							var statusKey string
 							var statusDef string

@@ -83,6 +83,11 @@ func (im *InlineManager) Form(
 	replyMarkup [][]Button,
 	opts ...FormOpt,
 ) (*InlineMessage, error) {
+	generation, ctx, err := im.claimIntake()
+	if err != nil {
+		return nil, err
+	}
+	defer generation.release()
 	unitID := localRandStr(16)
 
 	unit := &Unit{
@@ -123,15 +128,22 @@ func (im *InlineManager) Form(
 	}
 
 	if chatID == 0 {
+		im.mu.Lock()
+		unload := im.removeUnitLocked(unitID)
+		im.mu.Unlock()
+		if unload != nil {
+			unload()
+		}
 		return nil, fmt.Errorf("invalid or zero chat ID")
 	}
 
 	// Invoke unit
-	err := im.InvokeUnit(unitID, chatID, replyToMsgID)
+	err = im.InvokeUnit(unitID, chatID, replyToMsgID)
 	if err != nil {
 		im.mu.Lock()
-		im.removeUnitLocked(unitID)
+		unload := im.removeUnitLocked(unitID)
 		im.mu.Unlock()
+		im.runUnitUnload(unload)
 		return nil, err
 	}
 
@@ -143,7 +155,9 @@ func (im *InlineManager) Form(
 	if del, ok := message.(deletable); ok && del.IsOut() {
 		for attempt := 1; attempt <= 3; attempt++ {
 			if attempt > 1 {
-				time.Sleep(time.Duration(attempt*250) * time.Millisecond)
+				if err := sleepContext(ctx, time.Duration(attempt*250)*time.Millisecond); err != nil {
+					return nil, err
+				}
 			}
 			if err := del.Delete(); err != nil {
 				L().Warn("Failed to delete source form message", zap.Int("attempt", attempt), zap.Error(err))

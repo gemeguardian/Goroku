@@ -51,6 +51,9 @@
 > - ✅ Скачивайте модули исключительно из официальных репозиториев или от доверенных разработчиков
 > - ❌ НЕ устанавливайте модули, если не уверены в их безопасности
 > - ⚠️ Соблюдайте осторожность с неизвестными командами (`.terminal`, `.eval`, `.ecpp` и т. д.)
+> - Go-команда `.eval` доступна только владельцу и всегда включена. Она выполняется **внутри процесса через Yaegi** и **не отменяется** после timeout: выполнение может продолжаться до hard restart. Одновременно допускается только один in-process eval.
+> - Нативные Go-плагины (`.dlmod` / `.loadmod` / presets) требуют владельца. Неподписанная/недоверенная установка — только с явным `-confirm` (или доверенным SHA-256 содержимого). Плагины **нельзя полностью выгрузить из памяти процесса** после load — unregister снимает только handlers.
+> - Удалённые загрузки модулей — только HTTPS; private/loopback/link-local/CGNAT адреса блокируются.
 
 ---
 
@@ -58,7 +61,7 @@
 
 ### VPS/VDS
 > **Примечание для пользователей VPS/VDS:**  
-> Добавьте `--proxy-pass` для включения SSH-туннелирования  
+> Добавьте `--ssh-tunnel` для явного включения SSH-туннелирования
 > Добавьте `--no-web` для настройки только через консоль  
 > Добавьте `--root` для пользователей root (чтобы избежать ввода force_insecure)
 <details> <summary><b>Ubuntu / Debian</b></summary>
@@ -95,6 +98,25 @@ go build -o goroku_bin && \
 ./goroku_bin
 ```
 </details>
+
+### Размещение файлов в production
+
+Оставляйте исполняемый файл и checkout только для чтения, а записываемый runtime
+root передавайте через `--data-root /var/lib/goroku`. Загруженные исходники
+модулей сохраняются в `/var/lib/goroku/modules`; Goroku не записывает их в пакет
+`goroku/modules` внутри checkout.
+
+```text
+/opt/goroku/bin/goroku
+/var/lib/goroku/config.json
+/var/lib/goroku/config-<telegram-id>.json
+/var/lib/goroku/goroku-<telegram-id>.session
+/var/lib/goroku/modules/
+```
+
+Сейчас CLI хранит конфигурацию, JSON-базы отдельных аккаунтов и session-файлы
+непосредственно в выбранном data root. Отдельные каталоги `sessions/` и
+`database/` пока не создаются.
 
 ### Другое
 <details>
@@ -147,7 +169,7 @@ go build -o goroku_bin && \
 
 ## 📋 Требования
 
-- **Go 1.21+**
+- **Go 1.24.4+** (см. `go.mod`)
 - **API Credentials** с сайта [Telegram Apps](https://my.telegram.org/apps)
 
 ---

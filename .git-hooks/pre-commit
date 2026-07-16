@@ -1,16 +1,18 @@
 #!/bin/sh
 set -e
 
-# Run gofmt check
-unformatted=$(gofmt -l .)
+# Align with CI M9.1: only files that belong to main-module packages
+# (gofmt -l DIR walks the whole tree — root package is the repo root).
+export TMPDIR="${TMPDIR:-/tmp}"
+
+files=$(go list -f '{{range .GoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .TestGoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .XTestGoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}' ./...)
+# shellcheck disable=SC2086
+unformatted=$(printf '%s\n' "$files" | sed '/^$/d' | tr '\n' '\0' | xargs -0 gofmt -l 2>/dev/null || true)
 if [ -n "$unformatted" ]; then
     echo "gofmt needed for:"
     echo "$unformatted"
     exit 1
 fi
 
-# Run go vet
 go vet ./...
-
-# Run tests
 go test ./...

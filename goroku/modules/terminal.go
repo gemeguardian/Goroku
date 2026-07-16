@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"context"
 	"fmt"
 	"goroku/goroku"
 	"goroku/goroku/utils"
@@ -55,10 +56,11 @@ func isDangerous(cmd string) bool {
 
 type terminalSession struct {
 	cmd           *exec.Cmd
+	cancel        context.CancelFunc
 	stdin         io.WriteCloser
 	mu            sync.Mutex
-	stdout        strings.Builder
-	stderr        strings.Builder
+	stdout        *boundedBuffer
+	stderr        *boundedBuffer
 	done          bool
 	startTime     time.Time
 	cmdStr        string
@@ -98,8 +100,16 @@ func (m *TerminalMod) Init(client *goroku.CustomTelegramClient, db *goroku.Datab
 }
 
 func (m *TerminalMod) ClientReady() error { return nil }
-func (m *TerminalMod) OnUnload() error    { return nil }
-func (m *TerminalMod) OnDlmod() error     { return nil }
+func (m *TerminalMod) OnUnload() error {
+	m.sessions.Range(func(_, value any) bool {
+		if sess, ok := value.(*terminalSession); ok && sess.cancel != nil {
+			sess.cancel()
+		}
+		return true
+	})
+	return nil
+}
+func (m *TerminalMod) OnDlmod() error { return nil }
 
 func (m *TerminalMod) ConfigDefaults() map[string]any {
 	return map[string]any{
@@ -126,7 +136,11 @@ func (m *TerminalMod) Commands() map[string]goroku.CommandHandler {
 func (m *TerminalMod) CommandMetas() map[string]goroku.CommandMeta {
 	return map[string]goroku.CommandMeta{
 		"terminal": {
-			Aliases: []string{"term", "sh", "cmd"},
+			Aliases:   []string{"term", "sh", "cmd"},
+			OnlyOwner: true,
+		},
+		"terminate": {
+			OnlyOwner: true,
 		},
 	}
 }
@@ -253,10 +267,21 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 		return msg.Answer(text)
 	}
 
-	runningText := formatTrans(m.getTrans("running", "⏳ <b>Running:</b> <code>{}</code>"), escapeHTML(cmdStr))
+	runningText := formatTrans(m.getTrans("running", "⏳ <b>Running:</b> <code>{}</code>"), escapeHTML(m.censor(cmdStr)))
 	_ = msg.Answer(runningText)
 
-	cmd := exec.Command("bash", "-c", cmdStr) //nolint:gosec
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	// Inherit ambient env for interactive shell compatibility; process group + slot still enforced.
+	cmd, err := defaultProcessExecutor.Command(ctx, ProcessSpec{
+		Name:       "bash",
+		Args:       []string{"-c", cmdStr},
+		InheritEnv: true,
+	})
+	if err != nil {
+		return msg.Answer(formatTrans(m.getTrans("exec_error", "❌ <b>Failed to start command:</b> <code>{}</code>"), escapeHTML(err.Error())))
+	}
+	defer defaultProcessExecutor.Release()
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -273,7 +298,10 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 
 	sess := &terminalSession{
 		cmd:       cmd,
+		cancel:    cancel,
 		stdin:     stdinPipe,
+		stdout:    newBoundedBuffer(externalOutputLimit),
+		stderr:    newBoundedBuffer(externalOutputLimit),
 		startTime: time.Now(),
 		cmdStr:    cmdStr,
 		ownerID:   msg.SenderID,
@@ -312,7 +340,7 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 			if n > 0 {
 				chunk := string(buf[:n])
 				sess.mu.Lock()
-				_, _ = sess.stderr.WriteString(chunk)
+				_, _ = sess.stderr.Write([]byte(chunk))
 				currentStderr := sess.stderr.String()
 				sess.mu.Unlock()
 
@@ -448,6 +476,8 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 	}()
 
 	cmdErr := cmd.Wait()
+	timedOut := ctx.Err() == context.DeadlineExceeded
+	cancel()
 	close(done)
 
 	sess.mu.Lock()
@@ -456,7 +486,14 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 	authChatID := sess.authMsgChatID
 	stdout := m.censor(sess.stdout.String())
 	stderr := m.censor(sess.stderr.String())
+	truncated := sess.stdout.Truncated() || sess.stderr.Truncated()
 	sess.mu.Unlock()
+	if timedOut {
+		if stderr != "" {
+			stderr += "\n"
+		}
+		stderr += "command timed out after 15 minutes"
+	}
 
 	if authMsgID != 0 {
 		go deleteMessage(m.client, authChatID, authMsgID)
@@ -472,6 +509,17 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 			rc = -1
 		}
 	}
+	auditExecution(executionAuditEvent{
+		ActorID:    msg.SenderID,
+		ChatID:     msg.ChatID,
+		Capability: "terminal",
+		Digest:     contentSHA256String(cmdStr),
+		Duration:   elapsed,
+		ExitCode:   rc,
+		TimedOut:   timedOut,
+		Truncated:  truncated,
+		Status:     auditStatus(cmdErr, timedOut, false),
+	})
 
 	fullOutput := stdout
 	if stderr != "" {
@@ -497,26 +545,7 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 }
 
 func (m *TerminalMod) censor(text string) string {
-	var extras []string
-	if m.client != nil {
-		extras = append(extras, m.client.APIHash)
-	}
-	if m.db != nil {
-		for _, item := range [][3]string{
-			{"main", "redis_uri", ""},
-			{"main", "db_uri", ""},
-			{"goroku.inline", "bot_token", ""},
-			{"loader", "token", ""},
-			{"goroku.loader", "token", ""},
-		} {
-			if raw, _ := m.db.Get(item[0], item[1], item[2]); raw != nil {
-				if val, ok := raw.(string); ok {
-					extras = append(extras, val)
-				}
-			}
-		}
-	}
-	return utils.CensorSensitive(text, extras...)
+	return censorExecutionOutput(text, m.client, m.db)
 }
 
 func (m *TerminalMod) buildTerminalText(cmdStr, stdout, stderr string, rc *int, elapsed time.Duration) string {
@@ -587,9 +616,9 @@ func (m *TerminalMod) TerminateCmd(msg *goroku.Message) error {
 
 	var killErr error
 	if strings.Contains(utils.GetArgsRaw(msg.Text), "-f") {
-		killErr = sess.cmd.Process.Signal(syscall.SIGKILL)
+		killErr = syscall.Kill(-sess.cmd.Process.Pid, syscall.SIGKILL)
 	} else {
-		killErr = sess.cmd.Process.Signal(syscall.SIGTERM)
+		killErr = syscall.Kill(-sess.cmd.Process.Pid, syscall.SIGTERM)
 	}
 
 	if killErr != nil {

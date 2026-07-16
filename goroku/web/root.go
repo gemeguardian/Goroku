@@ -4,15 +4,19 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"errors"
 	"fmt"
+	"html"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,22 +59,39 @@ type WebConfig struct {
 }
 
 type PendingAuth struct {
-	Token     string
-	Approved  chan struct{}
-	approveMu sync.Once
-	Expiry    time.Time
+	Token      string
+	Approved   chan struct{}
+	Cancelled  chan struct{}
+	ClientID   int64
+	generation uint64
+	approveMu  sync.Once
+	cancelMu   sync.Once
+	Expiry     time.Time
 }
 
 type WebSession struct {
-	Token  string
-	Expiry time.Time
+	Token     string
+	CSRFToken string
+	Expiry    time.Time
 }
 
 const (
-	sessionCookieName = "session"
-	sessionTTL        = 6 * time.Hour
-	shortBodyLimit    = 8 * 1024
+	sessionCookieName       = "session"
+	csrfCookieName          = "csrf_token"
+	csrfHeaderName          = "X-CSRF-Token"
+	csrfFormField           = "_csrf"
+	setupCookieName         = "setup_token"
+	setupCompletedFileName  = "goroku-setup-completed"
+	setupCompletedConfigKey = "web_setup_completed"
+	sessionTTL              = 6 * time.Hour
+	shortBodyLimit          = 8 * 1024
+	webAuthTTL              = 60 * time.Second
+	maxPendingAuths         = 64
+	sessionTokenSize        = 32
+	csrfTokenSize           = 32
 )
+
+var errSetupTokenRequired = errors.New("setup token required")
 
 type inlineBotProvider interface {
 	GetBotAPI() *tgbotapi.BotAPI
@@ -78,7 +99,7 @@ type inlineBotProvider interface {
 }
 
 type Web struct {
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	signInClients  map[string]webiface.TelegramClient
 	pendingClient  webiface.TelegramClient
 	qrLogin        any
@@ -94,43 +115,147 @@ type Web struct {
 	saveConfig     func(key string, value any) bool
 	restart        func()
 	onLogin        func(client webiface.TelegramClient) error
-	clientData     map[int64][]any
+	clientData     map[int64]RuntimeClient
 	apiSetChan     chan struct{}
 	clientsSetChan chan struct{}
 	getClient      func() webiface.TelegramClient
 	pendingAuths   map[string]*PendingAuth
-	pendingAuthsMu sync.Mutex
+	nextGeneration uint64
+	authAccepting  bool
 }
 
+// RuntimeClient is one fully initialized client available to the web runtime.
+type RuntimeClient struct {
+	ID         int64
+	Client     webiface.TelegramClient
+	Loader     any
+	Database   webiface.Database
+	generation uint64
+}
+
+var (
+	ErrInvalidClientID  = errors.New("web runtime client ID must be positive")
+	ErrNilRuntimeClient = errors.New("web runtime client is nil")
+	ErrDuplicateClient  = errors.New("web runtime client ID is already registered")
+)
+
 func NewWeb(cfg WebConfig) *Web {
+	setupToken := strings.TrimSpace(cfg.SetupToken)
+	// Do not re-arm a setup token after durable onboarding completion.
+	if setupToken != "" && SetupCompleted(cfg.DataRoot) {
+		setupToken = ""
+		_ = os.Unsetenv("GOROKU_SETUP_TOKEN")
+	}
 	return &Web{
 		signInClients:  make(map[string]webiface.TelegramClient),
 		sessions:       make(map[string]WebSession),
 		ratelimit:      make(map[string][]int64),
 		apiToken:       cfg.ApiToken,
-		setupToken:     strings.TrimSpace(cfg.SetupToken),
+		setupToken:     setupToken,
 		dataRoot:       cfg.DataRoot,
 		connection:     cfg.Connection,
 		proxy:          cfg.Proxy,
 		saveConfig:     cfg.SaveConfig,
 		restart:        cfg.Restart,
 		onLogin:        cfg.OnLogin,
-		clientData:     make(map[int64][]any),
+		clientData:     make(map[int64]RuntimeClient),
 		apiSetChan:     make(chan struct{}),
 		clientsSetChan: make(chan struct{}),
 		getClient:      cfg.GetClient,
 		pendingAuths:   make(map[string]*PendingAuth),
+		authAccepting:  true,
 	}
 }
 
-func (w *Web) checkSession(r *http.Request) bool {
-	w.mu.Lock()
-	clientsCount := len(w.clientData)
-	w.mu.Unlock()
-	if clientsCount == 0 && w.checkSetupToken(r) {
-		return true
+// SetupCompleted reports whether initial web setup was durably finished.
+func SetupCompleted(dataRoot string) bool {
+	if dataRoot == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(dataRoot, setupCompletedFileName))
+	return err == nil
+}
+
+// RegisterClient adds a fully initialized runtime. IDs are unique and are
+// never overwritten implicitly.
+func (w *Web) RegisterClient(runtime RuntimeClient) error {
+	if runtime.ID <= 0 {
+		return ErrInvalidClientID
+	}
+	if runtime.Client == nil {
+		return ErrNilRuntimeClient
+	}
+	if runtime.Client.TGIDValue() != runtime.ID {
+		return fmt.Errorf("%w: runtime ID %d does not match client ID %d", ErrInvalidClientID, runtime.ID, runtime.Client.TGIDValue())
 	}
 
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, exists := w.clientData[runtime.ID]; exists {
+		return fmt.Errorf("%w: %d", ErrDuplicateClient, runtime.ID)
+	}
+	w.nextGeneration++
+	runtime.generation = w.nextGeneration
+	w.clientData[runtime.ID] = runtime
+	return nil
+}
+
+// UnregisterClient removes id from the runtime registry and reports whether it existed.
+func (w *Web) UnregisterClient(id int64) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, exists := w.clientData[id]; !exists {
+		return false
+	}
+	delete(w.clientData, id)
+	w.cancelPendingAuthsLocked(id, false)
+	return true
+}
+
+func (w *Web) cancelPendingAuthsLocked(clientID int64, all bool) {
+	for token, auth := range w.pendingAuths {
+		if !all && auth.ClientID != clientID {
+			continue
+		}
+		delete(w.pendingAuths, token)
+		if auth.Cancelled != nil {
+			auth.cancelMu.Do(func() { close(auth.Cancelled) })
+		}
+	}
+}
+
+func (w *Web) stopAuth() {
+	w.mu.Lock()
+	w.authAccepting = false
+	w.cancelPendingAuthsLocked(0, true)
+	w.mu.Unlock()
+}
+
+func (w *Web) startAuth() {
+	w.mu.Lock()
+	w.authAccepting = true
+	w.mu.Unlock()
+}
+
+// ListClients returns a stable snapshot without exposing the registry map.
+func (w *Web) ListClients() []RuntimeClient {
+	w.mu.RLock()
+	clients := make([]RuntimeClient, 0, len(w.clientData))
+	for _, runtime := range w.clientData {
+		clients = append(clients, runtime)
+	}
+	w.mu.RUnlock()
+	sort.Slice(clients, func(i, j int) bool { return clients[i].ID < clients[j].ID })
+	return clients
+}
+
+func (w *Web) clientCount() int {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return len(w.clientData)
+}
+
+func (w *Web) checkSession(r *http.Request) bool {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
 		return false
@@ -149,20 +274,102 @@ func (w *Web) sessionForToken(token string) *WebSession {
 		delete(w.sessions, token)
 		return nil
 	}
-	return &sess
+	copy := sess
+	return &copy
 }
 
-func (w *Web) createSession(wr http.ResponseWriter, r *http.Request) string {
-	session := "goroku_session_" + randomToken(32)
+func (w *Web) mintSessionTokens() (session string, csrf string, err error) {
+	token, err := randomToken(sessionTokenSize)
+	if err != nil {
+		return "", "", fmt.Errorf("generate session token: %w", err)
+	}
+	csrf, err = randomToken(csrfTokenSize)
+	if err != nil {
+		return "", "", fmt.Errorf("generate csrf token: %w", err)
+	}
+	return "goroku_session_" + token, csrf, nil
+}
+
+func (w *Web) createSession(wr http.ResponseWriter, r *http.Request) (string, error) {
+	session, csrf, err := w.mintSessionTokens()
+	if err != nil {
+		return "", err
+	}
 	w.mu.Lock()
-	w.sessions[session] = WebSession{Token: session, Expiry: time.Now().Add(sessionTTL)}
+	w.sessions[session] = WebSession{Token: session, CSRFToken: csrf, Expiry: time.Now().Add(sessionTTL)}
 	w.mu.Unlock()
-	w.setSessionCookies(wr, r, session)
-	return session
+	w.setSessionCookies(wr, r, session, csrf)
+	return session, nil
 }
 
-func (w *Web) setSessionCookies(wr http.ResponseWriter, r *http.Request, session string) {
+func setupTokenCandidates(r *http.Request) []string {
+	candidates := []string{
+		r.Header.Get("X-Goroku-Setup-Token"),
+		r.URL.Query().Get("setup_token"),
+	}
+	if cookie, err := r.Cookie(setupCookieName); err == nil {
+		candidates = append(candidates, cookie.Value)
+	}
+	return candidates
+}
+
+// exchangeSetupSession atomically validates the setup token, mints one session,
+// and consumes the token so concurrent exchanges cannot mint multiple sessions.
+func (w *Web) exchangeSetupSession(wr http.ResponseWriter, r *http.Request) (string, error) {
+	session, csrf, err := w.mintSessionTokens()
+	if err != nil {
+		return "", err
+	}
+	candidates := setupTokenCandidates(r)
+
+	w.mu.Lock()
+	expected := w.setupToken
+	if expected == "" {
+		w.mu.Unlock()
+		return "", errSetupTokenRequired
+	}
+	matched := false
+	for _, candidate := range candidates {
+		if constantTimeEqualString(strings.TrimSpace(candidate), expected) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		w.mu.Unlock()
+		return "", errSetupTokenRequired
+	}
+	w.setupToken = ""
+	w.sessions[session] = WebSession{Token: session, CSRFToken: csrf, Expiry: time.Now().Add(sessionTTL)}
+	w.mu.Unlock()
+
+	_ = os.Unsetenv("GOROKU_SETUP_TOKEN")
+	w.persistSetupCompleted()
+	w.removeInitialSetupURL()
+	w.setSessionCookies(wr, r, session, csrf)
+	w.clearSetupCookie(wr, r)
+	return session, nil
+}
+
+func (w *Web) rotateSession(wr http.ResponseWriter, r *http.Request, oldToken string) (string, error) {
+	session, csrf, err := w.mintSessionTokens()
+	if err != nil {
+		return "", err
+	}
+	w.mu.Lock()
+	if oldToken != "" {
+		delete(w.sessions, oldToken)
+	}
+	w.sessions[session] = WebSession{Token: session, CSRFToken: csrf, Expiry: time.Now().Add(sessionTTL)}
+	w.mu.Unlock()
+	w.setSessionCookies(wr, r, session, csrf)
+	return session, nil
+}
+
+func (w *Web) setSessionCookies(wr http.ResponseWriter, r *http.Request, session, csrf string) {
 	secure := isHTTPS(r)
+	expires := time.Now().Add(sessionTTL)
+	maxAge := int(sessionTTL.Seconds())
 	http.SetCookie(wr, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    session,
@@ -170,24 +377,69 @@ func (w *Web) setSessionCookies(wr http.ResponseWriter, r *http.Request, session
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
-		Expires:  time.Now().Add(sessionTTL),
-		MaxAge:   int(sessionTTL.Seconds()),
+		Expires:  expires,
+		MaxAge:   maxAge,
+	})
+	http.SetCookie(wr, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    csrf,
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+		Expires:  expires,
+		MaxAge:   maxAge,
 	})
 }
 
 func (w *Web) clearSessionCookies(wr http.ResponseWriter, r *http.Request) {
 	secure := isHTTPS(r)
-	for _, name := range []string{sessionCookieName, "setup_token"} {
+	for _, name := range []string{sessionCookieName, csrfCookieName, setupCookieName} {
+		httpOnly := name != csrfCookieName
 		http.SetCookie(wr, &http.Cookie{
 			Name:     name,
 			Value:    "",
 			Path:     "/",
-			HttpOnly: true,
+			HttpOnly: httpOnly,
 			Secure:   secure,
 			SameSite: http.SameSiteStrictMode,
 			Expires:  time.Unix(0, 0),
 			MaxAge:   -1,
 		})
+	}
+}
+
+func (w *Web) clearSetupCookie(wr http.ResponseWriter, r *http.Request) {
+	http.SetCookie(wr, &http.Cookie{
+		Name:     setupCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   isHTTPS(r),
+		SameSite: http.SameSiteStrictMode,
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+	})
+}
+
+func (w *Web) consumeSetupToken() {
+	w.mu.Lock()
+	w.setupToken = ""
+	w.mu.Unlock()
+	_ = os.Unsetenv("GOROKU_SETUP_TOKEN")
+	w.persistSetupCompleted()
+	w.removeInitialSetupURL()
+}
+
+func (w *Web) persistSetupCompleted() {
+	if w.dataRoot != "" {
+		path := filepath.Join(w.dataRoot, setupCompletedFileName)
+		if err := os.WriteFile(path, []byte("1\n"), 0o600); err != nil {
+			L().Warn("failed to write setup completed marker", zap.Error(err))
+		}
+	}
+	if w.saveConfig != nil {
+		_ = w.saveConfig(setupCompletedConfigKey, true)
 	}
 }
 
@@ -200,12 +452,36 @@ func trustProxyHeaders() bool {
 	return value == "1" || value == "true" || value == "yes"
 }
 
+func isStateChangingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func constantTimeEqualString(a, b string) bool {
+	ab := []byte(a)
+	bb := []byte(b)
+	if len(ab) != len(bb) {
+		_ = subtle.ConstantTimeCompare(ab, ab)
+		return false
+	}
+	return subtle.ConstantTimeCompare(ab, bb) == 1
+}
+
+// sameOrigin reports whether Origin/Referer match the request host.
+// Missing both headers is not accepted for browser cookie session mutating requests.
 func sameOrigin(r *http.Request) bool {
+	matched := false
+	present := false
 	for _, header := range []string{"Origin", "Referer"} {
 		raw := strings.TrimSpace(r.Header.Get(header))
 		if raw == "" {
 			continue
 		}
+		present = true
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" {
 			return false
@@ -213,24 +489,20 @@ func sameOrigin(r *http.Request) bool {
 		if !strings.EqualFold(u.Host, r.Host) {
 			return false
 		}
-		return true
+		matched = true
 	}
-	return true
+	return present && matched
 }
 
 func (w *Web) checkSetupToken(r *http.Request) bool {
-	if w.setupToken == "" {
+	w.mu.RLock()
+	expected := w.setupToken
+	w.mu.RUnlock()
+	if expected == "" {
 		return false
 	}
-	candidates := []string{
-		r.Header.Get("X-Goroku-Setup-Token"),
-		r.URL.Query().Get("setup_token"),
-	}
-	if cookie, err := r.Cookie("setup_token"); err == nil {
-		candidates = append(candidates, cookie.Value)
-	}
-	for _, token := range candidates {
-		if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(token)), []byte(w.setupToken)) == 1 {
+	for _, token := range setupTokenCandidates(r) {
+		if constantTimeEqualString(strings.TrimSpace(token), expected) {
 			return true
 		}
 	}
@@ -238,12 +510,18 @@ func (w *Web) checkSetupToken(r *http.Request) bool {
 }
 
 func (w *Web) rememberSetupToken(wr http.ResponseWriter, r *http.Request) {
-	if w.setupToken == "" || !w.checkSetupToken(r) {
+	if !w.checkSetupToken(r) {
+		return
+	}
+	w.mu.RLock()
+	token := w.setupToken
+	w.mu.RUnlock()
+	if token == "" {
 		return
 	}
 	http.SetCookie(wr, &http.Cookie{
-		Name:     "setup_token",
-		Value:    w.setupToken,
+		Name:     setupCookieName,
+		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   isHTTPS(r),
@@ -251,6 +529,26 @@ func (w *Web) rememberSetupToken(wr http.ResponseWriter, r *http.Request) {
 		Expires:  time.Now().Add(time.Hour),
 		MaxAge:   3600,
 	})
+}
+
+func (w *Web) csrfTokenFromRequest(r *http.Request) string {
+	if token := strings.TrimSpace(r.Header.Get(csrfHeaderName)); token != "" {
+		return token
+	}
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "application/x-www-form-urlencoded") || strings.HasPrefix(ct, "multipart/form-data") {
+		if err := r.ParseForm(); err == nil {
+			return strings.TrimSpace(r.Form.Get(csrfFormField))
+		}
+	}
+	return ""
+}
+
+func (w *Web) validCSRF(r *http.Request, sess *WebSession) bool {
+	if sess == nil || sess.CSRFToken == "" {
+		return false
+	}
+	return constantTimeEqualString(w.csrfTokenFromRequest(r), sess.CSRFToken)
 }
 
 func readLimitedBody(wr http.ResponseWriter, r *http.Request, limit int64) ([]byte, bool) {
@@ -274,15 +572,27 @@ func (w *Web) removeInitialSetupURL() {
 
 func (w *Web) checkSessionMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(wr http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
+		cookie, err := r.Cookie(sessionCookieName)
+		if err != nil {
+			http.Error(wr, "Unauthorized: Please log in using the Telegram Web Auth button first.", http.StatusUnauthorized)
+			return
+		}
+		sess := w.sessionForToken(cookie.Value)
+		if sess == nil {
+			http.Error(wr, "Unauthorized: Please log in using the Telegram Web Auth button first.", http.StatusUnauthorized)
+			return
+		}
+		if isStateChangingMethod(r.Method) {
+			// Cookie browser sessions must present Origin or Referer; both missing fails closed.
+			// CSRF is required either way for mutating methods.
 			if !sameOrigin(r) {
 				http.Error(wr, "Forbidden: cross-origin request", http.StatusForbidden)
 				return
 			}
-		}
-		if !w.checkSession(r) {
-			http.Error(wr, "Unauthorized: Please log in using the Telegram Web Auth button first.", http.StatusUnauthorized)
-			return
+			if !w.validCSRF(r, sess) {
+				http.Error(wr, "Forbidden: CSRF token invalid", http.StatusForbidden)
+				return
+			}
 		}
 		next(wr, r)
 	}
@@ -436,8 +746,11 @@ func (w *Web) RootHandler(wr http.ResponseWriter, r *http.Request) {
 	platformEmoji := w.getPlatformEmoji()
 	htmlContent = strings.ReplaceAll(htmlContent, `{{ platform_emoji }}`, platformEmoji)
 
-	skipCreds := hasAPIToken(w.apiToken)
-	tgDone := len(w.clientData) > 0
+	w.mu.RLock()
+	apiToken := w.apiToken
+	w.mu.RUnlock()
+	tgDone := w.clientCount() > 0
+	skipCreds := hasAPIToken(apiToken)
 	lavhost := os.Getenv("LAVHOST") != ""
 
 	if skipCreds {
@@ -570,11 +883,19 @@ func (w *Web) SendTGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 }
 
 func (w *Web) CheckSessionHandler(wr http.ResponseWriter, r *http.Request) {
-	if w.checkSession(r) {
-		writeString(wr, "1")
-	} else {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
 		writeString(wr, "0")
+		return
 	}
+	sess := w.sessionForToken(cookie.Value)
+	if sess == nil {
+		writeString(wr, "0")
+		return
+	}
+	w.setSessionCookies(wr, r, sess.Token, sess.CSRFToken)
+	wr.Header().Set("X-CSRF-Token", sess.CSRFToken)
+	writeString(wr, "1")
 }
 
 func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
@@ -582,148 +903,249 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 		http.Error(wr, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if w.checkSession(r) {
-		if cookie, err := r.Cookie(sessionCookieName); err == nil {
-			if sess := w.sessionForToken(cookie.Value); sess != nil {
-				w.setSessionCookies(wr, r, sess.Token)
-				writeString(wr, cookie.Value)
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		if sess := w.sessionForToken(cookie.Value); sess != nil {
+			// Re-auth with an existing browser session is state-changing: require
+			// same-origin and CSRF like other mutating cookie-session routes.
+			if !sameOrigin(r) {
+				http.Error(wr, "Forbidden: cross-origin request", http.StatusForbidden)
 				return
 			}
+			if !w.validCSRF(r, sess) {
+				http.Error(wr, "Forbidden: CSRF token invalid", http.StatusForbidden)
+				return
+			}
+			session, err := w.rotateSession(wr, r, sess.Token)
+			if err != nil {
+				L().Error("failed to rotate session", zap.Error(err))
+				http.Error(wr, "SESSION_UNAVAILABLE", http.StatusInternalServerError)
+				return
+			}
+			writeString(wr, session)
+			return
 		}
 	}
 
-	w.mu.Lock()
-	clientsCount := len(w.clientData)
-	w.mu.Unlock()
-
-	if clientsCount == 0 {
-		if !w.checkSetupToken(r) {
-			http.Error(wr, "SETUP_TOKEN_REQUIRED", http.StatusUnauthorized)
+	clients := w.ListClients()
+	if len(clients) == 0 {
+		session, err := w.exchangeSetupSession(wr, r)
+		if err != nil {
+			if errors.Is(err, errSetupTokenRequired) {
+				http.Error(wr, "SETUP_TOKEN_REQUIRED", http.StatusUnauthorized)
+				return
+			}
+			L().Error("failed to create setup session", zap.Error(err))
+			http.Error(wr, "SESSION_UNAVAILABLE", http.StatusInternalServerError)
 			return
 		}
-		session := w.createSession(wr, r)
 		writeString(wr, session)
 		return
 	}
 
-	ips := r.Header.Get("X-FORWARDED-FOR")
-	if ips == "" {
-		ips = r.Header.Get("CF-Connecting-IP")
-	}
-	if ips == "" {
-		ips = r.RemoteAddr
-	}
-	if !w.checkEndpointRateLimit("web_auth", ips, 3, 3*time.Minute) {
+	ip := clientIP(r)
+	if !w.checkEndpointRateLimit("web_auth", ip, 3, 3*time.Minute) {
 		http.Error(wr, "RATE_LIMIT", http.StatusTooManyRequests)
 		return
 	}
 
-	token := randomToken(8)
-	approvedChan := make(chan struct{})
-	auth := &PendingAuth{
-		Token:    token,
-		Approved: approvedChan,
-		Expiry:   time.Now().Add(60 * time.Second),
-	}
-
-	w.pendingAuthsMu.Lock()
-	w.pendingAuths[token] = auth
-	w.pendingAuthsMu.Unlock()
-
-	w.mu.Lock()
+	var selected RuntimeClient
 	var client TelegramClient
 	var inlineBot *tgbotapi.BotAPI
 	var inlineProvider inlineBotProvider
-	for _, data := range w.clientData {
-		if len(data) > 1 {
-			if c, ok := data[1].(TelegramClient); ok {
-				client = c
-				inlineProvider = getInlineProvider(c)
-				if inlineProvider != nil {
-					inlineBot = inlineProvider.GetBotAPI()
-				}
-				break
+	for _, runtimeClient := range clients {
+		c := runtimeClient.Client
+		if c == nil || c.TGIDValue() == 0 {
+			continue
+		}
+		client = c
+		selected = runtimeClient
+		inlineProvider = getInlineProvider(c)
+		if inlineProvider != nil {
+			inlineBot = inlineProvider.GetBotAPI()
+		}
+		break
+	}
+	if client == nil {
+		http.Error(wr, "Telegram client not ready", http.StatusServiceUnavailable)
+		return
+	}
+
+	token, err := randomToken(8)
+	if err != nil {
+		L().Error("failed to generate web auth token", zap.Error(err))
+		http.Error(wr, "AUTH_UNAVAILABLE", http.StatusInternalServerError)
+		return
+	}
+	approvedChan := make(chan struct{})
+	auth := &PendingAuth{
+		Token:      token,
+		Approved:   approvedChan,
+		Cancelled:  make(chan struct{}),
+		ClientID:   selected.ID,
+		generation: selected.generation,
+		Expiry:     time.Now().Add(webAuthTTL),
+	}
+
+	w.mu.Lock()
+	now := time.Now()
+	for pendingToken, pending := range w.pendingAuths {
+		if !now.Before(pending.Expiry) {
+			delete(w.pendingAuths, pendingToken)
+			if pending.Cancelled != nil {
+				pending.cancelMu.Do(func() { close(pending.Cancelled) })
 			}
 		}
 	}
+	if !w.authAccepting {
+		w.mu.Unlock()
+		http.Error(wr, "AUTH_CANCELLED", http.StatusServiceUnavailable)
+		return
+	}
+	registered, exists := w.clientData[selected.ID]
+	if !exists || registered.generation != selected.generation {
+		w.mu.Unlock()
+		http.Error(wr, "AUTH_CANCELLED", http.StatusServiceUnavailable)
+		return
+	}
+	if len(w.pendingAuths) >= maxPendingAuths {
+		w.mu.Unlock()
+		http.Error(wr, "TOO_MANY_PENDING_AUTHS", http.StatusServiceUnavailable)
+		return
+	}
+	w.pendingAuths[token] = auth
 	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		if w.pendingAuths[token] == auth {
+			delete(w.pendingAuths, token)
+		}
+		w.mu.Unlock()
+	}()
 
-	if client != nil {
-		msg := fmt.Sprintf("🪐🔐 <b>Click button below to confirm web application ops</b>\n\n<b>Client IP</b>: <code>%s</code>\n\n<i>If you did not request any codes, simply ignore this message</i>", ips)
-		if inlineBot != nil {
-			markup := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🔓 Authorize user", "authorize_web_"+token)))
-			cfg := tgbotapi.NewMessage(0, msg)
-			cfg.ChatID = getClientTGID(client)
-			cfg.ParseMode = tgbotapi.ModeHTML
-			cfg.LinkPreviewOptions = tgbotapi.LinkPreviewOptions{IsDisabled: true}
-			cfg.ReplyMarkup = markup
-			_, _ = inlineBot.Send(cfg)
-		} else {
-			fallback := fmt.Sprintf("%s\n\nTo approve, send the following command:\n<code>.approve_web %s</code>", msg, token)
-			_, _ = client.SendMessage(chatref.Username("me"), fallback)
+	msg := fmt.Sprintf("🪐🔐 <b>Click button below to confirm web application ops</b>\n\n<b>Client IP</b>: <code>%s</code>\n\n<i>If you did not request any codes, simply ignore this message</i>", html.EscapeString(ip))
+	if inlineBot != nil {
+		markup := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🔓 Authorize user", "authorize_web_"+token)))
+		cfg := tgbotapi.NewMessage(client.TGIDValue(), msg)
+		cfg.ParseMode = tgbotapi.ModeHTML
+		cfg.LinkPreviewOptions = tgbotapi.LinkPreviewOptions{IsDisabled: true}
+		cfg.ReplyMarkup = markup
+		if _, err := inlineBot.Send(cfg); err != nil {
+			L().Warn("failed to send web auth request", zap.Error(err))
+			http.Error(wr, "AUTH_NOTIFICATION_FAILED", http.StatusBadGateway)
+			return
 		}
 	} else {
-		http.Error(wr, "Telegram client not ready", http.StatusInternalServerError)
-		return
+		fallback := fmt.Sprintf("%s\n\nTo approve, send the following command:\n<code>.approve_web %s</code>", msg, token)
+		if _, err := client.SendMessage(chatref.Username("me"), fallback); err != nil {
+			L().Warn("failed to send web auth request", zap.Error(err))
+			http.Error(wr, "AUTH_NOTIFICATION_FAILED", http.StatusBadGateway)
+			return
+		}
 	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-	timeout := time.After(60 * time.Second)
+	timeout := time.NewTimer(webAuthTTL)
+	defer timeout.Stop()
 	for {
 		select {
 		case <-approvedChan:
-			w.pendingAuthsMu.Lock()
-			delete(w.pendingAuths, token)
-			w.pendingAuthsMu.Unlock()
-
-			session := w.createSession(wr, r)
-
+			session, ok, err := w.createAuthorizedSession(wr, r, token, auth)
+			if err != nil {
+				L().Error("failed to create authorized session", zap.Error(err))
+				http.Error(wr, "SESSION_UNAVAILABLE", http.StatusInternalServerError)
+				return
+			}
+			if !ok {
+				http.Error(wr, "AUTH_CANCELLED", http.StatusServiceUnavailable)
+				return
+			}
 			writeString(wr, session)
 			return
 		case <-ticker.C:
 			if inlineProvider != nil && inlineProvider.PopWebAuthToken(token) {
-				w.pendingAuthsMu.Lock()
-				delete(w.pendingAuths, token)
-				w.pendingAuthsMu.Unlock()
-
-				session := w.createSession(wr, r)
-
+				session, ok, err := w.createAuthorizedSession(wr, r, token, auth)
+				if err != nil {
+					L().Error("failed to create authorized session", zap.Error(err))
+					http.Error(wr, "SESSION_UNAVAILABLE", http.StatusInternalServerError)
+					return
+				}
+				if !ok {
+					http.Error(wr, "AUTH_CANCELLED", http.StatusServiceUnavailable)
+					return
+				}
 				writeString(wr, session)
 				return
 			}
-		case <-timeout:
-			w.pendingAuthsMu.Lock()
-			delete(w.pendingAuths, token)
-			w.pendingAuthsMu.Unlock()
-
+		case <-timeout.C:
 			http.Error(wr, "TIMEOUT", http.StatusRequestTimeout)
+			return
+		case <-r.Context().Done():
+			return
+		case <-auth.Cancelled:
+			http.Error(wr, "AUTH_CANCELLED", http.StatusServiceUnavailable)
 			return
 		}
 	}
 }
 
-func randomToken(size int) string {
+func (w *Web) createAuthorizedSession(wr http.ResponseWriter, r *http.Request, token string, auth *PendingAuth) (string, bool, error) {
+	session, csrf, err := w.mintSessionTokens()
+	if err != nil {
+		return "", false, err
+	}
+
+	var oldSession string
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		oldSession = cookie.Value
+	}
+
+	w.mu.Lock()
+	pending := w.pendingAuths[token]
+	runtime, registered := w.clientData[auth.ClientID]
+	if pending != auth || !registered || runtime.generation != auth.generation || !time.Now().Before(auth.Expiry) {
+		w.mu.Unlock()
+		return "", false, nil
+	}
+	if oldSession != "" {
+		delete(w.sessions, oldSession)
+	}
+	w.sessions[session] = WebSession{Token: session, CSRFToken: csrf, Expiry: time.Now().Add(sessionTTL)}
+	delete(w.pendingAuths, token)
+	w.mu.Unlock()
+	w.setSessionCookies(wr, r, session, csrf)
+	return session, true, nil
+}
+
+func randomToken(size int) (string, error) {
+	return randomTokenFrom(rand.Reader, size)
+}
+
+func randomTokenFrom(reader io.Reader, size int) (string, error) {
 	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	if size <= 0 {
+		return "", fmt.Errorf("token size must be positive")
+	}
 	b := make([]byte, size)
 	for i := range b {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		n, err := rand.Int(reader, big.NewInt(int64(len(alphabet))))
 		if err != nil {
-			b[i] = alphabet[0]
-			continue
+			return "", err
 		}
 		b[i] = alphabet[n.Int64()]
 	}
-	return string(b)
+	return string(b), nil
 }
 
 func clientIP(r *http.Request) string {
+	raw := r.RemoteAddr
 	if !trustProxyHeaders() {
-		return r.RemoteAddr
+		return normalizeClientIP(raw)
 	}
 	// Cloudflare-provided client IP is the most trustworthy when present.
 	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
-		return cf
+		raw = cf
+		return normalizeClientIP(raw)
 	}
 	// Otherwise use the left-most entry of X-Forwarded-For. This assumes
 	// the server is behind a trusted reverse proxy; without such a proxy
@@ -733,20 +1155,25 @@ func clientIP(r *http.Request) string {
 		for _, p := range parts {
 			ip := strings.TrimSpace(p)
 			if ip != "" {
-				return ip
+				return normalizeClientIP(ip)
 			}
 		}
 	}
-	return r.RemoteAddr
+	return normalizeClientIP(raw)
 }
 
 func normalizeClientIP(ip string) string {
-	// Strip port if present.
+	ip = strings.TrimSpace(ip)
 	host, _, err := net.SplitHostPort(ip)
 	if err == nil {
 		ip = host
 	}
-	return ip
+	ip = strings.Trim(ip, "[]")
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ""
+	}
+	return addr.Unmap().String()
 }
 
 func (w *Web) checkEndpointRateLimit(endpoint, ips string, maxAttempts int, window time.Duration) bool {
@@ -775,11 +1202,8 @@ func (w *Web) checkEndpointRateLimit(endpoint, ips string, maxAttempts int, wind
 	return true
 }
 
-func getClientTGID(client any) int64 {
-	if c, ok := client.(interface{ TGIDValue() int64 }); ok {
-		return c.TGIDValue()
-	}
-	return 0
+func getClientTGID(client webiface.TelegramClient) int64 {
+	return client.TGIDValue()
 }
 
 func getInlineProvider(client any) inlineBotProvider {
@@ -797,13 +1221,15 @@ func getInlineProvider(client any) inlineBotProvider {
 }
 
 func (w *Web) ApproveWebAuth(token string) bool {
-	w.pendingAuthsMu.Lock()
-	defer w.pendingAuthsMu.Unlock()
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if auth, exists := w.pendingAuths[token]; exists {
-		if time.Now().Before(auth.Expiry) {
+		runtime, registered := w.clientData[auth.ClientID]
+		if registered && runtime.generation == auth.generation && time.Now().Before(auth.Expiry) {
 			auth.approveMu.Do(func() { close(auth.Approved) })
 			return true
 		}
+		delete(w.pendingAuths, token)
 	}
 	return false
 }
@@ -868,6 +1294,7 @@ func (w *Web) TGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 			http.Error(wr, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		w.clearSetupCookie(wr, r)
 	} else {
 		L().Info("tg_code failed: pending client unavailable")
 		http.Error(wr, "Telegram client not available", http.StatusInternalServerError)
@@ -878,6 +1305,10 @@ func (w *Web) TGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 }
 
 func (w *Web) FinishLoginHandler(wr http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(wr, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	w.mu.Lock()
 	client := w.pendingClient
 	w.mu.Unlock()
@@ -892,10 +1323,9 @@ func (w *Web) FinishLoginHandler(wr http.ResponseWriter, r *http.Request) {
 		http.Error(wr, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	w.clearSetupCookie(wr, r)
 	L().Info("finish_login completed")
 	writeString(wr, "ok")
-	return
-
 }
 
 func (w *Web) finishPendingLogin(client TelegramClient) error {
@@ -910,7 +1340,8 @@ func (w *Web) finishPendingLogin(client TelegramClient) error {
 		w.qrTaskActive = false
 		w.twoFANeeded = false
 		w.mu.Unlock()
-		w.removeInitialSetupURL()
+		// Successful initial login force-consumes the one-time setup token.
+		w.consumeSetupToken()
 		return nil
 	}
 
@@ -920,7 +1351,7 @@ func (w *Web) finishPendingLogin(client TelegramClient) error {
 			w.restart()
 		}()
 	}
-	w.removeInitialSetupURL()
+	w.consumeSetupToken()
 	return nil
 }
 
@@ -967,6 +1398,10 @@ func (w *Web) CustomBotHandler(wr http.ResponseWriter, r *http.Request) {
 }
 
 func (w *Web) InitQRLoginHandler(wr http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(wr, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	url, err := w.initQRLogin(r)
 	if err != nil {
 		L().Info("QR login init failed: {0}", zap.Any("arg0", err))
@@ -1091,9 +1526,10 @@ func (w *Web) pollQRLogin(client TelegramClient) {
 }
 
 func (w *Web) GetQRURLHandler(wr http.ResponseWriter, r *http.Request) {
-	w.mu.Lock()
+	w.mu.RLock()
 	qr := w.qrLogin
-	w.mu.Unlock()
+	twoFANeeded := w.twoFANeeded
+	w.mu.RUnlock()
 
 	if qrStr, ok := qr.(string); ok && qrStr != "" {
 		wr.WriteHeader(http.StatusCreated) // 201 Created
@@ -1101,12 +1537,18 @@ func (w *Web) GetQRURLHandler(wr http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if qrDone, ok := qr.(bool); ok && qrDone {
-		if w.twoFANeeded {
+		if twoFANeeded {
 			wr.WriteHeader(http.StatusForbidden)
 			writeString(wr, "2FA")
 			return
 		}
 		writeString(wr, "SUCCESS")
+		return
+	}
+
+	// Initializing QR login mutates state; require POST (GET is read-only).
+	if r.Method != http.MethodPost {
+		http.Error(wr, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -1160,6 +1602,7 @@ func (w *Web) QR2FAHandler(wr http.ResponseWriter, r *http.Request) {
 		http.Error(wr, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	w.clearSetupCookie(wr, r)
 	writeString(wr, "SUCCESS")
 }
 

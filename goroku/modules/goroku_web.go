@@ -78,7 +78,7 @@ func (m *GorokuWeb) WebrestartCmd(msg *goroku.Message) error {
 	}
 
 	web.Instance.Stop()
-	go web.Instance.Start(port, true)
+	web.Instance.StartAsync(port, true)
 
 	msg.Text = "🔄 <b>Web server restarted.</b>"
 	_ = msg.Answer(msg.Text)

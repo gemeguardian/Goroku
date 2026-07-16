@@ -55,12 +55,11 @@ type SSHTunnel struct {
 	urlOnce           sync.Once
 	urlAvailable      chan struct{}
 	process           *exec.Cmd
-	currentCmdIndex   int
 	providers         []TunnelProvider
 	allCommandsFailed bool
 	mu                sync.Mutex
-	ctx               context.Context
 	cancel            context.CancelFunc
+	done              chan struct{}
 }
 
 // NewSSHTunnel creates a tunnel that tries the built-in providers in order.
@@ -85,16 +84,28 @@ func (s *SSHTunnel) Start() {
 	if s.cancel != nil {
 		return
 	}
-	s.ctx, s.cancel = context.WithCancel(context.Background())
-	go s.runSSHTunnel()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.cancel = cancel
+	s.done = done
+	go func() {
+		s.runSSHTunnel(ctx)
+		s.mu.Lock()
+		if s.done == done {
+			s.cancel = nil
+			s.done = nil
+			s.process = nil
+		}
+		s.mu.Unlock()
+		close(done)
+	}()
 }
 
 func (s *SSHTunnel) Stop() {
 	s.mu.Lock()
 	proc := s.process
 	cancel := s.cancel
-	s.cancel = nil
-	s.process = nil
+	done := s.done
 	s.mu.Unlock()
 
 	if cancel != nil {
@@ -104,15 +115,12 @@ func (s *SSHTunnel) Stop() {
 		L().Info("Stopping SSH tunnel process", zap.Int("pid", proc.Process.Pid))
 		_ = proc.Process.Kill()
 
-		done := make(chan struct{})
-		go func() {
-			_ = proc.Wait()
-			close(done)
-		}()
+	}
+	if done != nil {
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			L().Warn("SSH tunnel process did not exit within 5s; leaving waiter in background")
+			L().Warn("SSH tunnel process did not exit within 5s")
 		}
 	}
 }
@@ -134,19 +142,18 @@ func (s *SSHTunnel) markURLAvailable() {
 	s.urlOnce.Do(func() { close(s.urlAvailable) })
 }
 
-func (s *SSHTunnel) runSSHTunnel() {
-	for s.currentCmdIndex < len(s.providers) {
+func (s *SSHTunnel) runSSHTunnel(ctx context.Context) {
+	for cmdIndex := 0; cmdIndex < len(s.providers); cmdIndex++ {
 		select {
-		case <-s.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 		}
 
-		provider := s.providers[s.currentCmdIndex]
+		provider := s.providers[cmdIndex]
 		rx, err := regexp.Compile(provider.Pattern)
 		if err != nil {
 			L().Error("Invalid tunnel URL regex", zap.String("provider", provider.Name), zap.Error(err))
-			s.currentCmdIndex++
 			continue
 		}
 
@@ -158,7 +165,7 @@ func (s *SSHTunnel) runSSHTunnel() {
 
 		L().Info("Attempting SSH tunnel", zap.String("provider", provider.Name), zap.Strings("args", args))
 
-		cmd := exec.CommandContext(s.ctx, "ssh", args...) //nolint:gosec
+		cmd := exec.CommandContext(ctx, "ssh", args...) //nolint:gosec
 		s.mu.Lock()
 		s.process = cmd
 		s.mu.Unlock()
@@ -166,13 +173,11 @@ func (s *SSHTunnel) runSSHTunnel() {
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			L().Error("Failed to get stdout pipe", zap.String("provider", provider.Name), zap.Error(err))
-			s.currentCmdIndex++
 			continue
 		}
 
 		if err := cmd.Start(); err != nil {
 			L().Error("Failed to start SSH tunnel process", zap.String("provider", provider.Name), zap.Error(err))
-			s.currentCmdIndex++
 			continue
 		}
 
@@ -205,9 +210,8 @@ func (s *SSHTunnel) runSSHTunnel() {
 		}
 
 		L().Info("SSH tunnel attempt failed, trying next provider", zap.String("provider", provider.Name))
-		s.currentCmdIndex++
 		select {
-		case <-s.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-time.After(2 * time.Second):
 		}

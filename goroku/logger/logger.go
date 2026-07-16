@@ -2,6 +2,7 @@ package logger
 
 import (
 	"os"
+	"sync"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -9,8 +10,16 @@ import (
 )
 
 var Logger *zap.Logger
+var loggerMu sync.RWMutex
 
 func Init() {
+	logger := build()
+	loggerMu.Lock()
+	Logger = logger
+	loggerMu.Unlock()
+}
+
+func build() *zap.Logger {
 	level := zapcore.InfoLevel
 	if os.Getenv("GOROKU_DEBUG") == "1" {
 		level = zapcore.DebugLevel
@@ -53,12 +62,24 @@ func Init() {
 	)
 
 	core := zapcore.NewTee(consoleCore, fileCore)
-	Logger = zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
+	return zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
 }
 
 func L() *zap.Logger {
-	if Logger == nil {
-		Init()
+	loggerMu.RLock()
+	logger := Logger
+	loggerMu.RUnlock()
+	if logger != nil {
+		return logger
 	}
-	return Logger
+
+	logger = build()
+	loggerMu.Lock()
+	if Logger == nil {
+		Logger = logger
+	} else {
+		logger = Logger
+	}
+	loggerMu.Unlock()
+	return logger
 }

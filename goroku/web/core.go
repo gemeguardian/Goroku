@@ -2,54 +2,121 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"goroku/goroku/webiface"
 
 	"go.uber.org/zap"
 )
 
 var _ = zap.NewNop
 
-const DefaultFallbackTGID = 123456789
-
 type WebCore struct {
 	*Web
-	server      *http.Server
-	port        int
-	running     bool
-	ready       bool
-	clientData  map[int64][]any
-	proxypasser *ProxyPasser
-	url         string
-	mu          sync.Mutex
+	serverMu        sync.RWMutex
+	server          *http.Server
+	listen          func(context.Context, string, string) (net.Listener, error)
+	port            int
+	running         bool
+	ready           bool
+	proxyPass       bool
+	proxypasser     *ProxyPasser
+	url             string
+	state           webLifecycleState
+	startCancel     context.CancelFunc
+	startDone       chan struct{}
+	startReady      chan struct{}
+	startGeneration *webStartGeneration
+	stopDone        chan struct{}
+	lifecycleErr    error
 }
 
-var Instance *WebCore
+type webStartGeneration struct {
+	done    chan struct{}
+	err     error
+	running bool
+	waiters int
+}
+
+type webLifecycleState uint8
+
+const (
+	webStopped webLifecycleState = iota
+	webStarting
+	webRunning
+	webStopping
+)
+
+// DefaultFallbackTGID is retained for source compatibility. Typed runtime
+// registration rejects unknown IDs and does not use this fallback.
+// Deprecated: register a RuntimeClient with its real Telegram ID.
+const DefaultFallbackTGID = 123456789
+
+var (
+	Instance   *WebCore
+	instanceMu sync.Mutex
+)
 
 func NewWebCore(cfg WebConfig) *WebCore {
 	wc := &WebCore{
-		Web:        NewWeb(cfg),
-		clientData: make(map[int64][]any),
+		Web:    NewWeb(cfg),
+		listen: (&net.ListenConfig{}).Listen,
 	}
+	instanceMu.Lock()
 	Instance = wc
+	instanceMu.Unlock()
 	return wc
 }
 
-func (wc *WebCore) StartIfReady(totalCount int, port int, proxyPass bool) {
-	wc.mu.Lock()
-	defer wc.mu.Unlock()
+// ReleaseInstance clears the compatibility singleton only if wc still owns it.
+func ReleaseInstance(wc *WebCore) {
+	instanceMu.Lock()
+	if Instance == wc {
+		Instance = nil
+	}
+	instanceMu.Unlock()
+}
 
-	if totalCount <= len(wc.clientData) {
-		if !wc.running {
-			go wc.Start(port, proxyPass)
-		}
+// AddLoader preserves the historical API as a strict typed-registry wrapper.
+// Invalid or duplicate runtimes are rejected rather than assigned a fake ID.
+// Deprecated: use RegisterClient.
+func (wc *WebCore) AddLoader(client any, loader any, db any) {
+	typedClient, clientOK := client.(webiface.TelegramClient)
+	typedDB, dbOK := db.(webiface.Database)
+	if !clientOK || !dbOK || typedClient.TGIDValue() <= 0 {
+		L().Warn("legacy AddLoader rejected invalid runtime")
+		return
+	}
+	if err := wc.RegisterClient(RuntimeClient{
+		ID:       typedClient.TGIDValue(),
+		Client:   typedClient,
+		Loader:   loader,
+		Database: typedDB,
+	}); err != nil {
+		L().Warn("legacy AddLoader failed", zap.Error(err))
+	}
+}
+
+func (wc *WebCore) StartIfReady(totalCount int, port int, proxyPass bool) {
+	clientCount := wc.clientCount()
+	wc.serverMu.Lock()
+	start := false
+	if totalCount <= clientCount {
+		start = wc.state == webStopped
 		wc.ready = true
+	}
+	wc.serverMu.Unlock()
+	if start {
+		wc.StartAsync(port, proxyPass)
 	}
 }
 
@@ -58,10 +125,29 @@ func (wc *WebCore) GetURL(proxyPass bool) string {
 		return fmt.Sprintf("https://%s.%s.lavhost.ml", os.Getenv("USER"), os.Getenv("SERVER"))
 	}
 
-	if proxyPass && wc.proxypasser != nil {
-		url := wc.proxypasser.GetURL(10 * time.Second)
+	wc.serverMu.RLock()
+	ready := wc.startReady
+	if wc.state != webStarting {
+		ready = nil
+	}
+	wc.serverMu.RUnlock()
+	if proxyPass && ready != nil {
+		<-ready
+	}
+
+	wc.serverMu.RLock()
+	proxypasser := wc.proxypasser
+	tunnelEnabled := wc.state == webRunning && wc.proxyPass
+	port := wc.port
+	wc.serverMu.RUnlock()
+	if proxyPass && tunnelEnabled && proxypasser != nil {
+		url := proxypasser.GetURL(10 * time.Second)
 		if url != "" {
-			wc.url = url
+			wc.serverMu.Lock()
+			if wc.state == webRunning && wc.proxypasser == proxypasser {
+				wc.url = url
+			}
+			wc.serverMu.Unlock()
 			return url
 		}
 	}
@@ -85,33 +171,125 @@ func (wc *WebCore) GetURL(proxyPass bool) string {
 		ip = envIP
 	}
 
-	wc.url = fmt.Sprintf("http://%s:%d", ip, wc.port)
-	return wc.url
+	url := "http://" + net.JoinHostPort(ip, strconv.Itoa(port))
+	wc.serverMu.Lock()
+	wc.url = url
+	wc.serverMu.Unlock()
+	return url
 }
 
 func (wc *WebCore) SetPort(port int) {
-	wc.mu.Lock()
-	defer wc.mu.Unlock()
+	wc.serverMu.Lock()
+	defer wc.serverMu.Unlock()
 	if wc.port == 0 {
 		wc.port = port
 	}
 }
 
 func (wc *WebCore) Port() int {
-	wc.mu.Lock()
-	defer wc.mu.Unlock()
+	wc.serverMu.RLock()
+	defer wc.serverMu.RUnlock()
 	return wc.port
 }
 
 func (wc *WebCore) Start(port int, proxyPass bool) {
-	wc.mu.Lock()
-	if wc.running {
-		wc.mu.Unlock()
-		return
+	start, _ := wc.beginStart(port, proxyPass)
+	if start != nil {
+		start()
 	}
-	wc.port = port
+}
+
+// StartContext starts serving and waits until the listener is bound or startup
+// fails. Cancellation initiates component-owned cleanup without waiting past ctx.
+func (wc *WebCore) StartContext(ctx context.Context, port int, proxyPass bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	start, generation := wc.beginStart(port, proxyPass)
+	if generation == nil {
+		wc.serverMu.RLock()
+		err := wc.lifecycleErr
+		running := wc.state == webRunning
+		wc.serverMu.RUnlock()
+		if running {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return context.Canceled
+	}
+	wc.serverMu.Lock()
+	generation.waiters++
+	wc.serverMu.Unlock()
+	defer func() {
+		wc.serverMu.Lock()
+		generation.waiters--
+		wc.serverMu.Unlock()
+	}()
+	if start != nil {
+		go start()
+	}
+	select {
+	case <-generation.done:
+		if generation.err != nil {
+			return generation.err
+		}
+		if !generation.running {
+			return context.Canceled
+		}
+		return nil
+	case <-ctx.Done():
+		_ = wc.Close(ctx)
+		return ctx.Err()
+	}
+}
+
+// StartAsync registers startup before launching it, so a concurrent Stop cannot
+// miss a Start goroutine that has not been scheduled yet.
+func (wc *WebCore) StartAsync(port int, proxyPass bool) {
+	start, _ := wc.beginStart(port, proxyPass)
+	if start != nil {
+		go start()
+	}
+}
+
+func (wc *WebCore) beginStart(port int, proxyPass bool) (func(), *webStartGeneration) {
+	wc.serverMu.Lock()
+	if wc.state == webStarting {
+		generation := wc.startGeneration
+		wc.serverMu.Unlock()
+		return nil, generation
+	}
+	if wc.state == webRunning {
+		generation := wc.startGeneration
+		wc.serverMu.Unlock()
+		return nil, generation
+	}
+	if wc.state != webStopped {
+		wc.serverMu.Unlock()
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	generation := &webStartGeneration{done: make(chan struct{})}
+	wc.state = webStarting
+	wc.startCancel = cancel
+	wc.startDone = done
+	wc.startReady = generation.done
+	wc.startGeneration = generation
+	wc.proxyPass = proxyPass
+	wc.lifecycleErr = nil
+	wc.startAuth()
+	wc.serverMu.Unlock()
+
+	return func() { wc.runStart(ctx, done, generation, port, proxyPass) }, generation
+}
+
+func (wc *WebCore) runStart(ctx context.Context, done chan struct{}, generation *webStartGeneration, port int, proxyPass bool) {
+	runningPort := port
 	if envPort := os.Getenv("PORT"); envPort != "" {
-		if _, err := fmt.Sscanf(envPort, "%d", &wc.port); err != nil {
+		if _, err := fmt.Sscanf(envPort, "%d", &runningPort); err != nil {
 			L().Warn("invalid PORT env variable", zap.String("port", envPort), zap.Error(err))
 		}
 	}
@@ -132,24 +310,129 @@ func (wc *WebCore) Start(port int, proxyPass bool) {
 		mux.ServeHTTP(w, r)
 	})
 
-	wc.server = &http.Server{
-		Addr:              fmt.Sprintf(":%d", wc.port),
-		Handler:           secureHandler,
-		ReadHeaderTimeout: 10 * time.Second,
+	bindHost := strings.TrimSpace(os.Getenv("GOROKU_IP"))
+	if bindHost == "" {
+		bindHost = "127.0.0.1"
+		if os.Getenv("DOCKER") != "" {
+			bindHost = "0.0.0.0"
+		}
+	}
+	server := newHTTPServer(net.JoinHostPort(bindHost, strconv.Itoa(runningPort)), secureHandler)
+	var proxypasser *ProxyPasser
+	if proxyPass {
+		proxypasser = NewProxyPasser(runningPort, func(url string) {
+			wc.serverMu.Lock()
+			if wc.state == webRunning && wc.proxypasser == proxypasser {
+				wc.url = url
+			}
+			wc.serverMu.Unlock()
+		}, false)
 	}
 
-	wc.proxypasser = NewProxyPasser(wc.port, func(url string) {
-		wc.mu.Lock()
-		wc.url = url
-		wc.mu.Unlock()
-	}, false)
+	listener, err := wc.listen(ctx, "tcp", server.Addr)
+	wc.serverMu.Lock()
+	if err != nil || wc.state != webStarting || ctx.Err() != nil {
+		wc.serverMu.Unlock()
+		if listener != nil {
+			_ = listener.Close()
+		}
+		if err != nil && ctx.Err() == nil {
+			L().Info("Web server error: {0}", zap.Any("arg0", err))
+		}
 
+		wc.serverMu.Lock()
+		if wc.state == webStarting {
+			if err != nil && ctx.Err() == nil {
+				wc.lifecycleErr = fmt.Errorf("listen: %w", err)
+				generation.err = wc.lifecycleErr
+			} else {
+				generation.err = context.Canceled
+			}
+			wc.stopAuth()
+			wc.running = false
+			wc.ready = false
+			wc.proxyPass = false
+			wc.server = nil
+			wc.proxypasser = nil
+			wc.startCancel = nil
+			wc.startDone = nil
+			wc.startReady = nil
+			wc.startGeneration = nil
+			wc.state = webStopped
+		} else {
+			generation.err = context.Canceled
+		}
+		close(done)
+		close(generation.done)
+		wc.serverMu.Unlock()
+		return
+	}
+	wc.server = server
+	wc.port = runningPort
+	wc.proxypasser = proxypasser
 	wc.running = true
-	wc.mu.Unlock()
+	wc.state = webRunning
+	generation.running = true
+	close(generation.done)
+	wc.serverMu.Unlock()
 
-	L().Info("Goroku Userbot Web Interface running on {0}", zap.Any("arg0", wc.port))
-	if err := wc.server.ListenAndServe(); err != http.ErrServerClosed {
+	L().Info("Goroku Userbot Web Interface running on {0}", zap.Any("arg0", runningPort))
+	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+		wc.serverMu.Lock()
+		wc.lifecycleErr = fmt.Errorf("serve: %w", err)
+		wc.serverMu.Unlock()
 		L().Info("Web server error: {0}", zap.Any("arg0", err))
+	}
+	wc.finishStart(done)
+}
+
+func (wc *WebCore) finishStart(done chan struct{}) {
+	close(done)
+
+	wc.serverMu.Lock()
+	if wc.state != webRunning {
+		wc.serverMu.Unlock()
+		return
+	}
+	wc.state = webStopping
+	wc.stopDone = make(chan struct{})
+	stopDone := wc.stopDone
+	proxypasser := wc.proxypasser
+	wc.serverMu.Unlock()
+
+	if proxypasser != nil {
+		proxypasser.Stop()
+	}
+	wc.finishStop(stopDone)
+}
+
+func (wc *WebCore) finishStop(done chan struct{}) {
+	wc.serverMu.Lock()
+	wc.stopAuth()
+	wc.running = false
+	wc.ready = false
+	wc.proxyPass = false
+	wc.server = nil
+	wc.proxypasser = nil
+	wc.startCancel = nil
+	wc.startDone = nil
+	wc.startReady = nil
+	wc.startGeneration = nil
+	wc.stopDone = nil
+	wc.state = webStopped
+	close(done)
+	wc.serverMu.Unlock()
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      75 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 }
 
@@ -171,35 +454,89 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	}, "; "))
 }
 
+// Stop preserves the historical blocking API with a bounded internal timeout.
 func (wc *WebCore) Stop() {
-	wc.mu.Lock()
-	defer wc.mu.Unlock()
-
-	if !wc.running {
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	if wc.server != nil {
-		if err := wc.server.Shutdown(ctx); err != nil {
-			L().Warn("web server shutdown failed", zap.Error(err))
-		}
+	if err := wc.Close(ctx); err != nil {
+		L().Warn("web server shutdown failed", zap.Error(err))
 	}
-
-	wc.running = false
-	wc.ready = false
 }
 
-func (wc *WebCore) AddLoader(client any, loader any, db any) {
-	wc.mu.Lock()
-	defer wc.mu.Unlock()
-
-	var id int64 = DefaultFallbackTGID
-	if c, ok := client.(interface{ TGIDValue() int64 }); ok && c.TGIDValue() != 0 {
-		id = c.TGIDValue()
+// Close stops HTTP/auth intake and waits for startup and shutdown completion.
+// A caller timeout only stops waiting; component-owned teardown continues.
+func (wc *WebCore) Close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	wc.clientData[id] = []any{loader, client, db}
-	wc.Web.clientData[id] = []any{loader, client, db}
+	wc.serverMu.Lock()
+	wc.stopAuth()
+	switch wc.state {
+	case webStopped:
+		err := wc.lifecycleErr
+		wc.serverMu.Unlock()
+		return err
+	case webStopping:
+		done := wc.stopDone
+		wc.serverMu.Unlock()
+		return wc.waitForStop(ctx, done)
+	}
+
+	wc.state = webStopping
+	wc.stopDone = make(chan struct{})
+	stopDone := wc.stopDone
+	cancel := wc.startCancel
+	startDone := wc.startDone
+	server := wc.server
+	proxypasser := wc.proxypasser
+	wc.serverMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	go wc.completeStop(server, proxypasser, startDone, stopDone)
+	return wc.waitForStop(ctx, stopDone)
+}
+
+func (wc *WebCore) completeStop(server *http.Server, proxypasser *ProxyPasser, startDone, stopDone chan struct{}) {
+	if proxypasser != nil {
+		proxypasser.Stop()
+	}
+	if server != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := server.Shutdown(ctx)
+		cancel()
+		if err != nil {
+			err = errors.Join(err, server.Close())
+			wc.serverMu.Lock()
+			wc.lifecycleErr = errors.Join(wc.lifecycleErr, fmt.Errorf("shutdown: %w", err))
+			wc.serverMu.Unlock()
+		}
+	}
+	if startDone != nil {
+		<-startDone
+	}
+	wc.finishStop(stopDone)
+}
+
+func (wc *WebCore) waitForStop(ctx context.Context, done <-chan struct{}) error {
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		wc.serverMu.RLock()
+		err := wc.lifecycleErr
+		wc.serverMu.RUnlock()
+		return err
+	default:
+	}
+	select {
+	case <-done:
+		wc.serverMu.RLock()
+		err := wc.lifecycleErr
+		wc.serverMu.RUnlock()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

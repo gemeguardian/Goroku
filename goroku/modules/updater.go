@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 )
 
 type Updater struct {
@@ -22,6 +23,7 @@ type Updater struct {
 	db         *goroku.Database
 	translator *goroku.Translator
 	notified   string
+	restart    func()
 
 	// Configs
 	gitOriginUrl         string
@@ -63,8 +65,12 @@ func (m *Updater) ClientReady() error {
 
 	if !m.db.GetBool("Updater", "do_not_create", false) {
 		go func() {
-			_ = m.client.CreateGorokuFolder(m.client.TGID)
-			m.db.SetBool("Updater", "do_not_create", true)
+			if err := m.client.CreateGorokuFolder(m.client.TGID); err != nil {
+				return
+			}
+			if err := m.db.SetBool("Updater", "do_not_create", true); err != nil {
+				m.logBackgroundWrite("set", "do_not_create", err)
+			}
 		}()
 	}
 	return nil
@@ -153,6 +159,37 @@ func scheduleGorokuRestart() {
 		time.Sleep(1 * time.Second)
 		goroku.Restart()
 	}()
+}
+
+func (m *Updater) scheduleRestart() {
+	if m.restart != nil {
+		m.restart()
+		return
+	}
+	scheduleGorokuRestart()
+}
+
+func (m *Updater) logBackgroundWrite(operation, key string, err error) {
+	goroku.L().Error("background database write failed",
+		zap.String("operation", operation),
+		zap.String("owner", "Updater"),
+		zap.String("key", key),
+		zap.Error(err),
+	)
+}
+
+func (m *Updater) persistRestartMetadata(message string, timestamp int64) error {
+	return m.db.Update(map[string]map[string]any{
+		"Updater": {"selfupdatemsg": message, "restart_ts": timestamp},
+	})
+}
+
+func (m *Updater) prepareRestart(message string) error {
+	if err := m.persistRestartMetadata(message, time.Now().Unix()); err != nil {
+		return err
+	}
+	m.scheduleRestart()
+	return nil
 }
 
 func (m *Updater) getLatestHash() string {
@@ -244,16 +281,22 @@ func (m *Updater) pollerTick() error {
 	}
 
 	if m.autoupdate {
-		m.notified = latest
 		if out, err := m.gitCombinedOutput("pull"); err == nil && !strings.Contains(out, "Already up to date") {
+			if err := m.prepareRestart(""); err != nil {
+				m.logBackgroundWrite("update", "selfupdatemsg,restart_ts", err)
+				return err
+			}
 			_, _ = m.client.SendMessage(goroku.ChatRefID(m.client.TGID),
 				fmt.Sprintf("🔄 <b>Auto-updated to</b> <code>%s</code>\n\n%s", latest[:6], changelog))
-			m.db.SetInt64("Updater", "restart_ts", time.Now().Unix())
-			scheduleGorokuRestart()
+			m.notified = latest
 		}
 		return nil
 	}
 
+	if err := m.db.SetString("Updater", "ignore_permanent", ""); err != nil {
+		m.logBackgroundWrite("set", "ignore_permanent", err)
+		return err
+	}
 	_, _ = m.client.SendMessage(goroku.ChatRefID(m.client.TGID),
 		fmt.Sprintf(
 			"🪐 <b>Goroku update available!</b>\n\n"+
@@ -265,7 +308,6 @@ func (m *Updater) pollerTick() error {
 		),
 	)
 	m.notified = latest
-	m.db.SetString("Updater", "ignore_permanent", "")
 	return nil
 }
 
@@ -291,7 +333,10 @@ func (m *Updater) announcementTick() error {
 	if announcement != "" && announcement != previous {
 		_, _ = m.client.SendMessage(goroku.ChatRefID(m.client.TGID),
 			fmt.Sprintf("📢 <b>Goroku Announcement:</b>\n\n%s", announcement))
-		m.db.SetString("Updater", "announcement", announcement)
+		if err := m.db.SetString("Updater", "announcement", announcement); err != nil {
+			m.logBackgroundWrite("set", "announcement", err)
+			return err
+		}
 	}
 	return nil
 }
@@ -321,6 +366,10 @@ func (m *Updater) handlePostRestart() {
 	}
 	successTpl := m.getTrans("success", "✅ <b>Restart complete! {}</b> Took <b>{}</b>s")
 	msg := formatTrans(successTpl, platform, took)
+	if err := m.persistRestartMetadata("", 0); err != nil {
+		m.logBackgroundWrite("update", "selfupdatemsg,restart_ts", err)
+		return
+	}
 
 	if strings.Contains(selfUpdateMsg, ":") {
 		parts := strings.SplitN(selfUpdateMsg, ":", 2)
@@ -331,8 +380,6 @@ func (m *Updater) handlePostRestart() {
 		}
 	}
 
-	m.db.SetString("Updater", "selfupdatemsg", "")
-	m.db.SetInt64("Updater", "restart_ts", 0)
 }
 
 func (m *Updater) UpdateCmd(msg *goroku.Message) error {
@@ -374,10 +421,9 @@ func (m *Updater) UpdateCmd(msg *goroku.Message) error {
 
 	_ = msg.Answer(m.getTrans("installing", "<tg-emoji emoji-id=5208622108191506906>🕗</tg-emoji> <b>Installing updates...</b>"))
 
-	m.db.SetString("Updater", "selfupdatemsg", fmt.Sprintf("%d:%d", msg.ChatID, msg.ID))
-	m.db.SetInt64("Updater", "restart_ts", time.Now().Unix())
-
-	scheduleGorokuRestart()
+	if err := m.prepareRestart(fmt.Sprintf("%d:%d", msg.ChatID, msg.ID)); err != nil {
+		return msg.Answer(fmt.Sprintf("❌ <b>Update installed, but restart state could not be saved:</b> %v", err))
+	}
 
 	return nil
 }
@@ -396,13 +442,10 @@ func (m *Updater) RestartCmd(msg *goroku.Message) error {
 	template := m.getTrans("restarting_caption", "<tg-emoji emoji-id=5208622108191506906>🕗</tg-emoji> <b>Your {} is restarting...</b>")
 	text := strings.ReplaceAll(template, "{}", platform)
 
-	_ = msg.Answer(text)
-
-	m.db.SetString("Updater", "selfupdatemsg", fmt.Sprintf("%d:%d", msg.ChatID, msg.ID))
-	m.db.SetInt64("Updater", "restart_ts", time.Now().Unix())
-
-	scheduleGorokuRestart()
-	return nil
+	if err := m.prepareRestart(fmt.Sprintf("%d:%d", msg.ChatID, msg.ID)); err != nil {
+		return msg.Answer(fmt.Sprintf("❌ <b>Restart state could not be saved:</b> %v", err))
+	}
+	return msg.Answer(text)
 }
 
 func (m *Updater) ChangelogCmd(msg *goroku.Message) error {
@@ -440,7 +483,9 @@ func (m *Updater) AutoupdateCmd(msg *goroku.Message) error {
 	current := m.autoupdate
 	newState := !current
 
-	m.db.SetBool("Updater", "autoupdate", newState)
+	if err := m.db.SetBool("Updater", "autoupdate", newState); err != nil {
+		return msg.Answer(fmt.Sprintf("❌ <b>Failed to save auto-update setting:</b> %v", err))
+	}
 	m.autoupdate = newState
 
 	if newState {
@@ -501,7 +546,9 @@ func (m *Updater) RollbackCmd(msg *goroku.Message) error {
 }
 
 func (m *Updater) UbstopCmd(msg *goroku.Message) error {
-	m.db.SetBool("Updater", "autoupdate", false)
+	if err := m.db.SetBool("Updater", "autoupdate", false); err != nil {
+		return msg.Answer(fmt.Sprintf("❌ <b>Failed to disable auto-update:</b> %v", err))
+	}
 	m.autoupdate = false
 	platform := "userbot"
 	me, err := m.client.GetMe()

@@ -1,6 +1,7 @@
 package inline
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"runtime"
@@ -13,6 +14,9 @@ import (
 func (im *InlineManager) StoreUnit(unitID string, unit *Unit) {
 	im.mu.Lock()
 	defer im.mu.Unlock()
+	if im.closed {
+		return
+	}
 	if unit.TTL.IsZero() {
 		unit.TTL = time.Now().Add(im.markupTTL)
 	}
@@ -56,6 +60,15 @@ func stripHTML(s string) string {
 }
 
 func (im *InlineManager) GenerateMarkup(buttons [][]Button) tgbotapi.InlineKeyboardMarkup {
+	generation, _, err := im.claimIntake()
+	if err != nil {
+		return tgbotapi.InlineKeyboardMarkup{}
+	}
+	defer generation.release()
+	return im.generateMarkup(buttons)
+}
+
+func (im *InlineManager) generateMarkup(buttons [][]Button) tgbotapi.InlineKeyboardMarkup {
 	var rows [][]tgbotapi.InlineKeyboardButton
 	for _, row := range buttons {
 		var line []tgbotapi.InlineKeyboardButton
@@ -74,7 +87,9 @@ func (im *InlineManager) GenerateMarkup(buttons [][]Button) tgbotapi.InlineKeybo
 					switchQuery = localRandStr(10)
 					btn.SwitchQuery = switchQuery
 					im.mu.Lock()
-					im.customMap[switchQuery] = btn
+					if !im.closed {
+						im.customMap[switchQuery] = btn
+					}
 					im.mu.Unlock()
 				}
 				swVal := switchQuery + " "
@@ -88,7 +103,9 @@ func (im *InlineManager) GenerateMarkup(buttons [][]Button) tgbotapi.InlineKeybo
 				}
 				if btn.Handler != nil || btn.InputHandler != nil {
 					im.mu.Lock()
-					im.customMap[btn.Data] = btn
+					if !im.closed {
+						im.customMap[btn.Data] = btn
+					}
 					im.mu.Unlock()
 				}
 				line = append(line, applyVisual(tgbotapi.NewInlineKeyboardButtonData(btnText, btn.Data)))
@@ -100,6 +117,11 @@ func (im *InlineManager) GenerateMarkup(buttons [][]Button) tgbotapi.InlineKeybo
 }
 
 func (im *InlineManager) EditUnit(unitID string, text string, buttons [][]Button) error {
+	generation, _, err := im.claimIntake()
+	if err != nil {
+		return err
+	}
+	defer generation.release()
 	im.mu.RLock()
 	unit, exists := im.units[unitID]
 	inlineMsgID := im.activeInlineMessages[unitID]
@@ -126,7 +148,7 @@ func (im *InlineManager) EditUnit(unitID string, text string, buttons [][]Button
 	}
 	im.mu.Unlock()
 
-	markup := im.GenerateMarkup(unit.Buttons)
+	markup := im.generateMarkup(unit.Buttons)
 
 	if inlineMsgID != "" {
 		editMsg := tgbotapi.EditMessageTextConfig{
@@ -144,11 +166,17 @@ func (im *InlineManager) EditUnit(unitID string, text string, buttons [][]Button
 }
 
 func (im *InlineManager) DeleteUnitMessage(unitID string) error {
+	generation, _, err := im.claimIntake()
+	if err != nil {
+		return err
+	}
+	defer generation.release()
 	im.mu.Lock()
 	inlineMsgID := im.activeInlineMessages[unitID]
 	info, hasInfo := im.activeMessageIDs[unitID]
-	im.removeUnitLocked(unitID)
+	unload := im.removeUnitLocked(unitID)
 	im.mu.Unlock()
+	im.runUnitUnload(unload)
 
 	if hasInfo && info.MessageID != 0 {
 		if delClient, ok := im.client.(deletableClient); ok {
@@ -173,7 +201,7 @@ func (im *InlineManager) DeleteUnitMessage(unitID string) error {
 	return nil
 }
 
-func (im *InlineManager) removeUnitLocked(unitID string) {
+func (im *InlineManager) removeUnitLocked(unitID string) func() {
 	unit := im.units[unitID]
 	if unit != nil {
 		for _, row := range unit.Buttons {
@@ -188,13 +216,23 @@ func (im *InlineManager) removeUnitLocked(unitID string) {
 				}
 			}
 		}
-		if unit.OnUnload != nil {
-			go unit.OnUnload()
-		}
 	}
 	delete(im.units, unitID)
 	delete(im.activeInlineMessages, unitID)
 	delete(im.activeMessageIDs, unitID)
+	if unit != nil {
+		return unit.OnUnload
+	}
+	return nil
+}
+
+func (im *InlineManager) runUnitUnload(unload func()) {
+	if unload == nil {
+		return
+	}
+	if !im.startGenerationWorker(func(context.Context) { unload() }) {
+		unload()
+	}
 }
 
 func (im *InlineManager) detectCallingModule() string {

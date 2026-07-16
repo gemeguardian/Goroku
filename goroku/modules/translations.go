@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
+	"go.uber.org/zap"
 )
 
 type TranslationsModule struct {
@@ -55,6 +56,16 @@ func (m *TranslationsModule) Commands() map[string]goroku.CommandHandler {
 
 func (m *TranslationsModule) Watchers() []goroku.WatcherHandler {
 	return []goroku.WatcherHandler{}
+}
+
+func (m *TranslationsModule) messagePersistenceFailure(msg *goroku.Message, err error) error {
+	msg.Text = "❌ <b>Could not save language settings</b>"
+	if msg.Client != nil {
+		if _, editErr := msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text); editErr != nil {
+			goroku.L().Warn("failed to report language persistence error", zap.Error(editErr), zap.Error(err))
+		}
+	}
+	return fmt.Errorf("persist language settings: %w", err)
 }
 
 func getFlag(lang string) string {
@@ -132,7 +143,9 @@ func (m *TranslationsModule) SetLangCmd(msg *goroku.Message) error {
 	}
 
 	langStr := strings.Join(valid, " ")
-	m.db.Set("goroku.translations", "lang", langStr)
+	if err := m.db.Set("goroku.translations", "lang", langStr); err != nil {
+		return m.messagePersistenceFailure(msg, err)
+	}
 	m.translator.Init()
 
 	var flags []string
@@ -236,7 +249,12 @@ func (m *TranslationsModule) ChooseLanguage(msg any, isMeme bool) error {
 }
 
 func (m *TranslationsModule) ChangeLanguage(call inline.CallbackQuery, lang string) error {
-	m.db.Set("goroku.translations", "lang", lang)
+	if err := m.db.Set("goroku.translations", "lang", lang); err != nil {
+		if answerErr := call.Answer("Could not save language settings", true); answerErr != nil {
+			goroku.L().Warn("failed to report language persistence error", zap.Error(answerErr), zap.Error(err))
+		}
+		return fmt.Errorf("persist language settings: %w", err)
+	}
 	m.translator.Init()
 
 	flag := getFlag(lang)
@@ -320,7 +338,9 @@ func (m *TranslationsModule) DlLangPackCmd(msg *goroku.Message) error {
 		newLang = args
 	}
 
-	m.db.Set("goroku.translations", "lang", newLang)
+	if err := m.db.Set("goroku.translations", "lang", newLang); err != nil {
+		return m.messagePersistenceFailure(msg, err)
+	}
 	m.translator.Init()
 
 	success := m.translator.HasRawData(args)

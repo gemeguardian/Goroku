@@ -1,6 +1,8 @@
 package goroku
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -44,34 +46,126 @@ type RatelimitedModule interface {
 }
 
 type CommandDispatcher struct {
-	mu                   sync.RWMutex
-	modules              *Modules
-	client               *CustomTelegramClient
-	db                   *Database
-	ratelimitStorageUser map[int64]int
-	ratelimitStorageChat map[int64]int
-	ratelimitMaxUser     int
-	ratelimitMaxChat     int
-	security             *SecurityManager
-	me                   int64
-	cachedUsernames      map[string]bool
+	mu              sync.RWMutex
+	modules         *Modules
+	client          *CustomTelegramClient
+	db              *Database
+	rateLimiter     *BoundedRateLimiter
+	commands        *BoundedExecutor
+	watchers        *BoundedExecutor
+	security        *SecurityManager
+	me              int64
+	cachedUsernames map[string]bool
+	stopped         bool
+	stopOnce        sync.Once
+	taskCancel      context.CancelFunc
+}
+
+const (
+	defaultCommandCapacity      = 32
+	defaultWatcherCapacity      = 64
+	defaultRateLimitMaxEntries  = 10_000
+	defaultUserRateLimitWindow  = 60 * time.Second
+	defaultChatRateLimitWindow  = 200 * time.Second
+	defaultUserRateLimitMaximum = 30
+	defaultChatRateLimitMaximum = 100
+)
+
+// DispatcherConfig provides deterministic construction seams while normal
+// clients use the equivalent goroku.dispatcher database settings.
+type DispatcherConfig struct {
+	RateLimiter     RateLimiterConfig
+	CommandCapacity int
+	WatcherCapacity int
 }
 
 func NewCommandDispatcher(modules *Modules, client *CustomTelegramClient, db *Database) *CommandDispatcher {
-	maxUser := db.GetInt("goroku.dispatcher", "ratelimit_max_user", 30)
-	maxChat := db.GetInt("goroku.dispatcher", "ratelimit_max_chat", 100)
+	cd, err := NewCommandDispatcherChecked(modules, client, db)
+	if err == nil {
+		return cd
+	}
+	L().Error("Command dispatcher initialization failed; using deny-by-default security", zap.Error(err))
+	cd, fallbackErr := newCommandDispatcher(modules, client, db, NewSecurityManager(client, db), defaultDispatcherConfig(nil))
+	if fallbackErr != nil {
+		panic(fallbackErr)
+	}
+	return cd
+}
+
+func NewCommandDispatcherChecked(modules *Modules, client *CustomTelegramClient, db *Database) (*CommandDispatcher, error) {
+	security, err := NewSecurityManagerChecked(client, db)
+	if err != nil {
+		return nil, err
+	}
+	return newCommandDispatcher(modules, client, db, security, defaultDispatcherConfig(db))
+}
+
+// NewCommandDispatcherWithConfig constructs a dispatcher with explicit limits.
+func NewCommandDispatcherWithConfig(modules *Modules, client *CustomTelegramClient, db *Database, config DispatcherConfig) (*CommandDispatcher, error) {
+	security, err := NewSecurityManagerChecked(client, db)
+	if err != nil {
+		return nil, err
+	}
+	return newCommandDispatcher(modules, client, db, security, config)
+}
+
+func defaultDispatcherConfig(db *Database) DispatcherConfig {
+	config := DispatcherConfig{
+		RateLimiter: RateLimiterConfig{
+			UserLimit:  defaultUserRateLimitMaximum,
+			ChatLimit:  defaultChatRateLimitMaximum,
+			UserWindow: defaultUserRateLimitWindow,
+			ChatWindow: defaultChatRateLimitWindow,
+			MaxEntries: defaultRateLimitMaxEntries,
+		},
+		CommandCapacity: defaultCommandCapacity,
+		WatcherCapacity: defaultWatcherCapacity,
+	}
+	if db == nil {
+		return config
+	}
+	config.RateLimiter.UserLimit = db.GetInt("goroku.dispatcher", "ratelimit_max_user", config.RateLimiter.UserLimit)
+	config.RateLimiter.ChatLimit = db.GetInt("goroku.dispatcher", "ratelimit_max_chat", config.RateLimiter.ChatLimit)
+	config.RateLimiter.UserWindow = time.Duration(db.GetInt("goroku.dispatcher", "ratelimit_user_window_seconds", int(config.RateLimiter.UserWindow/time.Second))) * time.Second
+	config.RateLimiter.ChatWindow = time.Duration(db.GetInt("goroku.dispatcher", "ratelimit_chat_window_seconds", int(config.RateLimiter.ChatWindow/time.Second))) * time.Second
+	config.RateLimiter.MaxEntries = db.GetInt("goroku.dispatcher", "ratelimit_max_entries", config.RateLimiter.MaxEntries)
+	config.CommandCapacity = db.GetInt("goroku.dispatcher", "command_capacity", config.CommandCapacity)
+	config.WatcherCapacity = db.GetInt("goroku.dispatcher", "watcher_capacity", config.WatcherCapacity)
+	return config
+}
+
+func newCommandDispatcher(modules *Modules, client *CustomTelegramClient, db *Database, security *SecurityManager, config DispatcherConfig) (*CommandDispatcher, error) {
+	limiter, err := NewBoundedRateLimiter(config.RateLimiter)
+	if err != nil {
+		security.Stop()
+		return nil, fmt.Errorf("initialize dispatcher rate limiter: %w", err)
+	}
+	taskCtx, taskCancel := context.WithCancel(context.Background())
+	commands, err := NewBoundedExecutor(BoundedExecutorConfig{Capacity: config.CommandCapacity, Context: taskCtx})
+	if err != nil {
+		taskCancel()
+		security.Stop()
+		return nil, fmt.Errorf("initialize command executor: %w", err)
+	}
+	watchers, err := NewBoundedExecutor(BoundedExecutorConfig{Capacity: config.WatcherCapacity, Context: taskCtx})
+	if err != nil {
+		taskCancel()
+		commands.CloseIntake()
+		security.Stop()
+		return nil, fmt.Errorf("initialize watcher executor: %w", err)
+	}
 
 	cd := &CommandDispatcher{
-		modules:              modules,
-		client:               client,
-		db:                   db,
-		ratelimitStorageUser: make(map[int64]int),
-		ratelimitStorageChat: make(map[int64]int),
-		ratelimitMaxUser:     maxUser,
-		ratelimitMaxChat:     maxChat,
-		me:                   client.TGID,
-		cachedUsernames:      make(map[string]bool),
-		security:             NewSecurityManager(client, db),
+		modules:         modules,
+		client:          client,
+		db:              db,
+		rateLimiter:     limiter,
+		commands:        commands,
+		watchers:        watchers,
+		me:              client.TGID,
+		cachedUsernames: make(map[string]bool),
+		security:        security,
+		taskCancel:      taskCancel,
 	}
 
 	if client.Username != "" {
@@ -79,7 +173,7 @@ func NewCommandDispatcher(modules *Modules, client *CustomTelegramClient, db *Da
 	}
 	cd.cachedUsernames[strconv.FormatInt(client.TGID, 10)] = true
 
-	return cd
+	return cd, nil
 }
 
 // GetSecurityManager returns the security manager for external use by modules.
@@ -101,9 +195,9 @@ func (c *CustomTelegramClient) GetSecurityManager() inline.SecurityChecker {
 
 func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 	cd.mu.RLock()
-	defer cd.mu.RUnlock()
-
-	if msg == nil {
+	stopped := cd.stopped
+	cd.mu.RUnlock()
+	if stopped || msg == nil {
 		return
 	}
 
@@ -138,6 +232,10 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 
 	// Dispatch message watchers
 	for _, watcher := range cd.modules.GetWatchers() {
+		if watcher.lease == nil || !watcher.lease.acquire() {
+			continue
+		}
+		release := watcher.lease.release
 		modName := watcher.ModuleName
 
 		// Check if this module's watchers are disabled
@@ -173,6 +271,7 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 					}
 				}
 				if disabledHere {
+					release()
 					continue
 				}
 			}
@@ -182,6 +281,7 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 		key1 := fmt.Sprintf("%s.%s", chatStr, modName)
 		key2 := fmt.Sprintf("%s.%s", chatStr, strings.ToLower(modName))
 		if blacklistChats[key1] || blacklistChats[key2] {
+			release()
 			continue
 		}
 
@@ -195,22 +295,36 @@ func (cd *CommandDispatcher) HandleIncoming(msg *Message) {
 				}
 			}
 			if !found {
+				release()
 				continue
 			}
 		}
 
 		if !cd.watcherTagsMatch(msg, watcher.Meta) {
+			release()
 			continue
 		}
 
-		go func(w WatcherHandler, m *Message) {
+		message := *msg
+		err := cd.watchers.Submit(func(ctx context.Context) {
+			defer release()
 			defer func() {
 				if r := recover(); r != nil {
-					L().Error("Watcher panic recovered", zap.Any("panic", r))
+					L().Error("Watcher panic recovered", zap.String("module", modName), zap.Any("panic", r))
 				}
 			}()
-			_ = w(m)
-		}(watcher.Handler, msg)
+			message.ctx = ctx
+			_ = watcher.Handler(&message)
+		})
+		if err != nil {
+			release()
+			if errors.Is(err, ErrExecutorCapacity) {
+				L().Warn("Watcher dropped", zap.String("module", modName), zap.String("reason", "capacity"))
+			}
+			if errors.Is(err, ErrExecutorClosed) {
+				return
+			}
+		}
 	}
 }
 
@@ -298,25 +412,17 @@ func (cd *CommandDispatcher) isCommandMessage(msg *Message) bool {
 }
 
 func (cd *CommandDispatcher) handleTags(msg *Message, cmdName string) bool {
-	var meta CommandMeta
-	found := false
-	for _, mod := range cd.modules.GetModules() {
-		if _, exists := mod.Commands()[cmdName]; exists {
-			if withMeta, ok := mod.(ModuleWithMeta); ok {
-				if m, exists := withMeta.CommandMetas()[cmdName]; exists {
-					meta = m
-					found = true
-				}
-			}
-			break
-		}
-	}
-
-	if !found {
+	reg, ok := cd.modules.resolveCommand(cmdName)
+	if !ok {
 		return true
 	}
+	return cd.handleRegistrationTags(msg, reg)
+}
 
-	if meta.OnlyOwner && !cd.security.Check(msg, "owner") {
+func (cd *CommandDispatcher) handleRegistrationTags(msg *Message, reg *commandRegistration) bool {
+	meta := reg.Meta
+
+	if meta.OnlyOwner && !cd.security.IsAccountOwner(msg) {
 		return false
 	}
 	if meta.OnlyPM && !msg.IsPrivate {
@@ -387,7 +493,10 @@ func (cd *CommandDispatcher) handleTags(msg *Message, cmdName string) bool {
 }
 
 func (cd *CommandDispatcher) HandleCommand(msg *Message) {
-	if msg.Text == "" {
+	cd.mu.RLock()
+	stopped := cd.stopped
+	cd.mu.RUnlock()
+	if stopped || msg == nil || msg.Text == "" {
 		return
 	}
 
@@ -493,11 +602,7 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	}
 
 	actualCmd := tagParts[0]
-	actualCmdL := strings.ToLower(actualCmd)
-	if realCmd, exists := cd.modules.GetAliases()[actualCmdL]; exists {
-		actualCmd = realCmd
-	}
-	handler, exists := cd.modules.Dispatch(actualCmd)
+	reg, releaseRegistration, exists := cd.modules.resolveCommandLease(actualCmd)
 	if !exists {
 		// Only log debug for owners/whitelisted to avoid spam from other chat members
 		if cd.security.Check(msg, "") {
@@ -505,15 +610,14 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 		}
 		return
 	}
-
-	// Find which module owns this command
-	var modName string
-	for _, mod := range cd.modules.GetModules() {
-		if _, exists := mod.Commands()[actualCmd]; exists {
-			modName = mod.Name()
-			break
+	defer func() {
+		if releaseRegistration != nil {
+			releaseRegistration()
 		}
-	}
+	}()
+	actualCmd = reg.Name
+	handler := reg.Handler
+	modName := reg.OwnerName
 
 	// Check blacklist chats with specific module (chat_id.module_name)
 	if modName != "" {
@@ -585,7 +689,7 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 				}
 
 				// Check tsec rules
-				tsecWhitelisted := cd.security.CheckTsec(msg.SenderID, actualCmd)
+				tsecWhitelisted := cd.security.checkTsecRegistration(msg.SenderID, reg)
 
 				if !cmdWhitelisted && !userWhitelisted && !chatWhitelisted && !tsecWhitelisted {
 					// Nickname checks are enabled, and this command is not whitelisted in any way, so ignore it
@@ -600,25 +704,35 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	}
 
 	// Check if the command's module is disabled
-	if cd.isModuleOrCommandDisabled(actualCmd) {
+	if cd.isRegistrationDisabled(reg) {
 		L().Warn("Command or its module is disabled, ignoring", zap.String("cmd", actualCmd))
 		return
 	}
 
 	// Check security level
-	if !cd.security.Check(msg, actualCmd) {
+	if !cd.security.checkRegistration(msg, reg) {
 		L().Debug("Security check failed, ignoring", zap.String("cmd", actualCmd))
 		return
 	}
 
 	// Check tag filters
-	if !cd.handleTags(msg, actualCmd) {
+	if !cd.handleRegistrationTags(msg, reg) {
 		L().Debug("Tag filter failed, ignoring", zap.String("cmd", actualCmd))
 		return
 	}
 
-	// Check rate limit
-	if !cd.handleRatelimit(msg, actualCmd) {
+	// Claim executor capacity before charging quota. The reservation is released
+	// synchronously if a later check rejects the command.
+	reservation, err := cd.commands.reserve()
+	if err != nil {
+		if errors.Is(err, ErrExecutorCapacity) {
+			L().Warn("Command rejected", zap.String("cmd", actualCmd), zap.String("reason", "capacity"))
+			cd.answerBusy(msg)
+		}
+		return
+	}
+	defer reservation.release()
+	if !cd.handleRegistrationRatelimit(msg, reg) {
 		L().Warn("Rate limit exceeded", zap.String("cmd", actualCmd), zap.Int64("chat", msg.ChatID))
 		return
 	}
@@ -626,112 +740,111 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 	// Grep pipeline check
 	msg = cd.handleGrep(msg)
 
-	// Execute command handler asynchronously
-	go func(h CommandHandler, m *Message) {
+	// Execute command handler asynchronously when an executor slot is available.
+	release := releaseRegistration
+	message := *msg
+	reservation.start(func(ctx context.Context) {
+		defer release()
 		defer func() {
 			if r := recover(); r != nil {
 				L().Error("Command panic recovered", zap.String("cmd", actualCmd), zap.Any("panic", r))
-				_ = m.Answer(fmt.Sprintf("❌ <b>Command crashed! Panic:</b> <code>%v</code>", r))
+				cd.answerIfPossible(&message, fmt.Sprintf("❌ <b>Command crashed! Panic:</b> <code>%v</code>", r))
 				return
 			}
 		}()
+		message.ctx = ctx
 		L().Info("Dispatching command", zap.String("cmd", actualCmd))
-		originalText := m.Text
-		err := h(m)
-		if err != nil {
-			L().Error("Command failed", zap.String("cmd", actualCmd), zap.Error(err))
-			_ = m.Answer(fmt.Sprintf("❌ <b>Command execution error:</b> <code>%s</code>", err.Error()))
+		originalText := message.Text
+		handlerErr := handler(&message)
+		if handlerErr != nil {
+			L().Error("Command failed", zap.String("cmd", actualCmd), zap.Error(handlerErr))
+			cd.answerIfPossible(&message, fmt.Sprintf("❌ <b>Command execution error:</b> <code>%s</code>", handlerErr.Error()))
 		} else {
-			L().Debug("Command completed", zap.String("cmd", actualCmd), zap.Bool("answered", m.Answered))
-			if !m.Answered && m.Text != originalText {
-				if err := m.Answer(m.Text); err != nil {
-					L().Warn("Auto-answer failed", zap.String("cmd", actualCmd), zap.Error(err))
+			L().Debug("Command completed", zap.String("cmd", actualCmd), zap.Bool("answered", message.Answered))
+			if !message.Answered && message.Text != originalText {
+				if message.Client != nil {
+					if err := message.Answer(message.Text); err != nil {
+						L().Warn("Auto-answer failed", zap.String("cmd", actualCmd), zap.Error(err))
+					}
 				}
 			}
 		}
-	}(handler, msg)
+	})
+	releaseRegistration = nil
+}
+
+func (cd *CommandDispatcher) answerBusy(msg *Message) {
+	if msg == nil {
+		return
+	}
+	response := *msg
+	response.GrepQuery = ""
+	response.GrepInvert = false
+	response.CutLines = 0
+	response.SplitOutput = false
+	cd.answerIfPossible(&response, "⚠️ <b>Busy, try again shortly.</b>")
+}
+
+func (cd *CommandDispatcher) answerIfPossible(msg *Message, text string) {
+	if msg != nil && msg.Client != nil {
+		_ = msg.Answer(text)
+	}
+}
+
+// Stop prevents new command and watcher handlers from starting.
+func (cd *CommandDispatcher) Stop() {
+	cd.stopOnce.Do(func() {
+		cd.mu.Lock()
+		cd.stopped = true
+		cd.mu.Unlock()
+		cd.taskCancel()
+		cd.commands.CloseIntake()
+		cd.watchers.CloseIntake()
+		if cd.security != nil {
+			cd.security.Stop()
+		}
+	})
+}
+
+// Close stops dispatch and waits for handlers that were already running.
+func (cd *CommandDispatcher) Close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cd.Stop()
+	commandErr := cd.commands.Close(ctx)
+	watcherErr := cd.watchers.Close(ctx)
+	var securityErr error
+	if cd.security != nil {
+		securityErr = cd.security.Close(ctx)
+	}
+	return errors.Join(commandErr, watcherErr, securityErr)
 }
 
 func (cd *CommandDispatcher) handleRatelimit(msg *Message, cmdName string) bool {
+	reg, _ := cd.modules.resolveCommand(cmdName)
+	return cd.handleRegistrationRatelimit(msg, reg)
+}
+
+func (cd *CommandDispatcher) handleRegistrationRatelimit(msg *Message, reg *commandRegistration) bool {
 	// If owner, bypass rate limits completely
-	if cd.security.Check(msg, "owner") {
+	if cd.security.IsAccountOwner(msg) {
 		return true
 	}
 
-	cd.mu.Lock()
-	defer cd.mu.Unlock()
-
-	ratelimit := false
-	for _, mod := range cd.modules.GetModules() {
-		if _, exists := mod.Commands()[cmdName]; exists {
-			if rlMod, ok := mod.(RatelimitedModule); ok {
-				if rlMod.RatelimitedCommands()[cmdName] {
-					ratelimit = true
-				}
-			}
-			break
-		}
+	weight := 2
+	multiplier := 1.0
+	if reg != nil && reg.Ratelimited {
+		weight = 5
+		multiplier = 2.5
 	}
-
-	ret := true
-	chat := cd.ratelimitStorageChat[msg.ChatID]
-	var severity int
-
-	if msg.SenderID != 0 {
-		user := cd.ratelimitStorageUser[msg.SenderID]
-		baseSev := 2
-		if ratelimit {
-			baseSev = 5
-		}
-		severity = baseSev * ((user+chat)/30 + 1)
-		user += severity
-		cd.ratelimitStorageUser[msg.SenderID] = user
-
-		if user > cd.ratelimitMaxUser {
-			ret = false
-		} else {
-			cd.ratelimitStorageChat[msg.ChatID] = chat
-		}
-
-		// Decrement user rate limit after self.ratelimitMaxUser * severity seconds
-		go func(senderID int64, sev int) {
-			delay := time.Duration(cd.ratelimitMaxUser*sev) * time.Second
-			time.Sleep(delay)
-			cd.mu.Lock()
-			defer cd.mu.Unlock()
-			cd.ratelimitStorageUser[senderID] = cd.ratelimitStorageUser[senderID] - sev
-			if cd.ratelimitStorageUser[senderID] < 0 {
-				cd.ratelimitStorageUser[senderID] = 0
-			}
-		}(msg.SenderID, severity)
-	} else {
-		baseSev := 2
-		if ratelimit {
-			baseSev = 5
-		}
-		severity = baseSev * (chat/15 + 1)
-	}
-
-	chat += severity
-	cd.ratelimitStorageChat[msg.ChatID] = chat
-
-	if chat > cd.ratelimitMaxChat {
-		ret = false
-	}
-
-	// Decrement chat rate limit after self.ratelimitMaxChat * severity seconds
-	go func(chatID int64, sev int) {
-		delay := time.Duration(cd.ratelimitMaxChat*sev) * time.Second
-		time.Sleep(delay)
-		cd.mu.Lock()
-		defer cd.mu.Unlock()
-		cd.ratelimitStorageChat[chatID] = cd.ratelimitStorageChat[chatID] - sev
-		if cd.ratelimitStorageChat[chatID] < 0 {
-			cd.ratelimitStorageChat[chatID] = 0
-		}
-	}(msg.ChatID, severity)
-
-	return ret
+	return cd.rateLimiter.Allow(RateLimitEvent{
+		UserID:           msg.SenderID,
+		ChatID:           msg.ChatID,
+		Weight:           weight,
+		WindowMultiplier: multiplier,
+		Applicable:       true,
+	}).Allowed
 }
 
 func (cd *CommandDispatcher) handleGrep(msg *Message) *Message {
@@ -775,29 +888,27 @@ func (cd *CommandDispatcher) handleGrep(msg *Message) *Message {
 }
 
 func (cd *CommandDispatcher) isModuleOrCommandDisabled(cmdName string) bool {
-	// Check disabled_modules
-	disabledMods := cd.db.GetStringSlice("goroku.main", "disabled_modules", nil)
+	reg, ok := cd.modules.resolveCommand(cmdName)
+	if !ok {
+		return false
+	}
+	return cd.isRegistrationDisabled(reg)
+}
 
-	// Find which module owns this command
-	for _, mod := range cd.modules.GetModules() {
-		if _, exists := mod.Commands()[cmdName]; exists {
-			modName := mod.Name()
-			// Check if module is disabled
-			for _, dm := range disabledMods {
-				if dm == modName {
-					return true
-				}
+func (cd *CommandDispatcher) isRegistrationDisabled(reg *commandRegistration) bool {
+	disabledMods := cd.db.GetStringSlice("goroku.main", "disabled_modules", nil)
+	modName := reg.OwnerName
+	for _, dm := range disabledMods {
+		if dm == modName {
+			return true
+		}
+	}
+	disabledCmds := cd.db.GetStringMapStringSlice("goroku.main", "disabled_commands", nil)
+	if cmds, ok := disabledCmds[modName]; ok {
+		for _, dc := range cmds {
+			if strings.EqualFold(dc, reg.Name) {
+				return true
 			}
-			// Check disabled_commands
-			disabledCmds := cd.db.GetStringMapStringSlice("goroku.main", "disabled_commands", nil)
-			if cmds, ok := disabledCmds[modName]; ok {
-				for _, dc := range cmds {
-					if strings.EqualFold(dc, cmdName) {
-						return true
-					}
-				}
-			}
-			break
 		}
 	}
 	return false
@@ -830,12 +941,22 @@ func (cd *CommandDispatcher) getBlacklistChats() map[string]bool {
 
 // HandleInlineQuery handles incoming MTProto inline queries for the bot
 func (cd *CommandDispatcher) HandleInlineQuery(query *tg.UpdateBotInlineQuery) {
+	cd.mu.RLock()
+	defer cd.mu.RUnlock()
+	if cd.stopped {
+		return
+	}
 	L().Debug("Received inline query", zap.String("query", query.Query), zap.Int64("user", query.UserID))
 	// Placeholder for routing to inline handlers
 }
 
 // HandleCallbackQuery handles incoming MTProto callback queries for the bot
 func (cd *CommandDispatcher) HandleCallbackQuery(query *tg.UpdateBotCallbackQuery) {
+	cd.mu.RLock()
+	defer cd.mu.RUnlock()
+	if cd.stopped {
+		return
+	}
 	L().Debug("Received callback query", zap.String("data", string(query.Data)), zap.Int64("user", query.UserID))
 	// Placeholder for routing to callback handlers
 }

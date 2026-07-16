@@ -152,7 +152,9 @@ func (m *GorokuSettings) WatcherBlCmd(msg *goroku.Message) error {
 				} else {
 					disabled[realName] = newList
 				}
-				m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled)
+				if err := m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled); err != nil {
+					return err
+				}
 				template := m.getTrans("enabled", "<tg-emoji emoji-id=5424885441100782420>👀</tg-emoji> <b>Смотритель {0} теперь <u>включен</u></b>")
 				return msg.Answer(formatTrans(template, realName) + " <b>in current chat</b>")
 			}
@@ -163,7 +165,9 @@ func (m *GorokuSettings) WatcherBlCmd(msg *goroku.Message) error {
 		disabled[realName] = []any{chatID}
 	}
 
-	m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled)
+	if err := m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled); err != nil {
+		return err
+	}
 	template := m.getTrans("disabled", "<tg-emoji emoji-id=5424885441100782420>👀</tg-emoji> <b>Смотритель {0} теперь <u>выключен</u></b>")
 	return msg.Answer(formatTrans(template, realName) + " <b>in current chat</b>")
 }
@@ -223,7 +227,9 @@ func (m *GorokuSettings) WatcherCmdCmd(msg *goroku.Message) error {
 			filters = append(filters, "in")
 		}
 		disabled[realName] = filters
-		m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled)
+		if err := m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled); err != nil {
+			return err
+		}
 		template := m.getTrans("enabled", "<tg-emoji emoji-id=5424885441100782420>👀</tg-emoji> <b>Смотритель {0} теперь <u>включен</u></b>")
 		return msg.Answer(formatTrans(template, realName) + fmt.Sprintf(" (<code>%v</code>)", filters))
 	}
@@ -231,13 +237,17 @@ func (m *GorokuSettings) WatcherCmdCmd(msg *goroku.Message) error {
 	if wval, ok := disabled[realName]; ok {
 		if wlist, ok := wval.([]any); ok && len(wlist) == 1 && fmt.Sprintf("%v", wlist[0]) == "*" {
 			delete(disabled, realName)
-			m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled)
+			if err := m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled); err != nil {
+				return err
+			}
 			template := m.getTrans("enabled", "<tg-emoji emoji-id=5424885441100782420>👀</tg-emoji> <b>Смотритель {0} теперь <u>включен</u></b>")
 			return msg.Answer(formatTrans(template, realName))
 		}
 	}
 	disabled[realName] = []any{"*"}
-	m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled)
+	if err := m.db.SetAnyMap("goroku.main", "disabled_watchers", disabled); err != nil {
+		return err
+	}
 	template := m.getTrans("disabled", "<tg-emoji emoji-id=5424885441100782420>👀</tg-emoji> <b>Смотритель {0} теперь <u>выключен</u></b>")
 	return msg.Answer(formatTrans(template, realName))
 }
@@ -291,7 +301,9 @@ func (m *GorokuSettings) NoNickUserCmd(msg *goroku.Message) error {
 	u := reply.SenderID
 	users := m.db.GetInt64Slice("goroku.main", "nonickusers", nil)
 	newList, enabled := toggleInt64(users, u)
-	m.db.SetInt64Slice("goroku.main", "nonickusers", newList)
+	if err := m.db.SetInt64Slice("goroku.main", "nonickusers", newList); err != nil {
+		return err
+	}
 
 	template := m.getTrans("user_nn", "<tg-emoji emoji-id=5469791106591890404>🪄</tg-emoji> <b>Состояние NoNick для этого пользователя: {0}</b>")
 	return msg.Answer(formatTrans(template, onOffState(enabled)))
@@ -305,7 +317,9 @@ func (m *GorokuSettings) NoNickChatCmd(msg *goroku.Message) error {
 
 	chats := m.db.GetInt64Slice("goroku.main", "nonickchats", nil)
 	newList, enabled := toggleInt64(chats, msg.ChatID)
-	m.db.SetInt64Slice("goroku.main", "nonickchats", newList)
+	if err := m.db.SetInt64Slice("goroku.main", "nonickchats", newList); err != nil {
+		return err
+	}
 
 	chatTitle := fmt.Sprintf("Chat %d", msg.ChatID)
 	if entity, err := m.client.GetEntity(msg.ChatID, 0, false); err == nil {
@@ -338,7 +352,9 @@ func (m *GorokuSettings) NoNickUsersCmd(msg *goroku.Message) error {
 	}
 
 	if len(users) != len(validUsers) {
-		m.db.SetInt64Slice("goroku.main", "nonickusers", validUsers)
+		if err := m.db.SetInt64Slice("goroku.main", "nonickusers", validUsers); err != nil {
+			return err
+		}
 	}
 
 	if len(lines) == 0 {
@@ -372,7 +388,9 @@ func (m *GorokuSettings) NoNickChatsCmd(msg *goroku.Message) error {
 	}
 
 	if len(chats) != len(validChats) {
-		m.db.SetInt64Slice("goroku.main", "nonickchats", validChats)
+		if err := m.db.SetInt64Slice("goroku.main", "nonickchats", validChats); err != nil {
+			return err
+		}
 	}
 
 	if len(lines) == 0 {
@@ -401,7 +419,9 @@ func (m *GorokuSettings) NoNickCmdCmd(msg *goroku.Message) error {
 
 	cmds := m.db.GetStringSlice("goroku.main", "nonickcmds", nil)
 	newList, enabled := toggleString(cmds, cmdInput)
-	m.db.SetStringSlice("goroku.main", "nonickcmds", newList)
+	if err := m.db.SetStringSlice("goroku.main", "nonickcmds", newList); err != nil {
+		return err
+	}
 
 	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 
@@ -468,7 +488,9 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "✅ NoNick",
 			Data: "hset_nonick_off",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.SetBool("goroku.main", "no_nickname", false)
+				if err := m.db.SetBool("goroku.main", "no_nickname", false); err != nil {
+					return err
+				}
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -478,7 +500,9 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "🚫 NoNick",
 			Data: "hset_nonick_on",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.SetBool("goroku.main", "no_nickname", true)
+				if err := m.db.SetBool("goroku.main", "no_nickname", true); err != nil {
+					return err
+				}
 				prefix := m.db.GetString("goroku.main", "command_prefix", ".")
 				if prefix == "." {
 					_ = c.Answer(m.getTrans("nonick_warning", "⚠️ WARNING: Enforcing nickname verification with a dot prefix will ignore commands unless you mention the bot or whitelist yourself/chat/commands!"), true)
@@ -496,7 +520,9 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "✅ Grep",
 			Data: "hset_grep_off",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.SetBool("goroku.main", "grep", false)
+				if err := m.db.SetBool("goroku.main", "grep", false); err != nil {
+					return err
+				}
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -506,7 +532,9 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "🚫 Grep",
 			Data: "hset_grep_on",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.SetBool("goroku.main", "grep", true)
+				if err := m.db.SetBool("goroku.main", "grep", true); err != nil {
+					return err
+				}
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -519,7 +547,9 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "✅ InlineLogs",
 			Data: "hset_inlinelogs_off",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.SetBool("goroku.main", "inlinelogs", false)
+				if err := m.db.SetBool("goroku.main", "inlinelogs", false); err != nil {
+					return err
+				}
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -529,7 +559,9 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: "🚫 InlineLogs",
 			Data: "hset_inlinelogs_on",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.SetBool("goroku.main", "inlinelogs", true)
+				if err := m.db.SetBool("goroku.main", "inlinelogs", true); err != nil {
+					return err
+				}
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -542,7 +574,9 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: m.getTrans("suggest_subscribe", "🔔 Suggest Subscribe"),
 			Data: "hset_suggest_off",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.SetBool("goroku.main", "suggest_subscribe", false)
+				if err := m.db.SetBool("goroku.main", "suggest_subscribe", false); err != nil {
+					return err
+				}
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -552,7 +586,9 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 			Text: m.getTrans("do_not_suggest_subscribe", "🔕 Do Not Suggest Subscribe"),
 			Data: "hset_suggest_on",
 			Handler: func(c inline.CallbackQuery) error {
-				m.db.SetBool("goroku.main", "suggest_subscribe", true)
+				if err := m.db.SetBool("goroku.main", "suggest_subscribe", true); err != nil {
+					return err
+				}
 				_ = c.Answer("Configuration value saved!", false)
 				return c.Edit(m.getSettingsText(), im.GenerateMarkup(m.getSettingsMarkup(im)))
 			},
@@ -669,7 +705,9 @@ func (m *GorokuSettings) RemoveCoreProtectionCmd(msg *goroku.Message) error {
 					Text: m.getTrans("core_protection_btn", "🔓 Disable"),
 					Data: "hset_coreprot_remove",
 					Handler: func(c inline.CallbackQuery) error {
-						m.db.SetBool("goroku.main", "remove_core_protection", true)
+						if err := m.db.SetBool("goroku.main", "remove_core_protection", true); err != nil {
+							return err
+						}
 						_ = c.Answer(m.getTrans("core_protection_removed", "✅ Core protection removed"), false)
 						_ = closeForm(c)
 						return nil
@@ -706,7 +744,9 @@ func (m *GorokuSettings) EnableCoreProtectionCmd(msg *goroku.Message) error {
 					Text: m.getTrans("core_protection_e_btn", "🔒 Enable"),
 					Data: "hset_coreprot_enable",
 					Handler: func(c inline.CallbackQuery) error {
-						m.db.SetBool("goroku.main", "remove_core_protection", false)
+						if err := m.db.SetBool("goroku.main", "remove_core_protection", false); err != nil {
+							return err
+						}
 						_ = c.Answer(m.getTrans("core_protection_enabled", "✅ Core protection enabled"), false)
 						_ = closeForm(c)
 						return nil

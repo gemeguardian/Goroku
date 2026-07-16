@@ -1,11 +1,13 @@
 package goroku
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 )
 
 func TestSecurityCheckDoesNotReloadRightsEveryCall(t *testing.T) {
-	db := NewDatabase(42)
+	db := initializedTestDatabase(t, NewDatabase(42))
 	db.data["goroku.security"] = map[string]any{
 		"owner":     []any{int64(42)},
 		"all_users": []any{},
@@ -40,7 +42,7 @@ func TestSecurityCheckDoesNotReloadRightsEveryCall(t *testing.T) {
 }
 
 func TestSecurityCheckWhitelistsOwnerAndBlacklistsUsers(t *testing.T) {
-	db := NewDatabase(42)
+	db := initializedTestDatabase(t, NewDatabase(42))
 	db.data["goroku.security"] = map[string]any{
 		"owner":         []any{int64(42)},
 		"all_users":     []any{},
@@ -78,7 +80,7 @@ func TestSecurityCheckWhitelistsOwnerAndBlacklistsUsers(t *testing.T) {
 }
 
 func TestSecurityCheckEveryoneAndPMMasks(t *testing.T) {
-	db := NewDatabase(42)
+	db := initializedTestDatabase(t, NewDatabase(42))
 	db.data["goroku.security"] = map[string]any{
 		"owner":         []any{int64(42)},
 		"all_users":     []any{},
@@ -115,7 +117,7 @@ func TestAllMaskIncludesEveryone(t *testing.T) {
 }
 
 func TestSecurityCheckSudoMask(t *testing.T) {
-	db := NewDatabase(42)
+	db := initializedTestDatabase(t, NewDatabase(42))
 	db.data["goroku.security"] = map[string]any{
 		"owner":         []any{int64(42)},
 		"all_users":     []any{},
@@ -139,7 +141,7 @@ func TestSecurityCheckSudoMask(t *testing.T) {
 }
 
 func TestSecurityCheckTsecRules(t *testing.T) {
-	db := NewDatabase(42)
+	db := initializedTestDatabase(t, NewDatabase(42))
 	db.data["goroku.security"] = map[string]any{
 		"owner":         []any{int64(42)},
 		"all_users":     []any{},
@@ -206,5 +208,152 @@ func TestIntFromInterface(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("intFromInterface(%v, %d) = %d; want %d", tc.input, tc.fallback, got, tc.want)
 		}
+	}
+}
+
+func TestBareCommandMaskDoesNotTransferToDifferentModuleOwner(t *testing.T) {
+	db := initializedTestDatabase(t, NewDatabase(42))
+	db.data["goroku.security"] = map[string]any{
+		"owner":         []any{int64(42)},
+		"all_users":     []any{},
+		"bounding_mask": float64(ALL),
+		"masks":         map[string]any{"shared": float64(EVERYONE)},
+	}
+	client := NewCustomTelegramClient(42)
+	modules := NewModules(client, db)
+	client.Loader = modules
+	first := &registrationTestModule{name: "first", commands: map[string]CommandHandler{"shared": testHandler("first")}}
+	if err := modules.RegisterModule(first); err != nil {
+		t.Fatal(err)
+	}
+	if owner := db.GetStringMap("goroku.security", "mask_owners", nil)["shared"]; owner != "first" {
+		t.Fatalf("legacy mask owner = %q, want first", owner)
+	}
+	sm := NewSecurityManager(client, db)
+	t.Cleanup(sm.Stop)
+	msg := &Message{SenderID: 100, ChatID: 100, IsPrivate: true}
+	if !sm.Check(msg, "shared") {
+		t.Fatal("legacy bare mask did not apply to its first observed owner")
+	}
+	if err := modules.UnloadModule("first"); err != nil {
+		t.Fatal(err)
+	}
+	second := &registrationTestModule{name: "second", commands: map[string]CommandHandler{"shared": testHandler("second")}}
+	if err := modules.RegisterModule(second); err != nil {
+		t.Fatal(err)
+	}
+	if sm.Check(msg, "shared") {
+		t.Fatal("bare mask silently transferred to a different owner")
+	}
+	masks := db.GetStringMap("goroku.security", "masks", nil)
+	masks["second.shared"] = "8192"
+	db.SetStringMap("goroku.security", "masks", masks)
+	if !sm.Check(msg, "shared") {
+		t.Fatal("owner-qualified mask did not authorize the changed owner")
+	}
+}
+
+func TestSecurityRulePersistenceFailuresDoNotPublishState(t *testing.T) {
+	db := initializedTestDatabase(t, NewDatabase(42))
+	db.data["goroku.security"] = map[string]any{
+		"owner":     []any{int64(42)},
+		"all_users": []any{int64(42)},
+		"tsec_user": []any{},
+		"tsec_chat": []any{},
+	}
+	db.data["goroku.main"] = map[string]any{"command_prefixes": map[string]any{}}
+	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	t.Cleanup(sm.Stop)
+
+	failure := errors.New("injected security write failure")
+	db.writeLocal = func(string, []byte) error { return failure }
+	if err := sm.AddRule("user", 100, "command", "ping", 0); !errors.Is(err, ErrDatabasePersistence) {
+		t.Fatalf("AddRule error = %v, want persistence failure", err)
+	}
+	if len(sm.GetUserRules()) != 0 || sm.IsUserInAllUsers(100) {
+		t.Fatal("failed add published rule or all_users state")
+	}
+
+	db.writeLocal = writeFileAtomic
+	if err := sm.AddRule("user", 100, "command", "ping", 0); err != nil {
+		t.Fatal(err)
+	}
+	db.writeLocal = func(string, []byte) error { return fmt.Errorf("remove: %w", failure) }
+	removed, err := sm.RemoveRule("user", 100, "ping")
+	if removed || !errors.Is(err, ErrDatabasePersistence) {
+		t.Fatalf("RemoveRule = (%v, %v), want false and persistence failure", removed, err)
+	}
+	if len(sm.GetUserRules()) != 1 || !sm.IsUserInAllUsers(100) {
+		t.Fatal("failed remove changed rule or all_users state")
+	}
+
+	if added, err := sm.AddOwner(200); added || !errors.Is(err, ErrDatabasePersistence) {
+		t.Fatalf("AddOwner = (%v, %v), want false and persistence failure", added, err)
+	}
+	if sm.IsOwner(200) {
+		t.Fatal("failed owner add changed authorization state")
+	}
+	groups := map[string]SecurityGroup{
+		"operators": {Users: []int64{300}, Permissions: []map[string]any{{"rule_type": "command", "rule": "ping"}}},
+	}
+	if err := sm.ApplySgroups(groups); !errors.Is(err, ErrDatabasePersistence) {
+		t.Fatalf("ApplySgroups error = %v, want persistence failure", err)
+	}
+	if sm.CheckTsec(300, "ping") {
+		t.Fatal("failed group write changed authorization state")
+	}
+}
+
+func TestSecurityCommittedWarningsPublishAuthorizationState(t *testing.T) {
+	db := initializedTestDatabase(t, NewDatabase(42))
+	db.data["goroku.security"] = map[string]any{
+		"owner":     []any{int64(42)},
+		"all_users": []any{int64(42)},
+		"tsec_user": []any{},
+		"tsec_chat": []any{},
+	}
+	db.data["goroku.main"] = map[string]any{"command_prefixes": map[string]any{}}
+	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	t.Cleanup(sm.Stop)
+	cause := errors.New("post-rename security warning")
+	installPostRenameWarning(t, db, cause)
+
+	err := sm.AddRule("user", 100, "command", "ping", 0)
+	if err != nil {
+		t.Fatalf("AddRule returned a post-rename warning: %v", err)
+	}
+	assertCommittedWarning(t, db.DurabilityWarning(), cause)
+	if !sm.CheckTsec(100, "ping") || !sm.IsUserInAllUsers(100) {
+		t.Fatal("committed rule warning did not publish authorization state")
+	}
+
+	removed, err := sm.RemoveRule("user", 100, "ping")
+	if !removed || err != nil {
+		t.Fatalf("committed removal = (%v, %v), want logical success", removed, err)
+	}
+	assertCommittedWarning(t, db.DurabilityWarning(), cause)
+	if sm.CheckTsec(100, "ping") || sm.IsUserInAllUsers(100) {
+		t.Fatal("committed rule removal warning did not publish authorization state")
+	}
+
+	added, err := sm.AddOwner(200)
+	if !added || err != nil {
+		t.Fatalf("committed owner add = (%v, %v), want logical success", added, err)
+	}
+	assertCommittedWarning(t, db.DurabilityWarning(), cause)
+	if !sm.IsOwner(200) {
+		t.Fatal("committed owner warning did not publish authorization state")
+	}
+
+	groups := map[string]SecurityGroup{
+		"operators": {Users: []int64{300}, Permissions: []map[string]any{{"rule_type": "command", "rule": "ping"}}},
+	}
+	err = sm.ApplySgroups(groups)
+	if err != nil {
+		t.Fatalf("ApplySgroups returned a post-rename warning: %v", err)
+	}
+	assertCommittedWarning(t, db.DurabilityWarning(), cause)
+	if !sm.CheckTsec(300, "ping") || !sm.IsUserInAllUsers(300) {
+		t.Fatal("committed group warning did not publish authorization state")
 	}
 }

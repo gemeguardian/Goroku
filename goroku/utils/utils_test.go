@@ -174,6 +174,20 @@ func TestCensorSensitive(t *testing.T) {
 	}
 }
 
+func TestCensorSensitiveWithPhonesNormalizesOnlyConfiguredPhone(t *testing.T) {
+	const phone = "+15551234567"
+	input := "plain 15551234567,15551234567 formatted +1 (555) 123-4567 unrelated 15551234568 count 123456789"
+	got := CensorSensitiveWithPhones(input, []string{phone})
+	want := "plain [REDACTED],[REDACTED] formatted [REDACTED] unrelated 15551234568 count 123456789"
+	if got != want {
+		t.Fatalf("CensorSensitiveWithPhones() = %q, want %q", got, want)
+	}
+
+	if got := CensorSensitiveWithPhones("value 123456789", []string{"12345"}); got != "value 123456789" {
+		t.Fatalf("short numeric value was over-redacted: %q", got)
+	}
+}
+
 func TestSecureFile(t *testing.T) {
 	tempDir := t.TempDir()
 	tempFile := filepath.Join(tempDir, "test.txt")

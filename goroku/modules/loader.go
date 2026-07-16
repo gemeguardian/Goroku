@@ -2,8 +2,12 @@ package modules
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,6 +26,81 @@ const (
 	maxRepoIndexBytes    = 1024 * 1024
 )
 
+func validateRemoteURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("remote modules require HTTPS")
+	}
+	if u.Hostname() == "" || u.User != nil {
+		return fmt.Errorf("URL must contain a host and no embedded credentials")
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return fmt.Errorf("local addresses are not allowed")
+	}
+	if ip := net.ParseIP(host); ip != nil && !isPublicRemoteIP(ip) {
+		return fmt.Errorf("non-public address is not allowed")
+	}
+	return nil
+}
+
+func isPublicRemoteIP(ip net.IP) bool {
+	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return false
+	}
+	// Block CGNAT (RFC 6598) 100.64.0.0/10 used by carrier-grade NAT / some cloud metadata paths.
+	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+		return false
+	}
+	return true
+}
+
+func newModuleHTTPClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("host resolved to no addresses")
+		}
+		for _, resolved := range ips {
+			if !isPublicRemoteIP(resolved.IP) {
+				return nil, fmt.Errorf("host resolves to non-public address %s", resolved.IP)
+			}
+		}
+		dialer := &net.Dialer{Timeout: timeout}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			return validateRemoteURL(req.URL.String())
+		},
+	}
+}
+
+func downloadModuleURL(client *http.Client, rawURL string, maxBytes int64) ([]byte, error) {
+	if err := validateRemoteURL(rawURL); err != nil {
+		return nil, err
+	}
+	return utils.DownloadURLLimited(client, rawURL, maxBytes)
+}
+
 type LoaderModule struct {
 	client          *goroku.CustomTelegramClient
 	db              *goroku.Database
@@ -31,6 +110,10 @@ type LoaderModule struct {
 	shareLink       bool
 	basicAuth       string
 	commandEmoji    string
+
+	// Narrow seam used by module transaction tests.
+	installHotModuleApply func(*goroku.Message, string, string, []byte) error
+	setLoadedModulesApply func(map[string]string) error
 }
 
 func (m *LoaderModule) Name() string {
@@ -104,10 +187,20 @@ func (m *LoaderModule) ClientReady() error {
 	var structNames []string
 	goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
 	for modName, source := range loadedMods {
-		path := filepath.Join(goroku.BasePath, "goroku", "modules", modName+".go")
+		path, pathErr := findInstalledModuleSource(modName)
+		if pathErr != nil {
+			path, pathErr = runtimeModuleSourcePath(modName)
+			if pathErr != nil {
+				continue
+			}
+		}
 		bodyBytes, err := os.ReadFile(path) //nolint:gosec
 		if err != nil {
 			if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+				if err := ensureRuntimeModuleSourceDir(); err != nil {
+					continue
+				}
+				// Re-download must match pinned digest or trusted content; never silently load swapped remote.
 				bodyBytes, err = m.restoreLoadedModule(modName, source, path)
 				if err != nil {
 					continue
@@ -115,6 +208,9 @@ func (m *LoaderModule) ClientReady() error {
 			} else {
 				continue
 			}
+		} else if err := verifyPinnedOrTrustedContent(m.db, modName, bodyBytes, false); err != nil {
+			// Local file present but does not match pin: refuse silent load of swapped content.
+			continue
 		}
 		structName := modName
 		if loc := goReg.FindStringSubmatch(string(bodyBytes)); len(loc) == 2 {
@@ -133,7 +229,10 @@ func (m *LoaderModule) restoreLoadedModule(modName, url, path string) ([]byte, e
 	if strings.HasSuffix(strings.ToLower(url), ".py") || strings.HasSuffix(strings.ToLower(modName), ".py") {
 		return nil, fmt.Errorf("python module %s cannot be restored by Go loader", modName)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newModuleHTTPClient(10 * time.Second)
+	if err := validateRemoteURL(url); err != nil {
+		return nil, err
+	}
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err
@@ -146,8 +245,16 @@ func (m *LoaderModule) restoreLoadedModule(modName, url, path string) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
+	// Boot re-download requires pin match or trusted digest; refuse silent swapped content.
+	if err := verifyPinnedOrTrustedContent(m.db, modName, body, true); err != nil {
+		return nil, err
+	}
 	if err := os.WriteFile(path, body, 0600); err != nil {
 		return nil, err
+	}
+	// Persist pin if restore was allowed via trusted_digests only.
+	if moduleContentDigests(m.db)[modName] == "" {
+		_ = setModuleContentDigest(m.db, modName, contentSHA256(body))
 	}
 	return body, nil
 }
@@ -170,16 +277,29 @@ func (m *LoaderModule) Commands() map[string]goroku.CommandHandler {
 func (m *LoaderModule) CommandMetas() map[string]goroku.CommandMeta {
 	return map[string]goroku.CommandMeta{
 		"loadmod": {
-			Aliases: []string{"lm"},
+			Aliases:   []string{"lm"},
+			OnlyOwner: true,
 		},
 		"unloadmod": {
-			Aliases: []string{"ulm"},
+			Aliases:   []string{"ulm"},
+			OnlyOwner: true,
 		},
 		"dlmod": {
-			Aliases: []string{"dlm"},
+			Aliases:   []string{"dlm"},
+			OnlyOwner: true,
 		},
 		"modload": {
-			Aliases: []string{"ml"},
+			Aliases:   []string{"ml"},
+			OnlyOwner: true,
+		},
+		"clearmodules": {
+			OnlyOwner: true,
+		},
+		"addrepo": {
+			OnlyOwner: true,
+		},
+		"delrepo": {
+			OnlyOwner: true,
 		},
 	}
 }
@@ -196,7 +316,10 @@ func (m *LoaderModule) getRepo(repo string) ([]string, error) {
 	repo = strings.TrimSuffix(repo, "/")
 	url := fmt.Sprintf("%s/full.txt", repo)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	if err := validateRemoteURL(url); err != nil {
+		return nil, err
+	}
+	client := newModuleHTTPClient(5 * time.Second)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -242,7 +365,7 @@ func (m *LoaderModule) getRepoList() (map[string][]string, error) {
 
 	res := make(map[string][]string)
 	for _, repo := range repos {
-		if !strings.HasPrefix(repo, "http") {
+		if validateRemoteURL(repo) != nil {
 			continue
 		}
 		mods, err := m.getRepo(repo)
@@ -281,7 +404,8 @@ func (m *LoaderModule) findLink(moduleName string) (string, error) {
 }
 
 func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
-	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
+	rawArgs, confirmed := parseInstallArgs(utils.GetArgsRaw(msg.RawText))
+	rawArgs = strings.TrimSpace(rawArgs)
 	if rawArgs == "" {
 		im := m.client.GorokuInline
 		if im != nil {
@@ -355,8 +479,8 @@ func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 		modName = strings.TrimSuffix(fileName, ".go")
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	bodyBytes, err := utils.DownloadURLLimited(client, url, maxModuleSourceBytes)
+	client := newModuleHTTPClient(5 * time.Second)
+	bodyBytes, err := downloadModuleURL(client, url, maxModuleSourceBytes)
 	if err != nil {
 		msg.Text = m.getTrans("no_module", "🚫 <b>Module not available in repo.</b>")
 		if msg.Client != nil {
@@ -365,41 +489,32 @@ func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	fileName := modName + ".go"
-	destPath := filepath.Join(goroku.BasePath, "goroku", "modules", fileName)
-	err = os.WriteFile(destPath, bodyBytes, 0600)
+	destPath, err := runtimeModuleSourcePath(modName)
+	if err == nil {
+		err = ensureRuntimeModuleSourceDir()
+	}
 	if err != nil {
-		msg.Text = fmt.Sprintf("❌ Failed to save file to filesystem: %v", err)
+		msg.Text = fmt.Sprintf("❌ Failed to prepare module storage: %v", err)
+		if msg.Client != nil {
+			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
+		}
+		return nil
+	}
+	err = m.installPersistedHotModuleConfirmed(msg, modName, destPath, url, bodyBytes, confirmed)
+	if err != nil {
+		msg.Text = moduleTransactionReport("Module install", err)
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
-	loadedMods[modName] = url
-	m.db.SetStringMap("Loader", "loaded_modules", loadedMods)
-	m.db.Save()
-
-	structName := modName
-	goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
-	if loc := goReg.FindStringSubmatch(string(bodyBytes)); len(loc) == 2 {
-		structName = loc[1]
-	}
-
-	err = m.registerHotLoad(msg, structName, destPath)
-	if err != nil {
-		msg.Text = fmt.Sprintf("❌ <b>Load failed:</b> %v", err)
-		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-		}
-	}
-
 	return nil
 }
 
 func (m *LoaderModule) LoadmodCmd(msg *goroku.Message) error {
-	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
+	// Confirm tokens live on the command line; body may come from reply media.
+	rawArgs, confirmed := parseInstallArgs(utils.GetArgsRaw(msg.RawText))
 	if rawArgs == "" {
 		if msg.ReplyToMsgID != 0 {
 			replyMsg, err := msg.GetReplyMessage()
@@ -407,6 +522,7 @@ func (m *LoaderModule) LoadmodCmd(msg *goroku.Message) error {
 				var buf bytes.Buffer
 				err = m.client.DownloadMedia(replyMsg.Media, &buf)
 				if err == nil {
+					// Media body is source only; confirm comes from the command line.
 					rawArgs = buf.String()
 				}
 			}
@@ -443,28 +559,19 @@ func (m *LoaderModule) LoadmodCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	fileName := modName + ".go"
-	destPath := filepath.Join(goroku.BasePath, "goroku", "modules", fileName)
-	err := os.WriteFile(destPath, []byte(rawArgs), 0600)
+	destPath, err := runtimeModuleSourcePath(modName)
+	if err == nil {
+		err = ensureRuntimeModuleSourceDir()
+	}
+	if err == nil {
+		err = m.installPersistedHotModuleConfirmed(msg, modName, destPath, "local", []byte(rawArgs), confirmed)
+	}
 	if err != nil {
-		msg.Text = fmt.Sprintf("❌ Failed to save module file: %v", err)
+		msg.Text = moduleTransactionReport("Module install", err)
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
-	}
-
-	loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
-	loadedMods[modName] = "local"
-	m.db.SetStringMap("Loader", "loaded_modules", loadedMods)
-	m.db.Save()
-
-	err = m.registerHotLoad(msg, modName, destPath)
-	if err != nil {
-		msg.Text = fmt.Sprintf("❌ <b>Load failed:</b> %v", err)
-		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-		}
 	}
 
 	return nil
@@ -528,22 +635,14 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	err := loader.UnloadModule(foundName)
+	err := m.uninstallPersistedHotModule(msg, matchedKey, foundName)
 	if err != nil {
-		msg.Text = formatTrans(m.getTrans("not_unloaded", "🚫 <b>Module not unloaded: {}</b>"), err.Error())
+		msg.Text = moduleTransactionReport("Module uninstall", err)
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
-
-	if matchedKey != "" {
-		destPathGo := filepath.Join(goroku.BasePath, "goroku", "modules", matchedKey+".go")
-		_ = os.Remove(destPathGo)
-		delete(loadedMods, matchedKey)
-	}
-	m.db.SetStringMap("Loader", "loaded_modules", loadedMods)
-	m.db.Save()
 
 	err = m.unregisterHotLoad(msg, foundName)
 	if err != nil {
@@ -569,17 +668,27 @@ func (m *LoaderModule) ClearmodulesCmd(msg *goroku.Message) error {
 				Text: m.getTrans("clearmodules", "🗑 Clear modules"),
 				Data: "clear_mods_confirm",
 				Handler: func(c inline.CallbackQuery) error {
+					if !requireOwnerCallback(m.client, c, c.FromID) {
+						return nil
+					}
 					_ = c.Answer("Deleting modules...", false)
 					_ = closeForm(c)
 					loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
 
 					for modName := range loadedMods {
-						path := filepath.Join(goroku.BasePath, "goroku", "modules", modName+".go")
-						_ = os.Remove(path)
+						if path, pathErr := runtimeModuleSourcePath(modName); pathErr == nil {
+							_ = os.Remove(path)
+						}
 					}
 
-					m.db.SetStringMap("Loader", "loaded_modules", make(map[string]string))
-					m.db.Save()
+					if err := m.db.Update(map[string]map[string]any{
+						"Loader": {
+							"loaded_modules": make(map[string]string),
+							moduleDigestsKey: make(map[string]string),
+						},
+					}); err != nil {
+						return err
+					}
 
 					replyMsg := tgbotapi.NewMessage(c.ChatID, m.getTrans("all_modules_deleted", "✅ All modules deleted"))
 					_, _ = im.GetBotAPI().Send(replyMsg)
@@ -601,7 +710,7 @@ func (m *LoaderModule) ClearmodulesCmd(msg *goroku.Message) error {
 		},
 	}
 
-	_, err := im.Form(confirmText, msg.ChatID, markup)
+	_, err := im.Form(confirmText, msg.ChatID, markup, inline.WithForceMe(true))
 	return err
 }
 
@@ -609,12 +718,19 @@ func (m *LoaderModule) executeClearModules(msg *goroku.Message) error {
 	loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
 
 	for modName := range loadedMods {
-		path := filepath.Join(goroku.BasePath, "goroku", "modules", modName+".go")
-		_ = os.Remove(path)
+		if path, pathErr := runtimeModuleSourcePath(modName); pathErr == nil {
+			_ = os.Remove(path)
+		}
 	}
 
-	m.db.SetStringMap("Loader", "loaded_modules", make(map[string]string))
-	m.db.Save()
+	if err := m.db.Update(map[string]map[string]any{
+		"Loader": {
+			"loaded_modules": make(map[string]string),
+			moduleDigestsKey: make(map[string]string),
+		},
+	}); err != nil {
+		return err
+	}
 
 	msg.Text = m.getTrans("all_modules_deleted", "✅ All modules deleted")
 	if msg.Client != nil {
@@ -630,7 +746,7 @@ func (m *LoaderModule) executeClearModules(msg *goroku.Message) error {
 
 func (m *LoaderModule) AddrepoCmd(msg *goroku.Message) error {
 	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
-	if rawArgs == "" || (!strings.HasPrefix(rawArgs, "http://") && !strings.HasPrefix(rawArgs, "https://")) {
+	if rawArgs == "" || validateRemoteURL(rawArgs) != nil {
 		msg.Text = m.getTrans("no_repo", "🚫 <b>Invalid repository URL</b>")
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
@@ -640,8 +756,8 @@ func (m *LoaderModule) AddrepoCmd(msg *goroku.Message) error {
 
 	rawArgs = strings.TrimSuffix(rawArgs, "/")
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	if _, err := utils.DownloadURLLimited(client, fmt.Sprintf("%s/full.txt", rawArgs), maxRepoIndexBytes); err != nil {
+	client := newModuleHTTPClient(5 * time.Second)
+	if _, err := downloadModuleURL(client, fmt.Sprintf("%s/full.txt", rawArgs), maxRepoIndexBytes); err != nil {
 		msg.Text = m.getTrans("no_repo", "🚫 <b>Invalid repository URL</b>")
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
@@ -665,9 +781,11 @@ func (m *LoaderModule) AddrepoCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	m.additionalRepos = append(m.additionalRepos, rawArgs)
-	m.db.Set("Loader", "ADDITIONAL_REPOS", m.additionalRepos)
-	m.db.Save()
+	additionalRepos := append(append([]string(nil), m.additionalRepos...), rawArgs)
+	if err := m.db.Set("Loader", "ADDITIONAL_REPOS", additionalRepos); err != nil {
+		return err
+	}
+	m.additionalRepos = additionalRepos
 
 	msg.Text = formatTrans(m.getTrans("repo_added", "✅ <b>Repository {} added</b>"), rawArgs)
 	if msg.Client != nil {
@@ -704,9 +822,12 @@ func (m *LoaderModule) DelrepoCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	m.additionalRepos = append(m.additionalRepos[:idx], m.additionalRepos[idx+1:]...)
-	m.db.Set("Loader", "ADDITIONAL_REPOS", m.additionalRepos)
-	m.db.Save()
+	additionalRepos := append([]string(nil), m.additionalRepos...)
+	additionalRepos = append(additionalRepos[:idx], additionalRepos[idx+1:]...)
+	if err := m.db.Set("Loader", "ADDITIONAL_REPOS", additionalRepos); err != nil {
+		return err
+	}
+	m.additionalRepos = additionalRepos
 
 	msg.Text = formatTrans(m.getTrans("repo_deleted", "✅ <b>Repository {} deleted</b>"), rawArgs)
 	if msg.Client != nil {
@@ -826,13 +947,298 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 	return nil
 }
 
-func (m *LoaderModule) registerHotLoad(msg *goroku.Message, structName string, codePath string) error {
-	err := RegisterModulesAndRebuild(msg, []string{structName})
-	if err != nil {
-		_ = os.Remove(codePath)
+func (m *LoaderModule) installHotModule(msg *goroku.Message, fallbackName, destPath string, body []byte) error {
+	return m.installHotModuleConfirmed(msg, fallbackName, destPath, body, false)
+}
+
+func (m *LoaderModule) installHotModuleConfirmed(msg *goroku.Message, fallbackName, destPath string, body []byte, confirmed bool) error {
+	if m.client == nil || m.client.Loader == nil {
+		return fmt.Errorf("modules registry not found")
+	}
+	if err := ensureUnsafeInstallAllowed(msg, m.db, body, confirmed); err != nil {
+		if msg != nil && msg.Client != nil {
+			_ = msg.Answer("⚠️ <b>Security:</b> " + escapeHTML(err.Error()))
+		}
 		return err
 	}
+	dir := filepath.Dir(destPath)
+	tmp, err := os.CreateTemp(dir, ".module-*.go")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	structName := fallbackName
+	goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
+	if loc := goReg.FindStringSubmatch(string(body)); len(loc) == 2 {
+		structName = loc[1]
+	}
+	started := time.Now()
+	digest := contentSHA256(body)
+	// Native Go plugins cannot be fully unloaded from process memory after plugin.Open.
+	prepared, err := prepareHotModule(structName, tmpPath)
+	auditExecution(executionAuditEvent{
+		ActorID:    messageActorID(msg),
+		ChatID:     messageChatID(msg),
+		Capability: "plugin.install",
+		Digest:     digest,
+		Duration:   time.Since(started),
+		ExitCode:   auditExitCode(err),
+		Status:     auditStatus(err, false, false),
+	})
+	if err != nil {
+		return fmt.Errorf("module preparation failed: %w", err)
+	}
+	if err := rejectSelfModuleTransaction(msg, m.client.Loader, prepared.Name(), "replace"); err != nil {
+		return err
+	}
+
+	oldBody, readErr := os.ReadFile(destPath) //nolint:gosec
+	hadOld := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		return err
+	}
+	if err := replacePreparedHotModule(m.client.Loader, prepared); err != nil {
+		var rollbackErr error
+		if hadOld {
+			rollbackErr = atomicWriteFile(destPath, oldBody)
+		} else {
+			if removeErr := os.Remove(destPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				rollbackErr = removeErr
+			}
+		}
+		if rollbackErr != nil {
+			return errors.Join(fmt.Errorf("hot-load failed: %w", err), fmt.Errorf("source rollback failed: %w", rollbackErr))
+		}
+		return fmt.Errorf("hot-load failed: %w", err)
+	}
 	return nil
+}
+
+func (m *LoaderModule) installPersistedHotModule(msg *goroku.Message, modName, destPath, provenance string, body []byte) error {
+	return m.installPersistedHotModuleConfirmed(msg, modName, destPath, provenance, body, false)
+}
+
+func (m *LoaderModule) installPersistedHotModuleConfirmed(msg *goroku.Message, modName, destPath, provenance string, body []byte, confirmed bool) error {
+	installedName := extractStructName(body, modName)
+	if err := rejectSelfModuleTransaction(msg, m.client.Loader, installedName, "replace"); err != nil {
+		return err
+	}
+	return withModuleTransaction(func() error {
+		oldBody, readErr := os.ReadFile(destPath) //nolint:gosec
+		hadOldSource := readErr == nil
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return readErr
+		}
+		oldModules := m.client.Loader.GetModules()
+
+		if m.installHotModuleApply != nil {
+			if err := m.installHotModuleApply(msg, modName, destPath, body); err != nil {
+				return err
+			}
+		} else if err := m.installHotModuleConfirmed(msg, modName, destPath, body, confirmed); err != nil {
+			return err
+		}
+		oldModule := oldModules[strings.ToLower(installedName)]
+		if current := m.client.Loader.LookupByName(installedName); current == nil || current == oldModule {
+			for name, current := range m.client.Loader.GetModules() {
+				if oldModules[name] != current {
+					installedName = current.Name()
+					oldModule = oldModules[name]
+					break
+				}
+			}
+		}
+		loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
+		loadedMods[modName] = provenance
+		digest := contentSHA256(body)
+		digests := moduleContentDigests(m.db)
+		digests[modName] = digest
+		setLoadedModules := func(modules map[string]string) error {
+			return m.db.SetStringMap("Loader", "loaded_modules", modules)
+		}
+		if m.setLoadedModulesApply != nil {
+			setLoadedModules = m.setLoadedModulesApply
+		}
+		var dbErr error
+		if m.setLoadedModulesApply != nil {
+			dbErr = setLoadedModules(loadedMods)
+			if dbErr == nil {
+				_ = setModuleContentDigest(m.db, modName, digest)
+			}
+		} else {
+			dbErr = m.db.Update(map[string]map[string]any{
+				"Loader": {
+					"loaded_modules": loadedMods,
+					moduleDigestsKey: digests,
+				},
+			})
+		}
+		if dbErr == nil {
+			return nil
+		}
+		if errors.Is(dbErr, goroku.ErrDatabaseCommitUncertain) {
+			return fmt.Errorf("module manifest committed with durability warning: %w", dbErr)
+		}
+
+		var rollbackErr error
+		if hadOldSource {
+			rollbackErr = atomicWriteFile(destPath, oldBody)
+		} else if err := os.Remove(destPath); err != nil && !os.IsNotExist(err) {
+			rollbackErr = err
+		}
+		if current := m.client.Loader.LookupByName(installedName); current != nil {
+			if _, err := unloadModuleForTransaction(m.client.Loader, current.Name()); err != nil {
+				rollbackErr = errors.Join(rollbackErr, err)
+			}
+		}
+		if oldModule != nil {
+			if err := m.client.Loader.RegisterModule(oldModule); err != nil {
+				rollbackErr = errors.Join(rollbackErr, err)
+			}
+		}
+		if rollbackErr != nil {
+			return errors.Join(fmt.Errorf("database update failed: %w", dbErr), fmt.Errorf("module rollback failed: %w", rollbackErr))
+		}
+		return fmt.Errorf("database update failed: %w", dbErr)
+	})
+}
+
+func (m *LoaderModule) uninstallPersistedHotModule(msg *goroku.Message, modName, registeredName string) error {
+	if err := rejectSelfModuleTransaction(msg, m.client.Loader, registeredName, "uninstall"); err != nil {
+		return err
+	}
+	return withModuleTransaction(func() error {
+		loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
+		_, ok := loadedMods[modName]
+		if !ok {
+			return fmt.Errorf("module %s is no longer installed", modName)
+		}
+		oldModule := m.client.Loader.LookupByName(registeredName)
+		if oldModule == nil {
+			return fmt.Errorf("module %s not found", registeredName)
+		}
+		destPath, err := runtimeModuleSourcePath(modName)
+		if err != nil {
+			return err
+		}
+		oldBody, readErr := os.ReadFile(destPath) //nolint:gosec
+		hadSource := readErr == nil
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return readErr
+		}
+
+		detached, err := unloadModuleForTransaction(m.client.Loader, oldModule.Name())
+		if err != nil {
+			if detached {
+				return restoreDetachedModule(m.client.Loader, oldModule, fmt.Errorf("unload module %s: %w", oldModule.Name(), err))
+			}
+			return err
+		}
+		if hadSource {
+			if err := os.Remove(destPath); err != nil {
+				return restoreDetachedModule(m.client.Loader, oldModule, err)
+			}
+		}
+		delete(loadedMods, modName)
+		digests := moduleContentDigests(m.db)
+		delete(digests, modName)
+		setLoadedModules := func(modules map[string]string) error {
+			return m.db.SetStringMap("Loader", "loaded_modules", modules)
+		}
+		if m.setLoadedModulesApply != nil {
+			setLoadedModules = m.setLoadedModulesApply
+		}
+		var dbErr error
+		if m.setLoadedModulesApply != nil {
+			dbErr = setLoadedModules(loadedMods)
+			if dbErr == nil {
+				_ = clearModuleContentDigest(m.db, modName)
+			}
+		} else {
+			dbErr = m.db.Update(map[string]map[string]any{
+				"Loader": {
+					"loaded_modules": loadedMods,
+					moduleDigestsKey: digests,
+				},
+			})
+		}
+		if dbErr == nil {
+			return nil
+		}
+		if errors.Is(dbErr, goroku.ErrDatabaseCommitUncertain) {
+			return fmt.Errorf("module manifest committed with durability warning: %w", dbErr)
+		}
+
+		var rollbackErr error
+		if hadSource {
+			rollbackErr = atomicWriteFile(destPath, oldBody)
+		}
+		if err := m.client.Loader.RegisterModule(oldModule); err != nil {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+		if rollbackErr != nil {
+			return errors.Join(fmt.Errorf("database update failed: %w", dbErr), fmt.Errorf("module rollback failed: %w", rollbackErr))
+		}
+		return fmt.Errorf("database update failed: %w", dbErr)
+	})
+}
+
+func messageActorID(msg *goroku.Message) int64 {
+	if msg == nil {
+		return 0
+	}
+	return msg.SenderID
+}
+
+func messageChatID(msg *goroku.Message) int64 {
+	if msg == nil {
+		return 0
+	}
+	return msg.ChatID
+}
+
+func auditExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	return -1
+}
+
+func atomicWriteFile(path string, body []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".rollback-*.go")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func (m *LoaderModule) unregisterHotLoad(msg *goroku.Message, structName string) error {

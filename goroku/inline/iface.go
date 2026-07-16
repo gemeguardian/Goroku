@@ -10,7 +10,7 @@ import (
 // It deliberately mirrors goroku.Database's Get/Set without importing the whole package.
 type Database interface {
 	Get(namespace, key string, defaultValue any) (any, error)
-	Set(namespace, key string, value any) bool
+	Set(namespace, key string, value any) error
 }
 
 // SecurityChecker is the minimal security API the inline manager needs.
@@ -32,5 +32,6 @@ type InlineUserBot interface {
 
 // InlineModules provides access to the module registry for inline handlers.
 type InlineModules interface {
-	GetModules() map[string]any
+	ModuleNames() []string
+	WithModule(name string, fn func(any)) bool
 }

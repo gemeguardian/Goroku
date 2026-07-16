@@ -1,7 +1,9 @@
 package inline
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,7 +24,7 @@ var (
 	botBasePattern     = regexp.MustCompile(fmt.Sprintf(botIDPattern, `\w*_[0-9a-zA-Z]{6}_bot`))
 )
 
-func (im *InlineManager) getWebAppSession(webAppURL string) (*http.Client, string, error) {
+func (im *InlineManager) getWebAppSession(ctx context.Context, webAppURL string) (*http.Client, string, error) {
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{
 		Jar:     jar,
@@ -55,7 +57,7 @@ func (im *InlineManager) getWebAppSession(webAppURL string) (*http.Client, strin
 	data.Set("_auth", decodedData)
 	data.Set("method", "auth")
 
-	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, "", err
 	}
@@ -75,7 +77,7 @@ func (im *InlineManager) getWebAppSession(webAppURL string) (*http.Client, strin
 		return nil, "", fmt.Errorf("auth status code %d", resp.StatusCode)
 	}
 
-	reqGet, err := http.NewRequest("GET", baseURL, nil)
+	reqGet, err := http.NewRequestWithContext(ctx, "GET", baseURL, nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -104,14 +106,30 @@ func (im *InlineManager) getWebAppSession(webAppURL string) (*http.Client, strin
 	return client, matches[1], nil
 }
 
-func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, createNewIfNeeded, revokeToken bool) (bool, error) {
-	if im.token != "" {
+func (im *InlineManager) assertToken(ctx context.Context, client *http.Client, baseURL, hash string, createNewIfNeeded, revokeToken bool) (bool, error) {
+	if im.tokenValue() != "" {
 		return true, nil
 	}
+	token, err := im.getToken()
+	if err != nil {
+		return false, err
+	}
+	if token != "" {
+		im.setToken(token)
+		return true, nil
+	}
+	customBot, err := im.getCustomBot()
+	if err != nil {
+		return false, err
+	}
+	return im.assertTokenWithCustomBot(ctx, client, baseURL, hash, createNewIfNeeded, revokeToken, customBot)
+}
+
+func (im *InlineManager) assertTokenWithCustomBot(ctx context.Context, client *http.Client, baseURL, hash string, createNewIfNeeded, revokeToken bool, customBot string) (bool, error) {
 
 	log.Println("[Inline] Bot token not found in db, searching in BotFather WebApp...")
 
-	req, err := http.NewRequest("GET", baseURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL, nil)
 	if err != nil {
 		return false, err
 	}
@@ -131,17 +149,6 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 
 	// Regexp to find bot ID
 	var botID string
-	var customBot string
-	if dbTyped, ok := im.db.(interface {
-		Get(string, string, any) (any, error)
-	}); ok {
-		if raw, _ := dbTyped.Get("goroku.inline", "custom_bot", ""); raw != nil {
-			if cb, ok := raw.(string); ok && cb != "" {
-				customBot = strings.TrimPrefix(cb, "@")
-			}
-		}
-	}
-
 	var botIDRegex *regexp.Regexp
 	if customBot != "" {
 		botIDRegex = regexp.MustCompile(fmt.Sprintf(botIDPattern, regexp.QuoteMeta(customBot)))
@@ -162,7 +169,7 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 			data.Set("bid", botID)
 			data.Set("method", "revokeAccessToken")
 
-			reqPost, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+			reqPost, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(data.Encode()))
 			if err != nil {
 				return false, err
 			}
@@ -184,7 +191,7 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 			}
 		} else {
 			botURL := fmt.Sprintf("%s/bot/%s", baseURL, botID)
-			reqGet, err := http.NewRequest("GET", botURL, nil)
+			reqGet, err := http.NewRequestWithContext(ctx, "GET", botURL, nil)
 			if err != nil {
 				return false, err
 			}
@@ -212,11 +219,13 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 
 		if token != "" {
 			if dbTyped, ok := im.db.(interface {
-				Set(string, string, any) bool
+				Set(string, string, any) error
 			}); ok {
-				dbTyped.Set("goroku.inline", "bot_token", token)
+				if err := dbTyped.Set("goroku.inline", "bot_token", token); err != nil {
+					return false, err
+				}
 			}
-			im.token = token
+			im.setToken(token)
 
 			// Set settings
 			settings := map[string]string{
@@ -231,7 +240,7 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 				data.Set("method", "changeSettings")
 				data.Set(key, val)
 
-				reqSet, _ := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+				reqSet, _ := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(data.Encode()))
 				reqSet.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
 				reqSet.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				if rs, err := client.Do(reqSet); err == nil {
@@ -247,25 +256,36 @@ func (im *InlineManager) assertToken(client *http.Client, baseURL, hash string, 
 	}
 
 	if createNewIfNeeded {
-		return im.createBot(client, baseURL, hash)
+		return im.createBotWithCustomBot(ctx, client, baseURL, hash, customBot)
 	}
 
 	return false, fmt.Errorf("bot not found and createNewIfNeeded is false")
 }
 
-func (im *InlineManager) createBot(client *http.Client, baseURL, hash string) (bool, error) {
-	log.Println("[Inline] Creating new inline helper bot...")
-
-	var customBot string
-	if dbTyped, ok := im.db.(interface {
-		Get(string, string, any) (any, error)
-	}); ok {
-		if raw, _ := dbTyped.Get("goroku.inline", "custom_bot", ""); raw != nil {
-			if cb, ok := raw.(string); ok && cb != "" {
-				customBot = strings.TrimPrefix(cb, "@")
-			}
-		}
+func (im *InlineManager) createBot(ctx context.Context, client *http.Client, baseURL, hash string) (bool, error) {
+	customBot, err := im.getCustomBot()
+	if err != nil {
+		return false, err
 	}
+	return im.createBotWithCustomBot(ctx, client, baseURL, hash, customBot)
+}
+
+func (im *InlineManager) getCustomBot() (string, error) {
+	if im.db == nil {
+		return "", nil
+	}
+	raw, err := im.db.Get("goroku.inline", "custom_bot", "")
+	if err != nil {
+		return "", fmt.Errorf("read goroku.inline.custom_bot: %w", err)
+	}
+	if customBot, ok := raw.(string); ok {
+		return strings.TrimPrefix(customBot, "@"), nil
+	}
+	return "", nil
+}
+
+func (im *InlineManager) createBotWithCustomBot(ctx context.Context, client *http.Client, baseURL, hash, customBot string) (bool, error) {
+	log.Println("[Inline] Creating new inline helper bot...")
 
 	var username string
 	latinMock := []string{"Goroku", "Helper", "Userbot", "MyBot"}
@@ -285,7 +305,7 @@ func (im *InlineManager) createBot(client *http.Client, baseURL, hash string) (b
 		data.Set("username", "@"+username)
 		data.Set("method", "checkBotUsername")
 
-		reqPost, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+		reqPost, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(data.Encode()))
 		if err != nil {
 			return false, err
 		}
@@ -319,7 +339,7 @@ func (im *InlineManager) createBot(client *http.Client, baseURL, hash string) (b
 	data.Set("about", "Inline Bot helper for Goroku Userbot")
 	data.Set("method", "createBot")
 
-	reqCreate, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+	reqCreate, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return false, err
 	}
@@ -340,40 +360,42 @@ func (im *InlineManager) createBot(client *http.Client, baseURL, hash string) (b
 		return false, fmt.Errorf("bot creation failed: %s", res.Error)
 	}
 
-	return im.assertToken(client, baseURL, hash, false, false)
+	return im.assertTokenWithCustomBot(ctx, client, baseURL, hash, false, false, customBot)
 }
 
-func (im *InlineManager) dpRevokeToken(client *http.Client, baseURL, hash string, alreadyInitialised bool) (bool, error) {
-	if alreadyInitialised {
-		im.Stop()
-	}
-
+func (im *InlineManager) dpRevokeToken(ctx context.Context, client *http.Client, baseURL, hash string, alreadyInitialised bool) (bool, error) {
 	if dbTyped, ok := im.db.(interface {
-		Set(string, string, any) bool
+		Set(string, string, any) error
 	}); ok {
-		dbTyped.Set("goroku.inline", "bot_token", nil)
+		if err := dbTyped.Set("goroku.inline", "bot_token", nil); err != nil {
+			return false, err
+		}
 	}
-	im.token = ""
+	im.setToken("")
 
-	return im.assertToken(client, baseURL, hash, true, true)
+	return im.assertToken(ctx, client, baseURL, hash, true, true)
 }
 
-func (im *InlineManager) reassertToken(client *http.Client, baseURL, hash string) (bool, error) {
-	ok, err := im.assertToken(client, baseURL, hash, true, true)
+func (im *InlineManager) reassertToken(ctx context.Context, client *http.Client, baseURL, hash string) (bool, error) {
+	if dbTyped, ok := im.db.(interface {
+		Set(string, string, any) error
+	}); ok {
+		if err := dbTyped.Set("goroku.inline", "bot_token", nil); err != nil {
+			return false, err
+		}
+	}
+	im.setToken("")
+	ok, err := im.assertToken(ctx, client, baseURL, hash, true, true)
 	if err != nil {
 		im.setInitComplete(false)
 		return false, err
 	}
 
-	if ok {
-		err = im.RegisterManager(false, true)
-		return err == nil, err
-	}
-	return false, nil
+	return ok, nil
 }
 
-func (im *InlineManager) checkBot(client *http.Client, baseURL, hash, username string) (bool, error) {
-	req, err := http.NewRequest("GET", baseURL, nil)
+func (im *InlineManager) checkBot(ctx context.Context, client *http.Client, baseURL, hash, username string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL, nil)
 	if err != nil {
 		return false, err
 	}
@@ -404,7 +426,7 @@ func (im *InlineManager) checkBot(client *http.Client, baseURL, hash, username s
 	data.Set("username", "@"+username)
 	data.Set("method", "checkBotUsername")
 
-	reqPost, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+	reqPost, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return false, err
 	}
@@ -426,7 +448,7 @@ func (im *InlineManager) checkBot(client *http.Client, baseURL, hash, username s
 	return false, nil
 }
 
-func (im *InlineManager) setCommands(client *http.Client, baseURL, hash string, commands map[string]string) (bool, error) {
+func (im *InlineManager) setCommands(ctx context.Context, client *http.Client, baseURL, hash string, commands map[string]string) (bool, error) {
 	botID := im.BotIDVal()
 	if botID == 0 {
 		return false, fmt.Errorf("bot not initialized")
@@ -444,7 +466,7 @@ func (im *InlineManager) setCommands(client *http.Client, baseURL, hash string, 
 		data.Set("description", desc)
 		data.Set("method", "setCommand")
 
-		reqPost, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+		reqPost, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(data.Encode()))
 		if err != nil {
 			return false, err
 		}
@@ -455,21 +477,53 @@ func (im *InlineManager) setCommands(client *http.Client, baseURL, hash string, 
 		if err == nil {
 			_ = respPost.Body.Close()
 		}
-		time.Sleep(1 * time.Second)
+		if err := sleepContext(ctx, time.Second); err != nil {
+			return false, err
+		}
 	}
 
 	return true, nil
 }
 
-func (im *InlineManager) mainTokenManager(action int, optArgs map[string]any) (any, error) {
-	clientInterface, ok := im.client.(interface {
-		RequestWebView(peerUsername string, platform string, url string) (string, error)
-	})
-	if !ok {
-		return nil, fmt.Errorf("client does not support RequestWebView")
+func (im *InlineManager) mainTokenManager(ctx context.Context, action int, optArgs map[string]any) (any, error) {
+	var customBot string
+	switch action {
+	case 1:
+		if im.tokenValue() != "" {
+			return true, nil
+		}
+		token, err := im.getToken()
+		if err != nil {
+			return nil, err
+		}
+		if token != "" {
+			im.setToken(token)
+			return true, nil
+		}
+		customBot, err = im.getCustomBot()
+		if err != nil {
+			return nil, err
+		}
+	case 2, 3:
+		var err error
+		customBot, err = im.getCustomBot()
+		if err != nil {
+			return nil, err
+		}
+	case 4:
+		token, err := im.getToken()
+		if err != nil {
+			return nil, err
+		}
+		if token == "" {
+			customBot, err = im.getCustomBot()
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
-	webAppURL, err := clientInterface.RequestWebView("@botfather", "android", "https://webappinternal.telegram.org/botfather?")
+	webAppURL, err := im.requestWebView(ctx, "@botfather", "android", "https://webappinternal.telegram.org/botfather?")
 	if err != nil {
 		return nil, err
 	}
@@ -477,8 +531,10 @@ func (im *InlineManager) mainTokenManager(action int, optArgs map[string]any) (a
 	var httpClient *http.Client
 	var hash string
 	for i := 0; i < 5; i++ {
-		time.Sleep(1500 * time.Millisecond)
-		httpClient, hash, err = im.getWebAppSession(webAppURL)
+		if err := sleepContext(ctx, 1500*time.Millisecond); err != nil {
+			return nil, err
+		}
+		httpClient, hash, err = im.getWebAppSession(ctx, webAppURL)
 		if err == nil {
 			break
 		}
@@ -503,9 +559,9 @@ func (im *InlineManager) mainTokenManager(action int, optArgs map[string]any) (a
 				revokeToken = v.(bool)
 			}
 		}
-		return im.assertToken(httpClient, baseURL, hash, createNewIfNeeded, revokeToken)
+		return im.assertTokenWithCustomBot(ctx, httpClient, baseURL, hash, createNewIfNeeded, revokeToken, customBot)
 	case 2:
-		return im.createBot(httpClient, baseURL, hash)
+		return im.createBotWithCustomBot(ctx, httpClient, baseURL, hash, customBot)
 	case 3:
 		alreadyInitialised := true
 		if optArgs != nil {
@@ -513,9 +569,9 @@ func (im *InlineManager) mainTokenManager(action int, optArgs map[string]any) (a
 				alreadyInitialised = v.(bool)
 			}
 		}
-		return im.dpRevokeToken(httpClient, baseURL, hash, alreadyInitialised)
+		return im.dpRevokeToken(ctx, httpClient, baseURL, hash, alreadyInitialised)
 	case 4:
-		return im.reassertToken(httpClient, baseURL, hash)
+		return im.reassertToken(ctx, httpClient, baseURL, hash)
 	case 5:
 		var username string
 		if optArgs != nil {
@@ -523,7 +579,7 @@ func (im *InlineManager) mainTokenManager(action int, optArgs map[string]any) (a
 				username = v.(string)
 			}
 		}
-		return im.checkBot(httpClient, baseURL, hash, username)
+		return im.checkBot(ctx, httpClient, baseURL, hash, username)
 	case 6:
 		var commands map[string]string
 		if optArgs != nil {
@@ -531,18 +587,94 @@ func (im *InlineManager) mainTokenManager(action int, optArgs map[string]any) (a
 				commands = v.(map[string]string)
 			}
 		}
-		return im.setCommands(httpClient, baseURL, hash, commands)
+		return im.setCommands(ctx, httpClient, baseURL, hash, commands)
 	}
 	return nil, fmt.Errorf("unknown action: %d", action)
 }
 
+func (im *InlineManager) runTokenManager(ctx context.Context, action int, optArgs map[string]any) (any, uint64, error) {
+	im.tokenTxnMu.Lock()
+	defer im.tokenTxnMu.Unlock()
+	result, err := im.mainTokenManager(ctx, action, optArgs)
+	return result, im.tokenRevisionValue(), err
+}
+
+type webViewJob struct {
+	ctx    context.Context
+	client interface {
+		RequestWebView(peerUsername string, platform string, url string) (string, error)
+	}
+	peer     string
+	platform string
+	url      string
+	result   chan webViewResult
+}
+
+type webViewResult struct {
+	url string
+	err error
+}
+
+var errWebViewBusy = errors.New("RequestWebView executor is busy")
+
+func (im *InlineManager) requestWebView(ctx context.Context, peer, platform, webURL string) (string, error) {
+	if client, ok := im.client.(interface {
+		RequestWebViewContext(context.Context, string, string, string) (string, error)
+	}); ok {
+		return client.RequestWebViewContext(ctx, peer, platform, webURL)
+	}
+	client, ok := im.client.(interface {
+		RequestWebView(string, string, string) (string, error)
+	})
+	if !ok {
+		return "", fmt.Errorf("client does not support RequestWebView")
+	}
+
+	// The legacy API cannot cancel an in-flight external call. One bounded
+	// executor isolates that residual: Close can finish, and a permanently
+	// blocked dependency consumes at most this single worker and queue slot.
+	im.webViewOnce.Do(func() {
+		im.webViewJobs = make(chan webViewJob, defaultWebViewQueueCapacity)
+		go func() {
+			for job := range im.webViewJobs {
+				if job.ctx.Err() != nil {
+					continue
+				}
+				url, err := job.client.RequestWebView(job.peer, job.platform, job.url)
+				job.result <- webViewResult{url: url, err: err}
+			}
+		}()
+	})
+	job := webViewJob{ctx: ctx, client: client, peer: peer, platform: platform, url: webURL, result: make(chan webViewResult, 1)}
+	select {
+	case im.webViewJobs <- job:
+	default:
+		return "", errWebViewBusy
+	}
+	select {
+	case result := <-job.result:
+		return result.url, result.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
 // Public wrapper methods mirroring Python's async functions
 func (im *InlineManager) AssertToken(createNewIfNeeded, revokeToken bool) (bool, error) {
+	generation, ctx, err := im.claimIntake()
+	if err != nil {
+		return false, err
+	}
+	defer generation.release()
+	return im.assertTokenContext(ctx, createNewIfNeeded, revokeToken)
+}
+
+func (im *InlineManager) assertTokenContext(ctx context.Context, createNewIfNeeded, revokeToken bool) (bool, error) {
 	args := map[string]any{
 		"create_new_if_needed": createNewIfNeeded,
 		"revoke_token":         revokeToken,
 	}
-	res, err := im.mainTokenManager(1, args)
+	res, _, err := im.runTokenManager(ctx, 1, args)
 	if err != nil {
 		return false, err
 	}
@@ -550,7 +682,12 @@ func (im *InlineManager) AssertToken(createNewIfNeeded, revokeToken bool) (bool,
 }
 
 func (im *InlineManager) CreateBot() (bool, error) {
-	res, err := im.mainTokenManager(2, nil)
+	generation, ctx, claimErr := im.claimIntake()
+	if claimErr != nil {
+		return false, claimErr
+	}
+	defer generation.release()
+	res, _, err := im.runTokenManager(ctx, 2, nil)
 	if err != nil {
 		return false, err
 	}
@@ -558,29 +695,65 @@ func (im *InlineManager) CreateBot() (bool, error) {
 }
 
 func (im *InlineManager) DPRevokeToken(alreadyInitialised bool) (bool, error) {
+	generation, _, claimErr := im.claimIntake()
+	if claimErr != nil {
+		return false, claimErr
+	}
+	defer generation.release()
+	// The generation remains live until the completed transaction schedules its
+	// replacement, while Close can still cancel a blocked transaction.
 	args := map[string]any{
 		"already_initialised": alreadyInitialised,
 	}
-	res, err := im.mainTokenManager(3, args)
+	ctx := im.lifecycleContext()
+	res, revision, err := im.runTokenManager(ctx, 3, args)
 	if err != nil {
 		return false, err
 	}
-	return res.(bool), nil
+	ok := res.(bool)
+	if ok && alreadyInitialised {
+		im.restartAfter(generation, revision)
+	}
+	return ok, nil
 }
 
 func (im *InlineManager) ReassertToken() (bool, error) {
-	res, err := im.mainTokenManager(4, nil)
+	generation, _, claimErr := im.claimIntake()
+	if claimErr != nil {
+		return false, claimErr
+	}
+	defer generation.release()
+	res, revision, err := im.runTokenManager(im.lifecycleContext(), 4, nil)
 	if err != nil {
 		return false, err
 	}
-	return res.(bool), nil
+	ok := res.(bool)
+	if ok {
+		im.restartAfter(generation, revision)
+	}
+	return ok, nil
+}
+
+func (im *InlineManager) lifecycleContext() context.Context {
+	im.mu.RLock()
+	ctx := im.lifecycleCtx
+	im.mu.RUnlock()
+	if ctx == nil {
+		return im.generationContext()
+	}
+	return ctx
 }
 
 func (im *InlineManager) CheckBot(username string) (bool, error) {
+	generation, ctx, claimErr := im.claimIntake()
+	if claimErr != nil {
+		return false, claimErr
+	}
+	defer generation.release()
 	args := map[string]any{
 		"username": username,
 	}
-	res, err := im.mainTokenManager(5, args)
+	res, _, err := im.runTokenManager(ctx, 5, args)
 	if err != nil {
 		return false, err
 	}
@@ -588,10 +761,15 @@ func (im *InlineManager) CheckBot(username string) (bool, error) {
 }
 
 func (im *InlineManager) SetCommands(commands map[string]string) (bool, error) {
+	generation, ctx, claimErr := im.claimIntake()
+	if claimErr != nil {
+		return false, claimErr
+	}
+	defer generation.release()
 	args := map[string]any{
 		"commands": commands,
 	}
-	res, err := im.mainTokenManager(6, args)
+	res, _, err := im.runTokenManager(ctx, 6, args)
 	if err != nil {
 		return false, err
 	}

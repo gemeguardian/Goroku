@@ -1,6 +1,7 @@
 package inline
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -17,6 +18,11 @@ func (im *InlineManager) Gallery(
 	caption any, // string, slice of strings or func(int) string
 	opts ...FormOpt,
 ) (*InlineMessage, error) {
+	generation, _, err := im.claimIntake()
+	if err != nil {
+		return nil, err
+	}
+	defer generation.release()
 	unitID := localRandStr(16)
 
 	unit := &Unit{
@@ -92,11 +98,12 @@ func (im *InlineManager) Gallery(
 	im.registerGalleryCallbacks(unitID, caption)
 
 	// Invoke unit
-	err := im.InvokeUnit(unitID, chatID, replyToMsgID)
+	err = im.InvokeUnit(unitID, chatID, replyToMsgID)
 	if err != nil {
 		im.mu.Lock()
-		im.removeUnitLocked(unitID)
+		unload := im.removeUnitLocked(unitID)
 		im.mu.Unlock()
+		im.runUnitUnload(unload)
 		return nil, err
 	}
 
@@ -162,8 +169,9 @@ func (im *InlineManager) registerGalleryCallbacks(unitID string, caption any) {
 				_, err = c.InlineMessage.Delete()
 			}
 			im.mu.Lock()
-			im.removeUnitLocked(unitID)
+			unload := im.removeUnitLocked(unitID)
 			im.mu.Unlock()
+			im.runUnitUnload(unload)
 			return err
 		},
 	}
@@ -182,7 +190,7 @@ func (im *InlineManager) registerGalleryCallbacks(unitID string, caption any) {
 				unit.Interval = 7 * time.Second
 				im.mu.Unlock()
 				_ = c.Answer("Slideshow enabled (7s)", false)
-				go im.runSlideshow(unitID, c, caption)
+				im.startGenerationWorker(func(ctx context.Context) { im.runSlideshow(ctx, unitID, c, caption) })
 			} else {
 				unit.Interval = 0
 				im.mu.Unlock()
@@ -196,7 +204,7 @@ func (im *InlineManager) registerGalleryCallbacks(unitID string, caption any) {
 	// We'll check prefix in events.go when dispatching callback queries!
 }
 
-func (im *InlineManager) runSlideshow(unitID string, c CallbackQuery, caption any) {
+func (im *InlineManager) runSlideshow(ctx context.Context, unitID string, c CallbackQuery, caption any) {
 	for {
 		im.mu.Lock()
 		unit, ok := im.units[unitID]
@@ -210,7 +218,9 @@ func (im *InlineManager) runSlideshow(unitID string, c CallbackQuery, caption an
 			return
 		}
 
-		time.Sleep(interval)
+		if sleepContext(ctx, interval) != nil {
+			return
+		}
 
 		im.mu.Lock()
 		unit, ok = im.units[unitID]
@@ -265,7 +275,7 @@ func (im *InlineManager) updateGalleryPage(unitID string, page int, c CallbackQu
 	unit.CurrentPage = page
 	unit.Photo = photoURL
 	unit.Buttons = im.generateGalleryButtons(unitID, page, unit.TotalPages)
-	markup := im.GenerateMarkup(unit.Buttons)
+	markup := im.generateMarkup(unit.Buttons)
 	im.mu.Unlock()
 
 	media := tgbotapi.FileURL(photoURL)
@@ -320,6 +330,11 @@ func (im *InlineManager) updateGalleryPage(unitID string, page int, c CallbackQu
 
 // HandleGalleryCallback processes pagination callbacks for gallery.
 func (im *InlineManager) HandleGalleryCallback(c CallbackQuery) bool {
+	generation, _, claimErr := im.claimIntake()
+	if claimErr != nil {
+		return false
+	}
+	defer generation.release()
 	if !strings.HasPrefix(c.Data, "gal_") {
 		return false
 	}
