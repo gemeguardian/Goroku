@@ -191,9 +191,7 @@ func TestHandleCommandSuccess(t *testing.T) {
 		"command_prefix": ".",
 	}
 
-	client := &CustomTelegramClient{
-		TGID: 42,
-	}
+	client := NewCustomTelegramClient(42)
 	modules := NewModules(client, db)
 	called := make(chan struct{}, 1)
 	dm := &dummyModule{
@@ -228,9 +226,7 @@ func TestHandleCommandSuccess(t *testing.T) {
 
 func TestHandleRatelimit(t *testing.T) {
 	db := initializedTestDatabase(t, NewDatabase(42))
-	client := &CustomTelegramClient{
-		TGID: 42,
-	}
+	client := NewCustomTelegramClient(42)
 	modules := NewModules(client, db)
 	cd := NewCommandDispatcher(modules, client, db)
 
@@ -260,7 +256,7 @@ func TestHandleRatelimit(t *testing.T) {
 
 func TestParseCommandPreservesRawCodeInsteadOfHTMLEntities(t *testing.T) {
 	db := initializedTestDatabase(t, NewDatabase(42))
-	client := &CustomTelegramClient{TGID: 42}
+	client := NewCustomTelegramClient(42)
 	dispatcher := NewCommandDispatcher(NewModules(client, db), client, db)
 	msg := &Message{
 		SenderID: 42,
@@ -350,7 +346,7 @@ func TestDispatcherOwnerChecksUseStrictIdentity(t *testing.T) {
 		"masks": map[string]any{"anything": float64(EVERYONE)},
 	}
 	client := NewCustomTelegramClient(42)
-	client.GorokuMe = &tg.User{ID: 43}
+	client.SetMe(&tg.User{ID: 43})
 	modules := NewModules(client, db)
 	dispatcher, err := NewCommandDispatcherWithConfig(modules, client, db, testDispatcherConfig(nil, 1, 1))
 	if err != nil {
@@ -402,7 +398,7 @@ func TestDangerousCapabilitiesIgnoreEveryoneMask(t *testing.T) {
 		"masks":         masks,
 	}
 	client := NewCustomTelegramClient(77)
-	client.GorokuMe = &tg.User{ID: 77}
+	client.SetMe(&tg.User{ID: 77})
 	modules := NewModules(client, db)
 	dispatcher, err := NewCommandDispatcherWithConfig(modules, client, db, testDispatcherConfig(nil, 1, 1))
 	if err != nil {
@@ -533,8 +529,12 @@ func TestDispatcherBurstGoroutinesStayBounded(t *testing.T) {
 	if got := dispatcher.commands.Active(); got != 4 {
 		t.Fatalf("active commands after burst = %d, want 4", got)
 	}
-	if got := runtime.NumGoroutine(); got > before+8 {
-		t.Fatalf("goroutines grew from %d to %d for bounded burst", before, got)
+	// Rejected commands answer "busy" off the update loop, so the bound is the
+	// command pool plus the outgoing pool — still a bound, not growth with the
+	// size of the burst.
+	limit := before + 8 + defaultOutgoingCapacity
+	if got := runtime.NumGoroutine(); got > limit {
+		t.Fatalf("goroutines grew from %d to %d (limit %d) for bounded burst", before, got, limit)
 	}
 }
 
@@ -610,10 +610,21 @@ func TestDispatcherBusyResponseBypassesPipeline(t *testing.T) {
 		Client: dispatcher.client, IsPrivate: true, GrepQuery: "never", GrepInvert: true, CutLines: 1, SplitOutput: true,
 	}
 	dispatcher.HandleCommand(payload)
-	invoker.mu.Lock()
-	defer invoker.mu.Unlock()
-	if len(invoker.messages) != 1 || invoker.messages[0] != "⚠️ Busy, try again shortly." {
-		t.Fatalf("busy RPC messages = %#v", invoker.messages)
+
+	// The reply is delivered off the update-reading goroutine now: an RPC made
+	// inline there delays every update queued behind it.
+	var messages []string
+	for i := 0; i < 200; i++ {
+		invoker.mu.Lock()
+		messages = append([]string(nil), invoker.messages...)
+		invoker.mu.Unlock()
+		if len(messages) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(messages) != 1 || messages[0] != "⚠️ Busy, try again shortly." {
+		t.Fatalf("busy RPC messages = %#v", messages)
 	}
 	if dispatcher.commands.Active() != 1 {
 		t.Fatalf("busy response changed active commands to %d", dispatcher.commands.Active())
@@ -675,10 +686,10 @@ func TestPipelinePrecompiledRegexAtRegistration(t *testing.T) {
 	client := modules.client
 	cd := NewCommandDispatcher(modules, client, db)
 
-	if reason := cd.commandMetadataFilter(&Message{RawText: "ping42", IsPrivate: true, SenderID: client.TGID}, reg); !reason.Allowed() {
+	if reason := cd.commandMetadataFilter(&Message{RawText: "ping42", IsPrivate: true, SenderID: client.TGIDValue()}, reg); !reason.Allowed() {
 		t.Fatalf("precompiled command regex should match: %s", reason)
 	}
-	if reason := cd.commandMetadataFilter(&Message{RawText: "pong", IsPrivate: true, SenderID: client.TGID}, reg); reason != ReasonRegex {
+	if reason := cd.commandMetadataFilter(&Message{RawText: "pong", IsPrivate: true, SenderID: client.TGIDValue()}, reg); reason != ReasonRegex {
 		t.Fatalf("precompiled command regex miss reason = %s", reason)
 	}
 	if reason := cd.watcherMetadataFilter(&Message{RawText: "watch9"}, watchers[0]); !reason.Allowed() {

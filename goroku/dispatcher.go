@@ -55,6 +55,7 @@ type CommandDispatcher struct {
 	rateLimiter     *BoundedRateLimiter
 	commands        *BoundedExecutor
 	watchers        *BoundedExecutor
+	outgoing        *BoundedExecutor
 	security        *SecurityManager
 	me              int64
 	cachedUsernames map[string]bool
@@ -66,6 +67,10 @@ type CommandDispatcher struct {
 const (
 	defaultCommandCapacity      = 32
 	defaultWatcherCapacity      = 64
+	// defaultOutgoingCapacity bounds Telegram calls moved off the update loop.
+	// These are courtesy messages (the "busy" reply, the double-prefix edit),
+	// so a small pool is enough; excess ones are dropped rather than queued.
+	defaultOutgoingCapacity = 8
 	defaultRateLimitMaxEntries  = 10_000
 	defaultUserRateLimitWindow  = 60 * time.Second
 	defaultChatRateLimitWindow  = 200 * time.Second
@@ -156,6 +161,17 @@ func newCommandDispatcher(modules *Modules, client *CustomTelegramClient, db *Da
 		security.Stop()
 		return nil, fmt.Errorf("initialize watcher executor: %w", err)
 	}
+	// Separate from commands on purpose: the calls sent here include the
+	// "busy" reply, which is produced exactly when the command executor is
+	// full. Sharing that pool would drop the reply whenever it is needed.
+	outgoing, err := NewBoundedExecutor(BoundedExecutorConfig{Capacity: defaultOutgoingCapacity, Context: taskCtx})
+	if err != nil {
+		taskCancel()
+		commands.CloseIntake()
+		watchers.CloseIntake()
+		security.Stop()
+		return nil, fmt.Errorf("initialize outgoing executor: %w", err)
+	}
 
 	cd := &CommandDispatcher{
 		modules:         modules,
@@ -164,16 +180,17 @@ func newCommandDispatcher(modules *Modules, client *CustomTelegramClient, db *Da
 		rateLimiter:     limiter,
 		commands:        commands,
 		watchers:        watchers,
-		me:              client.TGID,
+		outgoing:        outgoing,
+		me:              client.TGIDValue(),
 		cachedUsernames: make(map[string]bool),
 		security:        security,
 		taskCancel:      taskCancel,
 	}
 
-	if client.Username != "" {
-		cd.cachedUsernames[strings.ToLower(client.Username)] = true
+	if username := client.Username(); username != "" {
+		cd.cachedUsernames[strings.ToLower(username)] = true
 	}
-	cd.cachedUsernames[strconv.FormatInt(client.TGID, 10)] = true
+	cd.cachedUsernames[strconv.FormatInt(client.TGIDValue(), 10)] = true
 
 	return cd, nil
 }
@@ -473,7 +490,12 @@ func (cd *CommandDispatcher) parseCommand(msg *Message) (parsedCommand, Dispatch
 				}
 			}
 			if shouldEdit {
-				_, _ = cd.client.EditMessage(ChatRefID(msg.ChatID), msg.ID, cleaned)
+				// Off the update-reading goroutine: this is a network round
+				// trip, and gotd delivers updates serially, so doing it here
+				// delayed every subsequent update behind it.
+				cd.submitOutgoing(func(ctx context.Context) {
+					_, _ = cd.client.EditMessageContext(ctx, ChatRefID(msg.ChatID), msg.ID, cleaned)
+				})
 			}
 		}
 		return parsedCommand{}, ReasonDoublePrefix
@@ -515,7 +537,24 @@ func (cd *CommandDispatcher) answerBusy(msg *Message) {
 	response.GrepInvert = false
 	response.CutLines = 0
 	response.SplitOutput = false
-	cd.answerIfPossible(&response, "⚠️ <b>Busy, try again shortly.</b>")
+	// Also a network round trip on the update path: the "busy" reply must not
+	// itself hold up the updates queued behind it.
+	cd.submitOutgoing(func(ctx context.Context) {
+		reply := response
+		reply.ctx = ctx
+		cd.answerIfPossible(&reply, "⚠️ <b>Busy, try again shortly.</b>")
+	})
+}
+
+// submitOutgoing runs an outgoing Telegram call off the update-reading
+// goroutine. gotd delivers updates serially through one handler, so any RPC
+// made inline there delays every update behind it. If the executor is full or
+// closed the call is dropped: these are courtesy replies, not the command
+// itself, and blocking the update loop to deliver one is the worse outcome.
+func (cd *CommandDispatcher) submitOutgoing(task func(context.Context)) {
+	if err := cd.outgoing.Submit(task); err != nil {
+		L().Debug("Dropped outgoing dispatcher call", zap.Error(err))
+	}
 }
 
 func (cd *CommandDispatcher) answerIfPossible(msg *Message, text string) {
@@ -533,6 +572,7 @@ func (cd *CommandDispatcher) Stop() {
 		cd.taskCancel()
 		cd.commands.CloseIntake()
 		cd.watchers.CloseIntake()
+		cd.outgoing.CloseIntake()
 		if cd.security != nil {
 			cd.security.Stop()
 		}
@@ -547,11 +587,12 @@ func (cd *CommandDispatcher) Close(ctx context.Context) error {
 	cd.Stop()
 	commandErr := cd.commands.Close(ctx)
 	watcherErr := cd.watchers.Close(ctx)
+	outgoingErr := cd.outgoing.Close(ctx)
 	var securityErr error
 	if cd.security != nil {
 		securityErr = cd.security.Close(ctx)
 	}
-	return errors.Join(commandErr, watcherErr, securityErr)
+	return errors.Join(commandErr, watcherErr, outgoingErr, securityErr)
 }
 
 func (cd *CommandDispatcher) handleRatelimit(msg *Message, cmdName string) bool {
@@ -645,7 +686,7 @@ func (cd *CommandDispatcher) isRegistrationDisabled(reg *commandRegistration) bo
 func (cd *CommandDispatcher) getPrefix(senderID int64) string {
 	mainPrefix := cd.db.GetString("goroku.main", "command_prefix", ".")
 
-	if senderID == cd.client.TGID {
+	if senderID == cd.client.TGIDValue() {
 		return mainPrefix
 	}
 
