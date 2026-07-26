@@ -357,3 +357,144 @@ func TestSecurityCommittedWarningsPublishAuthorizationState(t *testing.T) {
 		t.Fatal("committed group warning did not publish authorization state")
 	}
 }
+
+// newDelegationTestSecurity registers a stand-in for the GorokuSecurity module
+// so module-scoped rules have a real registration to match against, and returns
+// a manager reading the supplied security state.
+func newDelegationTestSecurity(t *testing.T, security map[string]any) *SecurityManager {
+	t.Helper()
+	db := initializedTestDatabase(t, NewDatabase(42))
+	db.data["goroku.security"] = security
+	db.data["goroku.main"] = map[string]any{}
+
+	client := NewCustomTelegramClient(42)
+	modules := NewModules(client, db)
+	client.Loader = modules
+	mod := &registrationTestModule{
+		name: "GorokuSecurity",
+		commands: map[string]CommandHandler{
+			"owneradd":  testHandler("owneradd"),
+			"ownerlist": testHandler("ownerlist"),
+			"sudolist":  testHandler("sudolist"),
+		},
+		metas: map[string]CommandMeta{"owneradd": {OnlyOwner: true}},
+	}
+	if err := modules.RegisterModule(mod); err != nil {
+		t.Fatal(err)
+	}
+	sm := NewSecurityManager(client, db)
+	t.Cleanup(sm.Stop)
+	return sm
+}
+
+// A module-scoped delegation of a privileged module used to carry .owneradd
+// with it, which let the delegate write themselves into the owner list and from
+// there reach .eval and the session file.
+func TestModuleRuleDoesNotDelegatePrivilegedModuleOwnerCommands(t *testing.T) {
+	sm := newDelegationTestSecurity(t, map[string]any{
+		"owner":         []any{int64(42)},
+		"all_users":     []any{},
+		"bounding_mask": float64(ALL),
+		"tsec_user": []any{
+			map[string]any{"target": float64(100), "rule_type": "module", "rule": "GorokuSecurity", "expires": float64(0)},
+			map[string]any{"target": float64(101), "rule_type": "command", "rule": "sudolist", "expires": float64(0)},
+		},
+	})
+
+	moduleDelegate := &Message{SenderID: 100, ChatID: 100, IsPrivate: true}
+	if sm.Check(moduleDelegate, "owneradd") {
+		t.Fatal("module-scoped rule on GorokuSecurity granted owneradd: privilege escalation")
+	}
+	if !sm.Check(moduleDelegate, "ownerlist") {
+		t.Fatal("module-scoped rule stopped granting the read-only ownerlist")
+	}
+
+	commandDelegate := &Message{SenderID: 101, ChatID: 101, IsPrivate: true}
+	if !sm.Check(commandDelegate, "sudolist") {
+		t.Fatal("explicit command-scoped rule stopped working")
+	}
+}
+
+// The same deny applies to sgroups, which reach checkCommand by a second path.
+func TestSgroupModuleRuleDoesNotDelegatePrivilegedModuleOwnerCommands(t *testing.T) {
+	sm := newDelegationTestSecurity(t, map[string]any{
+		"owner":         []any{int64(42)},
+		"all_users":     []any{},
+		"bounding_mask": float64(ALL),
+	})
+	if err := sm.ApplySgroups(map[string]SecurityGroup{
+		"helpers": {
+			Name:        "helpers",
+			Users:       []int64{100},
+			Permissions: []map[string]any{{"rule_type": "module", "rule": "GorokuSecurity"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	delegate := &Message{SenderID: 100, ChatID: 100, IsPrivate: true}
+	if sm.Check(delegate, "owneradd") {
+		t.Fatal("sgroup module permission granted owneradd: privilege escalation")
+	}
+	if !sm.Check(delegate, "ownerlist") {
+		t.Fatal("sgroup module permission stopped granting the read-only ownerlist")
+	}
+}
+
+// checkTsec feeds the nickname exemption, so it has to deny the same rules.
+func TestCheckTsecDoesNotDelegatePrivilegedModuleOwnerCommands(t *testing.T) {
+	sm := newDelegationTestSecurity(t, map[string]any{
+		"owner":         []any{int64(42)},
+		"all_users":     []any{},
+		"bounding_mask": float64(ALL),
+		"tsec_user": []any{
+			map[string]any{"target": float64(100), "rule_type": "module", "rule": "GorokuSecurity", "expires": float64(0)},
+		},
+	})
+
+	if sm.CheckTsec(100, "owneradd") {
+		t.Fatal("checkTsec granted owneradd through a module-scoped rule")
+	}
+	if !sm.CheckTsec(100, "ownerlist") {
+		t.Fatal("checkTsec stopped granting the read-only ownerlist")
+	}
+}
+
+// A command the bounding mask leaves unreachable must stay unreachable: a tsec
+// rule may not grant more than getBoundingMask() allows.
+func TestBoundingMaskAlsoBoundsDelegatedRules(t *testing.T) {
+	db := initializedTestDatabase(t, NewDatabase(42))
+	db.data["goroku.security"] = map[string]any{
+		"owner":         []any{int64(42)},
+		"all_users":     []any{},
+		"bounding_mask": float64(OWNER),
+		"masks":         map[string]any{"clipped_cmd": float64(EVERYONE)},
+		"tsec_user": []any{
+			map[string]any{"target": float64(100), "rule_type": "command", "rule": "clipped_cmd", "expires": float64(0)},
+			map[string]any{"target": float64(100), "rule_type": "command", "rule": "plain_cmd", "expires": float64(0)},
+		},
+	}
+	db.data["goroku.main"] = map[string]any{}
+
+	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	t.Cleanup(sm.Stop)
+
+	delegate := &Message{SenderID: 100, ChatID: 100, IsPrivate: true}
+	if sm.Check(delegate, "clipped_cmd") {
+		t.Fatal("tsec rule granted a command the bounding mask clipped to nothing")
+	}
+	if !sm.Check(delegate, "plain_cmd") {
+		t.Fatal("tsec rule stopped granting a command the bounding mask still allows")
+	}
+}
+
+func TestIsPrivilegedModuleIsCaseInsensitive(t *testing.T) {
+	for _, name := range []string{"GorokuSecurity", "gorokusecurity", " Eval ", "TERMINAL", "Loader"} {
+		if !IsPrivilegedModule(name) {
+			t.Errorf("IsPrivilegedModule(%q) = false, want true", name)
+		}
+	}
+	if IsPrivilegedModule("GorokuInfo") {
+		t.Error("IsPrivilegedModule(GorokuInfo) = true, want false")
+	}
+}

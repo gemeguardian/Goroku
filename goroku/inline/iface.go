@@ -17,6 +17,10 @@ type Database interface {
 type SecurityChecker interface {
 	IsOwner(userID int64) bool
 	CheckModuleAccess(userID int64, moduleName string) bool
+	// IsPrivilegedModule reports whether a module-scoped grant on moduleName is
+	// equivalent to handing out owner rights. Buttons belonging to such a module
+	// stay owner-only however the module was delegated.
+	IsPrivilegedModule(moduleName string) bool
 }
 
 // InlineUserBot is the minimal set of methods the inline manager needs

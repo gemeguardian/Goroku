@@ -60,15 +60,26 @@ func (m *GorokuSecurity) Commands() map[string]goroku.CommandHandler {
 	}
 }
 
+// CommandMetas marks every command that rewrites security policy as OnlyOwner.
+// Without it a module-scoped delegation ("let this user manage the sudo list")
+// also handed over .owneradd, which promotes the delegate to owner and from
+// there to .eval / .terminal. Read-only commands stay delegatable — they change
+// nothing.
 func (m *GorokuSecurity) CommandMetas() map[string]goroku.CommandMeta {
 	return map[string]goroku.CommandMeta{
 		"ownerlist": {Aliases: []string{"owner"}},
-		"owneradd":  {Aliases: []string{"addowner"}},
-		"ownerrm":   {Aliases: []string{"delowner"}},
+		"owneradd":  {Aliases: []string{"addowner"}, OnlyOwner: true},
+		"ownerrm":   {Aliases: []string{"delowner"}, OnlyOwner: true},
 		"sudolist":  {Aliases: []string{"sudo"}},
-		"sudoadd":   {Aliases: []string{"addsudo"}},
-		"sudorm":    {Aliases: []string{"delsudo"}},
-		"tsecrm":    {Aliases: []string{"ttsec"}},
+		"sudoadd":   {Aliases: []string{"addsudo"}, OnlyOwner: true},
+		"sudorm":    {Aliases: []string{"delsudo"}, OnlyOwner: true},
+		"tsec":      {OnlyOwner: true},
+		"tsecrm":    {Aliases: []string{"ttsec"}, OnlyOwner: true},
+		"tsecclr":   {OnlyOwner: true},
+		"newsgroup": {OnlyOwner: true},
+		"delsgroup": {OnlyOwner: true},
+		"sgroupadd": {OnlyOwner: true},
+		"sgroupdel": {OnlyOwner: true},
 	}
 }
 
@@ -351,7 +362,25 @@ func (m *GorokuSecurity) OwnerCmd(msg *goroku.Message) error {
 	return msg.Answer(formatTrans(template, strings.Join(lines, "\n")))
 }
 
+// denyNotOwner is the answer for a caller that reached an owner-only security
+// command anyway. The handlers below re-check ownership themselves instead of
+// trusting the dispatcher: a single missing OnlyOwner tag or one over-broad
+// delegation rule would otherwise be enough to hand out owner rights.
+func (m *GorokuSecurity) denyNotOwner(msg *goroku.Message) error {
+	return msg.Answer(m.T("not_owner", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Эта команда доступна только владельцу</b>"))
+}
+
+// callerIsOwner reports whether msg comes from an account owner. A missing
+// security manager denies: fail closed.
+func (m *GorokuSecurity) callerIsOwner(msg *goroku.Message) bool {
+	sm := m.getSecurityManager()
+	return sm != nil && sm.IsAccountOwner(msg)
+}
+
 func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
+	if !m.callerIsOwner(msg) {
+		return m.denyNotOwner(msg)
+	}
 	user, ok := m.resolveUserFromMessage(msg)
 	if !ok {
 		return msg.Answer(m.T("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Укажи, кому выдавать права</b>"))
@@ -390,6 +419,12 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 					sm := m.getSecurityManager()
 					if sm == nil {
 						return fmt.Errorf("security manager not available")
+					}
+					// The button carries the promotion, so it needs the same
+					// ownership proof the command does: callbacks arrive from
+					// whoever pressed them, not from whoever sent the command.
+					if !sm.IsOwner(call.FromID) {
+						return call.Answer("🚫 Только владелец может подтвердить это действие", true)
 					}
 					if _, err := sm.AddOwner(user.ID); err != nil {
 						return err

@@ -635,6 +635,12 @@ func (im *InlineManager) isUserOwnerOrTrustedForModule(sm SecurityChecker, userI
 	if sm.IsOwner(userID) {
 		return true
 	}
+	// A module-scoped grant on a privileged module would let a delegate press
+	// the confirmation buttons of the very commands that hand out owner rights,
+	// so those buttons stay owner-only no matter what CheckModuleAccess says.
+	if sm.IsPrivilegedModule(moduleName) {
+		return false
+	}
 	if sm.CheckModuleAccess(userID, moduleName) {
 		return true
 	}

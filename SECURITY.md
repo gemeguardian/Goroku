@@ -141,6 +141,35 @@ clients that inject values on the left.
 `GOROKU_TRUSTED_PROXIES` logs a one-time warning and does **not** enable
 header trust.
 
+## Delegating rights (`tsec`, `sgroups`)
+
+`owner` is the only unbounded role: an owner reaches `.eval`, `.terminal`,
+`.loadmod` and the session file. Everything else is delegation, and delegation
+is deliberately not transitive.
+
+- **Command-scoped rules** (`.tsec <user> command <cmd>`, and sgroup
+  permissions with `rule_type: command`) grant exactly the named command.
+- **Module-scoped rules** (`.tsec <user> module <Module>`) grant the module's
+  commands — except in *privileged modules*, where they grant only the
+  read-only ones. The privileged set is `GorokuSecurity`, `GorokuBackup`,
+  `GorokuConfig`, `Updater`, `Loader`, `Eval`, `Terminal`
+  (`privilegedModules` in `goroku/security.go`); a wholesale grant on any of
+  them would otherwise be equivalent to handing out owner rights. Inline
+  buttons belonging to a privileged module are owner-only outright, because a
+  button carries no per-command metadata.
+- **Owner-only commands** — everything in `GorokuSecurity` that rewrites the
+  `owner`/`sudo`/`tsec`/`sgroups` lists, plus `.eval`, `.terminal` and the
+  loader's install commands — are refused for non-owners regardless of which
+  rule matched. The handlers that hand out owner rights re-check ownership
+  themselves rather than trusting the dispatcher.
+- **The bounding mask is a ceiling, including for delegation.** A command the
+  bounding mask clips to no permissions at all cannot be revived by a tsec or
+  sgroups rule.
+
+Practical consequence: delegating `GorokuSecurity` gives a user the ability to
+*read* the owner/sudo/tsec lists, never to change them. To let someone change
+policy, make them an owner and accept that this is full host access.
+
 ## Native plugin safety
 
 Native Go modules are arbitrary code loaded into the Goroku process. Owner-only

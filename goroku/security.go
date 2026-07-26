@@ -33,6 +33,60 @@ const (
 	ALL                 = (1 << 14) - 1
 )
 
+// privilegedModules cannot be delegated wholesale: a module-scoped tsec or
+// sgroups rule on any of them used to be equivalent to handing out owner
+// rights, because the commands they expose rewrite the owner/sudo/tsec lists or
+// run arbitrary code on the host. A module-scoped rule on one of these now
+// confers only their read-only commands; see moduleRuleGrants. Command-scoped
+// rules keep working — those name exactly what they grant, so the owner cannot
+// hand over more than they meant.
+var privilegedModules = map[string]struct{}{
+	"gorokusecurity": {},
+	"gorokubackup":   {},
+	"gorokuconfig":   {},
+	"updater":        {},
+	"loader":         {},
+	"eval":           {},
+	"terminal":       {},
+}
+
+// IsPrivilegedModule reports whether moduleName may not be delegated with a
+// module-scoped rule. Exported so the inline manager, which cannot import this
+// package's internals, applies the same list to callback-button access.
+func IsPrivilegedModule(moduleName string) bool {
+	_, ok := privilegedModules[strings.ToLower(strings.TrimSpace(moduleName))]
+	return ok
+}
+
+// IsPrivilegedModule satisfies inline.SecurityChecker.
+func (sm *SecurityManager) IsPrivilegedModule(moduleName string) bool {
+	return IsPrivilegedModule(moduleName)
+}
+
+// moduleRuleGrants reports whether a module-scoped rule named ruleName may
+// grant reg. It is the single place where the privileged-module deny list is
+// enforced, for tsec user rules, tsec chat rules and sgroups alike.
+//
+// Inside a privileged module the rule stops at the module's owner-only
+// commands: "let this user manage the sudo list" must not also mean "let this
+// user run .owneradd and promote themselves". Read-only commands of the same
+// module keep working, since they change nothing.
+func moduleRuleGrants(reg *commandRegistration, ruleName string) bool {
+	if !registrationInModule(reg, ruleName) {
+		return false
+	}
+	return !IsPrivilegedModule(ruleName) || !reg.Meta.OnlyOwner
+}
+
+// delegationAllowed reports whether a matching tsec/sgroups rule may still
+// grant a command whose effective mask is config. config has already been
+// clipped by getBoundingMask(); when nothing survives the clip the operator has
+// taken the command away from everyone but the owner, and a delegated rule must
+// not hand it back — otherwise a rule grants more than the bounding mask allows.
+func delegationAllowed(config int) bool {
+	return config != 0
+}
+
 type SecuredModule interface {
 	CommandPermissions() map[string]int
 }
@@ -373,59 +427,63 @@ func (sm *SecurityManager) checkCommand(msg *Message, command string, reg *comma
 		return true
 	}
 
-	// Check temporary tsec user rules
-	for _, rule := range sm.GetUserRules() {
-		if rule.Target == msg.SenderID {
-			if rule.RuleType == "command" && rule.Rule == command {
-				return true
-			}
-			// If rule is module-wide
-			if rule.RuleType == "module" {
-				if registrationInModule(reg, rule.Rule) {
+	// Delegated rules (tsec, sgroups) are only consulted while the bounding
+	// mask still leaves the command reachable by someone other than the owner.
+	if delegationAllowed(config) {
+		// Check temporary tsec user rules
+		for _, rule := range sm.GetUserRules() {
+			if rule.Target == msg.SenderID {
+				if rule.RuleType == "command" && rule.Rule == command {
 					return true
+				}
+				// If rule is module-wide
+				if rule.RuleType == "module" {
+					if moduleRuleGrants(reg, rule.Rule) {
+						return true
+					}
 				}
 			}
 		}
-	}
 
-	// Check temporary tsec chat rules, mirroring Python security._tsec_chat.
-	for _, rule := range sm.GetChatRules() {
-		if rule.Target == msg.ChatID {
-			if rule.RuleType == "command" && rule.Rule == command {
-				return true
-			}
-			if rule.RuleType == "module" && registrationInModule(reg, rule.Rule) {
-				return true
+		// Check temporary tsec chat rules, mirroring Python security._tsec_chat.
+		for _, rule := range sm.GetChatRules() {
+			if rule.Target == msg.ChatID {
+				if rule.RuleType == "command" && rule.Rule == command {
+					return true
+				}
+				if rule.RuleType == "module" && moduleRuleGrants(reg, rule.Rule) {
+					return true
+				}
 			}
 		}
-	}
 
-	// Check security groups (sgroups)
-	sm.mu.RLock()
-	for _, sgroup := range sm.sgroups {
-		hasUser := false
-		for _, u := range sgroup.Users {
-			if u == msg.SenderID {
-				hasUser = true
-				break
-			}
-		}
-		if hasUser {
-			for _, perm := range sgroup.Permissions {
-				ruleType, _ := perm["rule_type"].(string)
-				ruleName, _ := perm["rule"].(string)
-				if ruleType == "command" && ruleName == command {
-					sm.mu.RUnlock()
-					return true
-				}
-				if ruleType == "module" && registrationInModule(reg, ruleName) {
-					sm.mu.RUnlock()
-					return true
+		// Check security groups (sgroups)
+		sm.mu.RLock()
+		for _, sgroup := range sm.sgroups {
+			hasUser := false
+			for _, u := range sgroup.Users {
+				if u == msg.SenderID {
+					hasUser = true
+					break
 				}
 			}
+			if hasUser {
+				for _, perm := range sgroup.Permissions {
+					ruleType, _ := perm["rule_type"].(string)
+					ruleName, _ := perm["rule"].(string)
+					if ruleType == "command" && ruleName == command {
+						sm.mu.RUnlock()
+						return true
+					}
+					if ruleType == "module" && moduleRuleGrants(reg, ruleName) {
+						sm.mu.RUnlock()
+						return true
+					}
+				}
+			}
 		}
+		sm.mu.RUnlock()
 	}
-	sm.mu.RUnlock()
 
 	// PM permission check
 	if msg.IsPrivate && (config&PM) != 0 {
@@ -857,6 +915,12 @@ func (sm *SecurityManager) checkTsecRegistration(userID int64, reg *commandRegis
 }
 
 func (sm *SecurityManager) checkTsec(userID int64, command string, reg *commandRegistration) bool {
+	// Computed before taking sm.mu: getFlagsForRegistration may take the write
+	// lock to bind a legacy bare mask to its owner.
+	if !delegationAllowed(sm.getFlagsForRegistration(command, reg)) {
+		return false
+	}
+
 	sm.mu.RLock()
 	for _, sgroup := range sm.sgroups {
 		hasUser := false
@@ -874,7 +938,7 @@ func (sm *SecurityManager) checkTsec(userID int64, command string, reg *commandR
 					sm.mu.RUnlock()
 					return true
 				}
-				if ruleType == "module" && registrationInModule(reg, ruleName) {
+				if ruleType == "module" && moduleRuleGrants(reg, ruleName) {
 					sm.mu.RUnlock()
 					return true
 				}
@@ -888,7 +952,7 @@ func (sm *SecurityManager) checkTsec(userID int64, command string, reg *commandR
 			if rule.RuleType == "command" && rule.Rule == command {
 				return true
 			}
-			if rule.RuleType == "module" && registrationInModule(reg, rule.Rule) {
+			if rule.RuleType == "module" && moduleRuleGrants(reg, rule.Rule) {
 				return true
 			}
 		}
