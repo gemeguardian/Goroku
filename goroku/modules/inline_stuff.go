@@ -48,9 +48,7 @@ var latinMock = []string{
 }
 
 type InlineStuff struct {
-	client     *goroku.CustomTelegramClient
-	db         *goroku.Database
-	translator *goroku.Translator
+	goroku.Base
 }
 
 func (m *InlineStuff) Name() string {
@@ -63,17 +61,7 @@ func (m *InlineStuff) Strings() map[string]string {
 	}
 }
 
-func (m *InlineStuff) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
-	m.client = client
-	m.db = db
-	m.translator = goroku.NewTranslator(client, db)
-	m.translator.Init()
-	return nil
-}
-
-func (m *InlineStuff) ClientReady() error { return nil }
-func (m *InlineStuff) OnUnload() error    { return nil }
-func (m *InlineStuff) OnDlmod() error     { return nil }
+func (m *InlineStuff) OnUnload() error { return nil }
 
 func (m *InlineStuff) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
@@ -91,10 +79,6 @@ func (m *InlineStuff) CommandMetas() map[string]goroku.CommandMeta {
 	}
 }
 
-func (m *InlineStuff) getTrans(key, def string) string {
-	return getTrans(m.translator, m.Name(), key, def)
-}
-
 func (m *InlineStuff) messagePersistenceFailure(msg *goroku.Message, err error) error {
 	msg.Text = "❌ <b>Could not save inline settings</b>"
 	if msg.Client != nil {
@@ -106,10 +90,10 @@ func (m *InlineStuff) messagePersistenceFailure(msg *goroku.Message, err error) 
 }
 
 func (m *InlineStuff) checkBot(username string) bool {
-	if ok, err := m.client.CheckBot(username); err == nil && ok {
+	if ok, err := m.Client.CheckBot(username); err == nil && ok {
 		return true
 	}
-	if _, err := m.client.ResolvePeer(username); err != nil {
+	if _, err := m.Client.ResolvePeer(username); err != nil {
 		return true
 	}
 	return false
@@ -121,7 +105,7 @@ func (m *InlineStuff) Watchers() []goroku.WatcherHandler {
 			if !msg.Out {
 				return nil
 			}
-			im := m.client.GorokuInline
+			im := m.Client.GorokuInline
 			if im == nil {
 				return nil
 			}
@@ -134,7 +118,7 @@ func (m *InlineStuff) Watchers() []goroku.WatcherHandler {
 			if !msg.Out {
 				return nil
 			}
-			im := m.client.GorokuInline
+			im := m.Client.GorokuInline
 			if im == nil {
 				return nil
 			}
@@ -183,7 +167,7 @@ func (m *InlineStuff) Watchers() []goroku.WatcherHandler {
 			if replyTo >= math.MinInt32 && replyTo <= math.MaxInt32 {
 				replyToInt32 = int32(replyTo)
 			}
-			respMsgInterface, err := m.client.SendMessageWithOptions(goroku.ChatRefID(msg.ChatID), "🪐", withReplyTo(replyToInt32))
+			respMsgInterface, err := m.Client.SendMessageWithOptions(goroku.ChatRefID(msg.ChatID), "🪐", withReplyTo(replyToInt32))
 			if err != nil {
 				return nil
 			}
@@ -241,16 +225,16 @@ func (m *InlineStuff) ChGorokuBotCmd(msg *goroku.Message) error {
 	}
 
 	if !valid {
-		msg.Text = m.getTrans("bot_username_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Specified bot username is invalid. It must end with</b> <code>bot</code> <b>and contain at least 4 symbols</b>")
+		msg.Text = m.T("bot_username_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Specified bot username is invalid. It must end with</b> <code>bot</code> <b>and contain at least 4 symbols</b>")
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	if _, err := m.client.ResolvePeer("@" + rawArgs); err == nil {
+	if _, err := m.Client.ResolvePeer("@" + rawArgs); err == nil {
 		if !m.checkBot(rawArgs) {
-			msg.Text = m.getTrans("bot_username_occupied", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>This username is already occupied</b>")
+			msg.Text = m.T("bot_username_occupied", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>This username is already occupied</b>")
 			if msg.Client != nil {
 				_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 			}
@@ -258,7 +242,7 @@ func (m *InlineStuff) ChGorokuBotCmd(msg *goroku.Message) error {
 		}
 	}
 
-	if err := m.db.Update(map[string]map[string]any{
+	if err := m.DB.Update(map[string]map[string]any{
 		"goroku.inline": {
 			"custom_bot": rawArgs,
 			"bot_token":  "",
@@ -266,7 +250,7 @@ func (m *InlineStuff) ChGorokuBotCmd(msg *goroku.Message) error {
 	}); err != nil {
 		return m.messagePersistenceFailure(msg, err)
 	}
-	msg.Text = m.getTrans("bot_updated", "<tg-emoji emoji-id=6318792204118656433>🎉</tg-emoji> <b>Config successfully saved. Restart userbot to apply changes</b>")
+	msg.Text = m.T("bot_updated", "<tg-emoji emoji-id=6318792204118656433>🎉</tg-emoji> <b>Config successfully saved. Restart userbot to apply changes</b>")
 	if msg.Client != nil {
 		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
@@ -282,17 +266,17 @@ func (m *InlineStuff) ChBotTokenCmd(msg *goroku.Message) error {
 
 	re := regexp.MustCompile(`^[0-9]{8,10}:[a-zA-Z0-9_-]{34,36}$`)
 	if token == "" || !re.MatchString(token) {
-		msg.Text = m.getTrans("token_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Specified bot token is invalid. It must contain 8-10 numbers, </b><code>:</code> <b>and 34-36 symbols</b>")
+		msg.Text = m.T("token_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Specified bot token is invalid. It must contain 8-10 numbers, </b><code>:</code> <b>and 34-36 symbols</b>")
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	if err := m.db.SetString("goroku.inline", "bot_token", token); err != nil {
+	if err := m.DB.SetString("goroku.inline", "bot_token", token); err != nil {
 		return m.messagePersistenceFailure(msg, err)
 	}
-	msg.Text = m.getTrans("bot_updated", "<tg-emoji emoji-id=6318792204118656433>🎉</tg-emoji> <b>Config successfully saved. Restart userbot to apply changes</b>")
+	msg.Text = m.T("bot_updated", "<tg-emoji emoji-id=6318792204118656433>🎉</tg-emoji> <b>Config successfully saved. Restart userbot to apply changes</b>")
 	if msg.Client != nil {
 		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
@@ -301,12 +285,12 @@ func (m *InlineStuff) ChBotTokenCmd(msg *goroku.Message) error {
 
 func (m *InlineStuff) InlineinfoCmd(msg *goroku.Message) error {
 	customBot := "not set"
-	if val := m.db.GetString("goroku.inline", "custom_bot", ""); val != "" {
+	if val := m.DB.GetString("goroku.inline", "custom_bot", ""); val != "" {
 		customBot = "@" + val
 	}
 
 	botToken := "not set"
-	if val := m.db.GetString("goroku.inline", "bot_token", ""); val != "" {
+	if val := m.DB.GetString("goroku.inline", "bot_token", ""); val != "" {
 		parts := strings.SplitN(val, ":", 2)
 		if len(parts) == 2 && len(parts[1]) > 6 {
 			botToken = fmt.Sprintf("%s:%s...%s", parts[0], parts[1][:3], parts[1][len(parts[1])-3:])
@@ -327,7 +311,7 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 		return
 	}
 
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im == nil {
 		return
 	}
@@ -335,7 +319,7 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 	switch msg.Text {
 	case "/start":
 		isPremium := false
-		me, err := m.client.GetMe()
+		me, err := m.Client.GetMe()
 		if err == nil {
 			if u, ok := me.(*tg.User); ok {
 				isPremium = u.Premium
@@ -354,7 +338,7 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 			platformEmoji = "Goroku"
 		}
 
-		captionTemplate := m.getTrans("this_is_goroku", "{} <b>Hi! This is {} — powerful modular Telegram userbot. You can install it to your account!</b>")
+		captionTemplate := m.T("this_is_goroku", "{} <b>Hi! This is {} — powerful modular Telegram userbot. You can install it to your account!</b>")
 		captionText := formatTrans(captionTemplate, planetEmoji, platformEmoji)
 
 		buttons := [][]inline.Button{
@@ -366,7 +350,7 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 			},
 			{
 				{
-					Text: m.getTrans("support_chat_caption", "Support Chat"),
+					Text: m.T("support_chat_caption", "Support Chat"),
 					URL:  "https://t.me/goroku_talks",
 				},
 			},
@@ -381,17 +365,17 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 		_, _ = im.GetBotAPI().Send(photoConfig)
 
 	case "/profile":
-		if msg.From == nil || msg.From.ID != m.client.TGID {
+		if msg.From == nil || msg.From.ID != m.Client.TGID {
 			return
 		}
 
-		prefix := m.db.GetString("goroku.main", "command_prefix", ".")
+		prefix := m.DB.GetString("goroku.main", "command_prefix", ".")
 
 		ramUsage := fmt.Sprintf("%.2f", utils.GetRAMUsage())
 		cpuUsage := utils.GetCPUUsage()
 		host := utils.GetPlatformName()
 
-		profileTemplate := m.getTrans("profile_cmd", "ℹ️ Userbot Main Information\n\n<blockquote>• Prefix: {prefix}\n• RAM Usage: {ram_usage} MB\n• CPU Usage: {cpu_usage}%\n• Hosting: {host}</blockquote>")
+		profileTemplate := m.T("profile_cmd", "ℹ️ Userbot Main Information\n\n<blockquote>• Prefix: {prefix}\n• RAM Usage: {ram_usage} MB\n• CPU Usage: {cpu_usage}%\n• Hosting: {host}</blockquote>")
 		captionText := profileTemplate
 		captionText = strings.ReplaceAll(captionText, "{prefix}", prefix)
 		captionText = strings.ReplaceAll(captionText, "{ram_usage}", ramUsage)
@@ -404,7 +388,7 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 					Text: "Restart",
 					Data: "restart_cmd_" + genRandStr(4),
 					Handler: func(c inline.CallbackQuery) error {
-						_ = c.Edit(m.getTrans("restart", "🔄 Your Goroku is being restarted.."), tgbotapi.InlineKeyboardMarkup{})
+						_ = c.Edit(m.T("restart", "🔄 Your Goroku is being restarted.."), tgbotapi.InlineKeyboardMarkup{})
 						go func() {
 							time.Sleep(1 * time.Second)
 							goroku.Restart()
@@ -418,13 +402,13 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 					Text: "Reset prefix",
 					Data: "reset_prefix_cmd_" + genRandStr(4),
 					Handler: func(c inline.CallbackQuery) error {
-						if err := m.db.Set("goroku.main", "command_prefix", "."); err != nil {
+						if err := m.DB.Set("goroku.main", "command_prefix", "."); err != nil {
 							if answerErr := c.Answer("Could not reset prefix", true); answerErr != nil {
 								goroku.L().Warn("failed to report prefix persistence error", zap.Error(answerErr), zap.Error(err))
 							}
 							return fmt.Errorf("persist prefix reset: %w", err)
 						}
-						replyMsg := tgbotapi.NewMessage(c.ChatID, m.getTrans("prefix_reset", "🔀 Prefix reset!"))
+						replyMsg := tgbotapi.NewMessage(c.ChatID, m.T("prefix_reset", "🔀 Prefix reset!"))
 						if _, err := im.GetBotAPI().Send(replyMsg); err != nil {
 							return fmt.Errorf("send prefix reset confirmation: %w", err)
 						}

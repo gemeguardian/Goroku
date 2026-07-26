@@ -13,9 +13,7 @@ import (
 )
 
 type TranslationsModule struct {
-	client     *goroku.CustomTelegramClient
-	db         *goroku.Database
-	translator *goroku.Translator
+	goroku.Base
 }
 
 func (m *TranslationsModule) Name() string {
@@ -34,17 +32,7 @@ func (m *TranslationsModule) Strings() map[string]string {
 	}
 }
 
-func (m *TranslationsModule) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
-	m.client = client
-	m.db = db
-	m.translator = goroku.NewTranslator(client, db)
-	m.translator.Init()
-	return nil
-}
-
-func (m *TranslationsModule) ClientReady() error { return nil }
-func (m *TranslationsModule) OnUnload() error    { return nil }
-func (m *TranslationsModule) OnDlmod() error     { return nil }
+func (m *TranslationsModule) OnUnload() error { return nil }
 
 func (m *TranslationsModule) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
@@ -52,10 +40,6 @@ func (m *TranslationsModule) Commands() map[string]goroku.CommandHandler {
 		"listlangs":  m.ListLangsCmd,
 		"dllangpack": m.DlLangPackCmd,
 	}
-}
-
-func (m *TranslationsModule) Watchers() []goroku.WatcherHandler {
-	return []goroku.WatcherHandler{}
 }
 
 func (m *TranslationsModule) messagePersistenceFailure(msg *goroku.Message, err error) error {
@@ -134,7 +118,7 @@ func (m *TranslationsModule) SetLangCmd(msg *goroku.Message) error {
 				valid = append(valid, arg)
 			}
 		} else {
-			msg.Text = getTrans(m.translator, m.Name(), "incorrect_language", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Incorrect language specified</b>")
+			msg.Text = getTrans(m.Translator, m.Name(), "incorrect_language", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Incorrect language specified</b>")
 			if msg.Client != nil {
 				_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 			}
@@ -143,10 +127,10 @@ func (m *TranslationsModule) SetLangCmd(msg *goroku.Message) error {
 	}
 
 	langStr := strings.Join(valid, " ")
-	if err := m.db.Set("goroku.translations", "lang", langStr); err != nil {
+	if err := m.DB.Set("goroku.translations", "lang", langStr); err != nil {
 		return m.messagePersistenceFailure(msg, err)
 	}
-	m.translator.Init()
+	m.Translator.Init()
 
 	var flags []string
 	notOfficial := false
@@ -164,11 +148,11 @@ func (m *TranslationsModule) SetLangCmd(msg *goroku.Message) error {
 		}
 	}
 
-	template := getTrans(m.translator, m.Name(), "lang_saved", "{} <b>Language saved!</b>")
+	template := getTrans(m.Translator, m.Name(), "lang_saved", "{} <b>Language saved!</b>")
 	res := formatTrans(template, strings.Join(flags, ""))
 
 	if notOfficial {
-		res += "\n\n" + getTrans(m.translator, m.Name(), "not_official", "<tg-emoji emoji-id=5312383351217201533>⚠️</tg-emoji> <b>This language is not officially supported</b>")
+		res += "\n\n" + getTrans(m.Translator, m.Name(), "not_official", "<tg-emoji emoji-id=5312383351217201533>⚠️</tg-emoji> <b>This language is not officially supported</b>")
 	}
 
 	msg.Text = res
@@ -180,10 +164,10 @@ func (m *TranslationsModule) SetLangCmd(msg *goroku.Message) error {
 }
 
 func (m *TranslationsModule) ChooseLanguage(msg any, isMeme bool) error {
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im == nil || !im.IsComplete() {
 		if msgObj, ok := msg.(*goroku.Message); ok {
-			text := getTrans(m.translator, m.Name(), "incorrect_language", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Incorrect language specified</b>")
+			text := getTrans(m.Translator, m.Name(), "incorrect_language", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Incorrect language specified</b>")
 			_ = msgObj.Answer(text)
 		}
 		return nil
@@ -225,9 +209,9 @@ func (m *TranslationsModule) ChooseLanguage(msg any, isMeme bool) error {
 
 	var toggleText string
 	if isMeme {
-		toggleText = getTrans(m.translator, m.Name(), "off_langs", "🏴‍☠️ Official LangPacks")
+		toggleText = getTrans(m.Translator, m.Name(), "off_langs", "🏴‍☠️ Official LangPacks")
 	} else {
-		toggleText = getTrans(m.translator, m.Name(), "meme_langs", "🏴‍☠️ Meme LangPacks")
+		toggleText = getTrans(m.Translator, m.Name(), "meme_langs", "🏴‍☠️ Meme LangPacks")
 	}
 	toggleBtn := inline.Button{
 		Text: toggleText,
@@ -237,7 +221,7 @@ func (m *TranslationsModule) ChooseLanguage(msg any, isMeme bool) error {
 	}
 	markup = append(markup, []inline.Button{toggleBtn})
 
-	text := getTrans(m.translator, m.Name(), "choose_language", "<tg-emoji emoji-id=5454219968948229067>🗽</tg-emoji> <b>Choose language</b>")
+	text := getTrans(m.Translator, m.Name(), "choose_language", "<tg-emoji emoji-id=5454219968948229067>🗽</tg-emoji> <b>Choose language</b>")
 
 	var err error
 	if msgObj, ok := msg.(*goroku.Message); ok {
@@ -249,23 +233,23 @@ func (m *TranslationsModule) ChooseLanguage(msg any, isMeme bool) error {
 }
 
 func (m *TranslationsModule) ChangeLanguage(call inline.CallbackQuery, lang string) error {
-	if err := m.db.Set("goroku.translations", "lang", lang); err != nil {
+	if err := m.DB.Set("goroku.translations", "lang", lang); err != nil {
 		if answerErr := call.Answer("Could not save language settings", true); answerErr != nil {
 			goroku.L().Warn("failed to report language persistence error", zap.Error(answerErr), zap.Error(err))
 		}
 		return fmt.Errorf("persist language settings: %w", err)
 	}
-	m.translator.Init()
+	m.Translator.Init()
 
 	flag := getFlag(lang)
-	template := getTrans(m.translator, m.Name(), "lang_saved", "{} <b>Language saved!</b>")
+	template := getTrans(m.Translator, m.Name(), "lang_saved", "{} <b>Language saved!</b>")
 	res := formatTrans(template, flag)
 
 	return call.Edit(res, tgbotapi.InlineKeyboardMarkup{})
 }
 
 func (m *TranslationsModule) ListLangsCmd(msg *goroku.Message) error {
-	currentLang := m.db.GetString("goroku.translations", "lang", "en")
+	currentLang := m.DB.GetString("goroku.translations", "lang", "en")
 
 	var sb strings.Builder
 	sb.WriteString("🗽 <b>Available Languages:</b>\n\n")
@@ -315,14 +299,14 @@ func (m *TranslationsModule) DlLangPackCmd(msg *goroku.Message) error {
 	args := utils.GetArgsRaw(msg.RawText)
 	args = strings.TrimSpace(args)
 	if args == "" || !utils.CheckURL(args) {
-		msg.Text = getTrans(m.translator, m.Name(), "check_url", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>You need to specify valid url containing a langpack</b>")
+		msg.Text = getTrans(m.Translator, m.Name(), "check_url", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>You need to specify valid url containing a langpack</b>")
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	currentLang := m.db.GetString("goroku.translations", "lang", "")
+	currentLang := m.DB.GetString("goroku.translations", "lang", "")
 
 	var cleanLangs []string
 	for _, token := range strings.Fields(currentLang) {
@@ -338,16 +322,16 @@ func (m *TranslationsModule) DlLangPackCmd(msg *goroku.Message) error {
 		newLang = args
 	}
 
-	if err := m.db.Set("goroku.translations", "lang", newLang); err != nil {
+	if err := m.DB.Set("goroku.translations", "lang", newLang); err != nil {
 		return m.messagePersistenceFailure(msg, err)
 	}
-	m.translator.Init()
+	m.Translator.Init()
 
-	success := m.translator.HasRawData(args)
+	success := m.Translator.HasRawData(args)
 	if success {
-		msg.Text = getTrans(m.translator, m.Name(), "pack_saved", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Translate pack saved!</b>")
+		msg.Text = getTrans(m.Translator, m.Name(), "pack_saved", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Translate pack saved!</b>")
 	} else {
-		msg.Text = getTrans(m.translator, m.Name(), "check_pack", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Invalid pack format in url</b>")
+		msg.Text = getTrans(m.Translator, m.Name(), "check_pack", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Invalid pack format in url</b>")
 	}
 
 	if msg.Client != nil {

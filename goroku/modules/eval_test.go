@@ -22,7 +22,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestEvalCommandAvailableByDefaultAndSafeguarded(t *testing.T) {
-	m := &Eval{client: &goroku.CustomTelegramClient{TGID: 123}}
+	m := &Eval{Base: goroku.Base{Client: &goroku.CustomTelegramClient{TGID: 123}}}
 	meta := m.CommandMetas()["eval"]
 	if !meta.OnlyOwner {
 		t.Fatal("eval command must remain owner-only")
@@ -55,9 +55,7 @@ func TestEvalCommandAvailableByDefaultAndSafeguarded(t *testing.T) {
 
 func TestEvalYaegiExpression(t *testing.T) {
 	m := &Eval{
-		client: &goroku.CustomTelegramClient{
-			TGID: 123,
-		},
+		Base: goroku.Base{Client: &goroku.CustomTelegramClient{TGID: 123}},
 	}
 	res, stdout, stderr, err := m.runYaegiEval(&goroku.Message{}, "client.TGID")
 	if err != nil {
@@ -69,7 +67,7 @@ func TestEvalYaegiExpression(t *testing.T) {
 }
 
 func TestEvalYaegiFormatsLiveClient(t *testing.T) {
-	m := &Eval{client: &goroku.CustomTelegramClient{TGID: 123, Username: "matvey"}}
+	m := &Eval{Base: goroku.Base{Client: &goroku.CustomTelegramClient{TGID: 123, Username: "matvey"}}}
 	res, _, _, err := m.runYaegiEval(&goroku.Message{}, "client")
 	if err != nil {
 		t.Fatalf("client expression: %v", err)
@@ -84,7 +82,7 @@ func TestEvalYaegiFormatsLiveClient(t *testing.T) {
 
 func TestEvalYaegiExposesLiveClient(t *testing.T) {
 	m := &Eval{
-		client: &goroku.CustomTelegramClient{
+		Base: goroku.Base{Client: &goroku.CustomTelegramClient{
 			TGID: 123,
 			GorokuMe: &tg.User{
 				ID:         123,
@@ -94,7 +92,7 @@ func TestEvalYaegiExposesLiveClient(t *testing.T) {
 				AccessHash: 987654321,
 				Premium:    true,
 			},
-		},
+		}},
 	}
 
 	res, _, _, err := m.runYaegiEval(&goroku.Message{}, "gorokuctx.Client.GorokuMe.ID")
@@ -123,7 +121,7 @@ func TestEvalYaegiExposesLiveClient(t *testing.T) {
 }
 
 func TestEvalYaegiFallbackUsesCleanInterpreter(t *testing.T) {
-	m := &Eval{client: &goroku.CustomTelegramClient{TGID: 123}}
+	m := &Eval{Base: goroku.Base{Client: &goroku.CustomTelegramClient{TGID: 123}}}
 
 	res, _, _, err := m.runYaegiEval(&goroku.Message{}, "value := client.TGID\nreturn value")
 	if err != nil {
@@ -147,7 +145,7 @@ func TestEvalAndTerminalCensorSuppressOutputWhenDatabaseUnavailable(t *testing.T
 	secret := "persisted-secret-value"
 
 	for name, censor := range map[string]func(string) string{
-		"terminal": (&TerminalMod{db: db}).censor,
+		"terminal": (&TerminalMod{Base: goroku.Base{DB: db}}).censor,
 	} {
 		t.Run(name+" uninitialized", func(t *testing.T) {
 			got := censor("visible " + secret)
@@ -161,7 +159,7 @@ func TestEvalAndTerminalCensorSuppressOutputWhenDatabaseUnavailable(t *testing.T
 	if err := db.Set("main", "db_uri", secret); err != nil {
 		t.Fatal(err)
 	}
-	terminal := &TerminalMod{db: db}
+	terminal := &TerminalMod{Base: goroku.Base{DB: db}}
 	if got := terminal.censor("visible " + secret); strings.Contains(got, secret) {
 		t.Fatalf("terminal censor exposed active database secret: %q", got)
 	}
@@ -183,10 +181,10 @@ func TestEvalAndTerminalCensorSuppressOutputWhenDatabaseUnavailable(t *testing.T
 func TestCensorMissingKeysOnActiveDatabaseKeepsOutput(t *testing.T) {
 	db := newSecurityModuleTestDatabase(t)
 	const output = "ordinary output"
-	if got := (&Eval{db: db}).censor(output); got != output {
+	if got := (&Eval{Base: goroku.Base{DB: db}}).censor(output); got != output {
 		t.Fatalf("eval censor() = %q, want %q", got, output)
 	}
-	if got := (&TerminalMod{db: db}).censor(output); got != output {
+	if got := (&TerminalMod{Base: goroku.Base{DB: db}}).censor(output); got != output {
 		t.Fatalf("terminal censor() = %q, want %q", got, output)
 	}
 }
@@ -216,7 +214,7 @@ func TestEvalAndTerminalCensorAccountAndDatabaseSecretsConsistently(t *testing.T
 	}
 
 	for name, censor := range map[string]func(string) string{
-		"terminal": (&TerminalMod{client: client, db: db}).censor,
+		"terminal": (&TerminalMod{Base: goroku.Base{Client: client, DB: db}}).censor,
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := censor(input)

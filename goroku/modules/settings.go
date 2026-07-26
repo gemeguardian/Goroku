@@ -15,9 +15,7 @@ import (
 )
 
 type SettingsModule struct {
-	client                   *goroku.CustomTelegramClient
-	db                       *goroku.Database
-	translator               *goroku.Translator
+	goroku.Base
 	allowNonstandardPrefixes bool
 	aliasEmoji               string
 }
@@ -36,17 +34,9 @@ func (m *SettingsModule) Strings() map[string]string {
 	}
 }
 
-func (m *SettingsModule) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
-	m.client = client
-	m.db = db
-	m.translator = goroku.NewTranslator(client, db)
-	m.translator.Init()
-	return nil
-}
-
 func (m *SettingsModule) ClientReady() error {
 	// Load aliases from database on startup
-	if loader := m.client.Loader; loader != nil {
+	if loader := m.Client.Loader; loader != nil {
 		aliases, err := m.getStringMap("Settings", "aliases")
 		if err != nil {
 			return fmt.Errorf("read aliases: %w", err)
@@ -61,8 +51,7 @@ func (m *SettingsModule) ClientReady() error {
 	return nil
 }
 
-func (m *SettingsModule) OnUnload() error { return nil }
-func (m *SettingsModule) OnDlmod() error  { return nil }
+func (m *SettingsModule) OnDlmod() error { return nil }
 
 // ConfigSchema is the M7 typed config surface for Settings.
 func (m *SettingsModule) ConfigSchema() []goroku.ConfigField {
@@ -101,14 +90,6 @@ func (m *SettingsModule) Commands() map[string]goroku.CommandHandler {
 	}
 }
 
-func (m *SettingsModule) Watchers() []goroku.WatcherHandler {
-	return []goroku.WatcherHandler{}
-}
-
-func (m *SettingsModule) getTrans(key, def string) string {
-	return getTrans(m.translator, m.Name(), key, def)
-}
-
 func answerSettingsPersistenceFailure(msg *goroku.Message, err error) error {
 	msg.Text = "❌ <b>Could not save settings</b>"
 	if answerErr := msg.Answer(msg.Text); answerErr != nil {
@@ -126,7 +107,7 @@ func answerSettingsReadFailure(msg *goroku.Message, err error) error {
 }
 
 func (m *SettingsModule) getString(owner, key, def string) (string, error) {
-	value, err := m.db.Get(owner, key, def)
+	value, err := m.DB.Get(owner, key, def)
 	if err != nil {
 		return "", err
 	}
@@ -137,7 +118,7 @@ func (m *SettingsModule) getString(owner, key, def string) (string, error) {
 }
 
 func (m *SettingsModule) getStringMap(owner, key string) (map[string]string, error) {
-	value, err := m.db.Get(owner, key, nil)
+	value, err := m.DB.Get(owner, key, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +139,7 @@ func (m *SettingsModule) getStringMap(owner, key string) (map[string]string, err
 func (m *SettingsModule) blacklistCommon(msg *goroku.Message) (string, bool, error) {
 	args := utils.GetArgs(msg.Text)
 	if len(args) > 2 {
-		_ = msg.Answer(m.getTrans("too_many_args", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Too many args</b>"))
+		_ = msg.Answer(m.T("too_many_args", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Too many args</b>"))
 		return "", false, nil
 	}
 
@@ -184,7 +165,7 @@ func (m *SettingsModule) blacklistCommon(msg *goroku.Message) (string, bool, err
 	}
 
 	if module != "" {
-		if loader := m.client.Loader; loader != nil {
+		if loader := m.Client.Loader; loader != nil {
 			if mod := loader.LookupByName(module); mod != nil {
 				module = mod.Name()
 			}
@@ -204,7 +185,7 @@ func (m *SettingsModule) BlacklistCmd(msg *goroku.Message) error {
 		res = res[4:]
 	}
 
-	chats := m.db.GetStringSlice("goroku.main", "blacklist_chats", nil)
+	chats := m.DB.GetStringSlice("goroku.main", "blacklist_chats", nil)
 
 	found := false
 	for _, c := range chats {
@@ -215,12 +196,12 @@ func (m *SettingsModule) BlacklistCmd(msg *goroku.Message) error {
 	}
 	if !found {
 		chats = append(chats, res)
-		if err := m.db.SetStringSlice("goroku.main", "blacklist_chats", chats); err != nil {
+		if err := m.DB.SetStringSlice("goroku.main", "blacklist_chats", chats); err != nil {
 			return answerSettingsPersistenceFailure(msg, err)
 		}
 	}
 
-	text := formatTrans(m.getTrans("blacklisted", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Chat {} blacklisted from userbot</b>"), res)
+	text := formatTrans(m.T("blacklisted", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Chat {} blacklisted from userbot</b>"), res)
 	_ = msg.Answer(text)
 	return nil
 }
@@ -234,7 +215,7 @@ func (m *SettingsModule) UnblacklistCmd(msg *goroku.Message) error {
 		res = res[4:]
 	}
 
-	chats := m.db.GetStringSlice("goroku.main", "blacklist_chats", nil)
+	chats := m.DB.GetStringSlice("goroku.main", "blacklist_chats", nil)
 
 	var newChats []string
 	for _, c := range chats {
@@ -242,11 +223,11 @@ func (m *SettingsModule) UnblacklistCmd(msg *goroku.Message) error {
 			newChats = append(newChats, c)
 		}
 	}
-	if err := m.db.SetStringSlice("goroku.main", "blacklist_chats", newChats); err != nil {
+	if err := m.DB.SetStringSlice("goroku.main", "blacklist_chats", newChats); err != nil {
 		return answerSettingsPersistenceFailure(msg, err)
 	}
 
-	text := formatTrans(m.getTrans("unblacklisted", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Chat {} unblacklisted from userbot</b>"), res)
+	text := formatTrans(m.T("unblacklisted", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Chat {} unblacklisted from userbot</b>"), res)
 	_ = msg.Answer(text)
 	return nil
 }
@@ -273,11 +254,11 @@ func (m *SettingsModule) getUser(msg *goroku.Message) (int64, bool) {
 func (m *SettingsModule) BlacklistUserCmd(msg *goroku.Message) error {
 	user, ok := m.getUser(msg)
 	if !ok {
-		_ = msg.Answer(m.getTrans("who_to_blacklist", "<tg-emoji emoji-id=5382187118216879236>❓</tg-emoji> <b>Who to blacklist?</b>"))
+		_ = msg.Answer(m.T("who_to_blacklist", "<tg-emoji emoji-id=5382187118216879236>❓</tg-emoji> <b>Who to blacklist?</b>"))
 		return nil
 	}
 
-	users := m.db.GetInt64Slice("goroku.main", "blacklist_users", nil)
+	users := m.DB.GetInt64Slice("goroku.main", "blacklist_users", nil)
 
 	found := false
 	for _, u := range users {
@@ -288,12 +269,12 @@ func (m *SettingsModule) BlacklistUserCmd(msg *goroku.Message) error {
 	}
 	if !found {
 		users = append(users, user)
-		if err := m.db.SetInt64Slice("goroku.main", "blacklist_users", users); err != nil {
+		if err := m.DB.SetInt64Slice("goroku.main", "blacklist_users", users); err != nil {
 			return answerSettingsPersistenceFailure(msg, err)
 		}
 	}
 
-	text := formatTrans(m.getTrans("user_blacklisted", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>User {} blacklisted from userbot</b>"), strconv.FormatInt(user, 10))
+	text := formatTrans(m.T("user_blacklisted", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>User {} blacklisted from userbot</b>"), strconv.FormatInt(user, 10))
 	_ = msg.Answer(text)
 	return nil
 }
@@ -301,11 +282,11 @@ func (m *SettingsModule) BlacklistUserCmd(msg *goroku.Message) error {
 func (m *SettingsModule) UnblacklistUserCmd(msg *goroku.Message) error {
 	user, ok := m.getUser(msg)
 	if !ok {
-		_ = msg.Answer(m.getTrans("who_to_unblacklist", "<tg-emoji emoji-id=5382187118216879236>❓</tg-emoji> <b>Who to unblacklist?</b>"))
+		_ = msg.Answer(m.T("who_to_unblacklist", "<tg-emoji emoji-id=5382187118216879236>❓</tg-emoji> <b>Who to unblacklist?</b>"))
 		return nil
 	}
 
-	users := m.db.GetInt64Slice("goroku.main", "blacklist_users", nil)
+	users := m.DB.GetInt64Slice("goroku.main", "blacklist_users", nil)
 
 	var newUsers []int64
 	for _, u := range users {
@@ -313,28 +294,28 @@ func (m *SettingsModule) UnblacklistUserCmd(msg *goroku.Message) error {
 			newUsers = append(newUsers, u)
 		}
 	}
-	if err := m.db.SetInt64Slice("goroku.main", "blacklist_users", newUsers); err != nil {
+	if err := m.DB.SetInt64Slice("goroku.main", "blacklist_users", newUsers); err != nil {
 		return answerSettingsPersistenceFailure(msg, err)
 	}
 
-	text := formatTrans(m.getTrans("user_unblacklisted", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>User {} unblacklisted from userbot</b>"), strconv.FormatInt(user, 10))
+	text := formatTrans(m.T("user_unblacklisted", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>User {} unblacklisted from userbot</b>"), strconv.FormatInt(user, 10))
 	_ = msg.Answer(text)
 	return nil
 }
 
 func (m *SettingsModule) isUserInSecurity(userID int64) (bool, error) {
-	if userID == m.client.TGID {
+	if userID == m.Client.TGID {
 		return true, nil
 	}
 
-	ownerVal := m.db.GetInt64Slice("goroku.security", "owner", nil)
+	ownerVal := m.DB.GetInt64Slice("goroku.security", "owner", nil)
 	for _, id := range ownerVal {
 		if id == userID {
 			return true, nil
 		}
 	}
 
-	tsecVal, err := m.db.Get("goroku.security", "tsec_user", []any{})
+	tsecVal, err := m.DB.Get("goroku.security", "tsec_user", []any{})
 	if err != nil {
 		return false, fmt.Errorf("read targeted security users: %w", err)
 	}
@@ -357,7 +338,7 @@ func (m *SettingsModule) isUserInSecurity(userID int64) (bool, error) {
 		}
 	}
 
-	sgroupsVal, err := m.db.Get("goroku.security", "security_groups", map[string]any{})
+	sgroupsVal, err := m.DB.Get("goroku.security", "security_groups", map[string]any{})
 	if err != nil {
 		return false, fmt.Errorf("read security groups: %w", err)
 	}
@@ -403,19 +384,19 @@ func (m *SettingsModule) getPrefix(userID int64) (string, error) {
 func (m *SettingsModule) SetPrefixCmd(msg *goroku.Message) error {
 	args := utils.GetArgs(msg.Text)
 	if len(args) == 0 {
-		_ = msg.Answer(m.getTrans("what_prefix", "<tg-emoji emoji-id=5382187118216879236>❓</tg-emoji> <b>What should the prefix be set to?</b>"))
+		_ = msg.Answer(m.T("what_prefix", "<tg-emoji emoji-id=5382187118216879236>❓</tg-emoji> <b>What should the prefix be set to?</b>"))
 		return nil
 	}
 
 	newPrefix := args[0]
 	runes := []rune(newPrefix)
 	if len(runes) != 1 && !m.allowNonstandardPrefixes {
-		_ = msg.Answer(m.getTrans("prefix_incorrect", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Prefix must be one symbol in length</b>"))
+		_ = msg.Answer(m.T("prefix_incorrect", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Prefix must be one symbol in length</b>"))
 		return nil
 	}
 
 	if newPrefix == "s" {
-		_ = msg.Answer(m.getTrans("prefix_incorrect", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Prefix must be one symbol in length</b>"))
+		_ = msg.Answer(m.T("prefix_incorrect", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Prefix must be one symbol in length</b>"))
 		return nil
 	}
 
@@ -423,9 +404,9 @@ func (m *SettingsModule) SetPrefixCmd(msg *goroku.Message) error {
 		var userID int64
 		var userName string
 
-		entity, err := m.client.GetEntity(args[1], 0, false)
+		entity, err := m.Client.GetEntity(args[1], 0, false)
 		if err != nil {
-			_ = msg.Answer(m.getTrans("invalid_id_or_username", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> Invalid id/username was given"))
+			_ = msg.Answer(m.T("invalid_id_or_username", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> Invalid id/username was given"))
 			return nil
 		}
 
@@ -434,20 +415,20 @@ func (m *SettingsModule) SetPrefixCmd(msg *goroku.Message) error {
 			userID = p.UserID
 			userName = args[1]
 		case *tg.InputPeerSelf:
-			userID = m.client.TGID
+			userID = m.Client.TGID
 			userName = args[1]
 		default:
 			_ = msg.Answer(fmt.Sprintf("The entity %s is not a User", args[1]))
 			return nil
 		}
 
-		if userID != m.client.TGID {
+		if userID != m.Client.TGID {
 			inSecurity, err := m.isUserInSecurity(userID)
 			if err != nil {
 				return answerSettingsReadFailure(msg, err)
 			}
 			if !inSecurity {
-				_ = msg.Answer(m.getTrans("id_not_found_scgroup", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> This entity does not exist in any security group. Therefore, adding a prefix for it is pointless"))
+				_ = msg.Answer(m.T("id_not_found_scgroup", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> This entity does not exist in any security group. Therefore, adding a prefix for it is pointless"))
 				return nil
 			}
 
@@ -461,11 +442,11 @@ func (m *SettingsModule) SetPrefixCmd(msg *goroku.Message) error {
 				return answerSettingsReadFailure(msg, err)
 			}
 			allPrefixes[strconv.FormatInt(userID, 10)] = newPrefix
-			if err := m.db.SetStringMap("goroku.main", "command_prefixes", allPrefixes); err != nil {
+			if err := m.DB.SetStringMap("goroku.main", "command_prefixes", allPrefixes); err != nil {
 				return answerSettingsPersistenceFailure(msg, err)
 			}
 
-			text := m.getTrans("entity_prefix_set", "{} <b>Command prefix updated for {entity_name}. Use the following command to change it back:</b>\n<pre><code class=\"language-goroku\">{newprefix}setprefix {oldprefix} {entity_id}</code></pre>")
+			text := m.T("entity_prefix_set", "{} <b>Command prefix updated for {entity_name}. Use the following command to change it back:</b>\n<pre><code class=\"language-goroku\">{newprefix}setprefix {oldprefix} {entity_id}</code></pre>")
 			text = strings.Replace(text, "{}", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji>", 1)
 			text = strings.ReplaceAll(text, "{entity_name}", utils.EscapeHTML(userName))
 			text = strings.ReplaceAll(text, "{newprefix}", utils.EscapeHTML(newPrefix))
@@ -482,11 +463,11 @@ func (m *SettingsModule) SetPrefixCmd(msg *goroku.Message) error {
 		return answerSettingsReadFailure(msg, err)
 	}
 	oldPrefix := utils.EscapeHTML(oldPrefixValue)
-	if err := m.db.Set("goroku.main", "command_prefix", newPrefix); err != nil {
+	if err := m.DB.Set("goroku.main", "command_prefix", newPrefix); err != nil {
 		return answerSettingsPersistenceFailure(msg, err)
 	}
 
-	text := m.getTrans("prefix_set", "{} <b>Command prefix updated. Use the following command to change it back:</b>\n<pre><code class=\"language-goroku\">{newprefix}setprefix {oldprefix}</code></pre>")
+	text := m.T("prefix_set", "{} <b>Command prefix updated. Use the following command to change it back:</b>\n<pre><code class=\"language-goroku\">{newprefix}setprefix {oldprefix}</code></pre>")
 	text = strings.Replace(text, "{}", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji>", 1)
 	text = strings.ReplaceAll(text, "{newprefix}", utils.EscapeHTML(newPrefix))
 	text = strings.ReplaceAll(text, "{oldprefix}", utils.EscapeHTML(oldPrefix))
@@ -513,7 +494,7 @@ func (m *SettingsModule) AliasesCmd(msg *goroku.Message) error {
 		listLines = append(listLines, fmt.Sprintf("%s <code>%s</code> &lt;- %s", m.aliasEmoji, alias, aliases[alias]))
 	}
 
-	text := m.getTrans("aliases", "<b>🔗 Aliases:</b>\n") + "<blockquote expandable>" + strings.Join(listLines, "\n") + "</blockquote>"
+	text := m.T("aliases", "<b>🔗 Aliases:</b>\n") + "<blockquote expandable>" + strings.Join(listLines, "\n") + "</blockquote>"
 	_ = msg.Answer(text)
 	return nil
 }
@@ -522,7 +503,7 @@ func (m *SettingsModule) AddAliasCmd(msg *goroku.Message) error {
 	raw := strings.TrimSpace(utils.GetArgsRaw(msg.Text))
 	parts := strings.Fields(raw)
 	if len(parts) < 2 {
-		_ = msg.Answer(m.getTrans("alias_args", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>You must provide a command and the alias for it</b>"))
+		_ = msg.Answer(m.T("alias_args", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>You must provide a command and the alias for it</b>"))
 		return nil
 	}
 
@@ -552,7 +533,7 @@ func (m *SettingsModule) AddAliasCmd(msg *goroku.Message) error {
 		}
 	}
 	if !commandExists || !aliasAvailable {
-		text := formatTrans(m.getTrans("no_command", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Command</b> <code>{}</code> <b>does not exist</b>"), utils.EscapeHTML(cmd))
+		text := formatTrans(m.T("no_command", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Command</b> <code>{}</code> <b>does not exist</b>"), utils.EscapeHTML(cmd))
 		_ = msg.Answer(text)
 		return nil
 	}
@@ -570,11 +551,11 @@ func (m *SettingsModule) AddAliasCmd(msg *goroku.Message) error {
 	} else {
 		aliases[alias] = cmd
 	}
-	if err := m.db.SetStringMap("Settings", "aliases", aliases); err != nil {
+	if err := m.DB.SetStringMap("Settings", "aliases", aliases); err != nil {
 		return answerSettingsPersistenceFailure(msg, err)
 	}
 	if !loader.AddAlias(alias, cmd) {
-		if err := m.db.SetStringMap("Settings", "aliases", previousAliases); err != nil {
+		if err := m.DB.SetStringMap("Settings", "aliases", previousAliases); err != nil {
 			goroku.L().Error("failed to roll back alias persistence", zap.String("alias", alias), zap.Error(err))
 			return answerSettingsPersistenceFailure(msg, fmt.Errorf("roll back alias persistence: %w", err))
 		}
@@ -582,7 +563,7 @@ func (m *SettingsModule) AddAliasCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	text := formatTrans(m.getTrans("alias_created", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Alias created. Access it with</b> <code>{}</code>"), utils.EscapeHTML(alias))
+	text := formatTrans(m.T("alias_created", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Alias created. Access it with</b> <code>{}</code>"), utils.EscapeHTML(alias))
 	_ = msg.Answer(text)
 	return nil
 }
@@ -590,7 +571,7 @@ func (m *SettingsModule) AddAliasCmd(msg *goroku.Message) error {
 func (m *SettingsModule) DelAliasCmd(msg *goroku.Message) error {
 	args := utils.GetArgs(msg.Text)
 	if len(args) != 1 {
-		_ = msg.Answer(m.getTrans("delalias_args", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>You must provide the alias name</b>"))
+		_ = msg.Answer(m.T("delalias_args", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>You must provide the alias name</b>"))
 		return nil
 	}
 
@@ -602,7 +583,7 @@ func (m *SettingsModule) DelAliasCmd(msg *goroku.Message) error {
 	}
 
 	if _, exists := loader.GetAliases()[strings.ToLower(alias)]; !exists {
-		text := formatTrans(m.getTrans("no_alias", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Alias</b> <code>{}</code> <b>does not exist</b>"), utils.EscapeHTML(alias))
+		text := formatTrans(m.T("no_alias", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Alias</b> <code>{}</code> <b>does not exist</b>"), utils.EscapeHTML(alias))
 		_ = msg.Answer(text)
 		return nil
 	}
@@ -621,12 +602,12 @@ func (m *SettingsModule) DelAliasCmd(msg *goroku.Message) error {
 		}
 	}
 	delete(aliases, persistedAlias)
-	if err := m.db.SetStringMap("Settings", "aliases", aliases); err != nil {
+	if err := m.DB.SetStringMap("Settings", "aliases", aliases); err != nil {
 		return answerSettingsPersistenceFailure(msg, err)
 	}
 	if !loader.RemoveAlias(alias) {
 		aliases[persistedAlias] = previousTarget
-		if err := m.db.SetStringMap("Settings", "aliases", aliases); err != nil {
+		if err := m.DB.SetStringMap("Settings", "aliases", aliases); err != nil {
 			goroku.L().Error("failed to roll back alias removal", zap.String("alias", alias), zap.Error(err))
 			return answerSettingsPersistenceFailure(msg, fmt.Errorf("roll back alias removal: %w", err))
 		}
@@ -634,34 +615,34 @@ func (m *SettingsModule) DelAliasCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	text := formatTrans(m.getTrans("alias_removed", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Alias</b> <code>{}</code> <b>removed</b>."), utils.EscapeHTML(alias))
+	text := formatTrans(m.T("alias_removed", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Alias</b> <code>{}</code> <b>removed</b>."), utils.EscapeHTML(alias))
 	_ = msg.Answer(text)
 	return nil
 }
 
 func (m *SettingsModule) ClearDBCmd(msg *goroku.Message) error {
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im == nil {
 		raw := strings.TrimSpace(utils.GetArgsRaw(msg.Text))
 		if raw != "-f" && raw != "--force" {
 			_ = msg.Answer("⚠️ <b>This will clear the entire database!</b>\nTo confirm, run: <code>.cleardb -f</code>")
 			return nil
 		}
-		if err := m.db.Reset(make(map[string]map[string]any)); err != nil {
+		if err := m.DB.Reset(make(map[string]map[string]any)); err != nil {
 			return answerSettingsPersistenceFailure(msg, err)
 		}
-		_ = msg.Answer(m.getTrans("db_cleared", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Database cleared</b>"))
+		_ = msg.Answer(m.T("db_cleared", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Database cleared</b>"))
 		return nil
 	}
 
-	confirmText := m.getTrans("confirm_cleardb", "⚠️ <b>Are you sure, that you want to clear database?</b>")
+	confirmText := m.T("confirm_cleardb", "⚠️ <b>Are you sure, that you want to clear database?</b>")
 	markup := [][]inline.Button{
 		{
 			{
-				Text: m.getTrans("cleardb_confirm", "🗑 Clear database"),
+				Text: m.T("cleardb_confirm", "🗑 Clear database"),
 				Data: "cleardb_confirm",
 				Handler: func(c inline.CallbackQuery) error {
-					if err := m.db.Reset(make(map[string]map[string]any)); err != nil {
+					if err := m.DB.Reset(make(map[string]map[string]any)); err != nil {
 						if answerErr := c.Answer("Could not clear database", true); answerErr != nil {
 							goroku.L().Warn("failed to report database clear persistence error", zap.Error(answerErr), zap.Error(err))
 						}
@@ -672,7 +653,7 @@ func (m *SettingsModule) ClearDBCmd(msg *goroku.Message) error {
 					}
 
 					botAPI := im.GetBotAPI()
-					replyMsg := tgbotapi.NewMessage(c.ChatID, m.getTrans("db_cleared", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Database cleared</b>"))
+					replyMsg := tgbotapi.NewMessage(c.ChatID, m.T("db_cleared", "<tg-emoji emoji-id=5197474765387864959>👍</tg-emoji> <b>Database cleared</b>"))
 					if _, err := botAPI.Send(replyMsg); err != nil {
 						goroku.L().Warn("failed to send database clear confirmation", zap.Int64("chat_id", c.ChatID), zap.Error(err))
 					}
@@ -680,7 +661,7 @@ func (m *SettingsModule) ClearDBCmd(msg *goroku.Message) error {
 				},
 			},
 			{
-				Text: m.getTrans("cancel", "🚫 Cancel"),
+				Text: m.T("cancel", "🚫 Cancel"),
 				Data: "cleardb_cancel",
 				Handler: func(c inline.CallbackQuery) error {
 					return closeForm(c)
@@ -702,7 +683,7 @@ func (m *SettingsModule) resolveSettingsModule(msg *goroku.Message, modArg strin
 
 	mod := loader.LookupByName(modArg)
 	if mod == nil {
-		text := formatTrans(m.getTrans("mod404", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Watcher {} not found</b>"), modArg)
+		text := formatTrans(m.T("mod404", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Watcher {} not found</b>"), modArg)
 		_ = msg.Answer(text)
 		return nil, nil, false
 	}
@@ -737,7 +718,7 @@ func toggleStringFold(items []string, value string) ([]string, bool) {
 func (m *SettingsModule) ToggleCmdCmd(msg *goroku.Message) error {
 	args := utils.GetArgs(msg.Text)
 	if len(args) < 2 {
-		_ = msg.Answer(m.getTrans("wrong_usage_tcc", "Usage: togglecmd <module> <command> or togglecmd <command>"))
+		_ = msg.Answer(m.T("wrong_usage_tcc", "Usage: togglecmd <module> <command> or togglecmd <command>"))
 		return nil
 	}
 
@@ -751,17 +732,17 @@ func (m *SettingsModule) ToggleCmdCmd(msg *goroku.Message) error {
 	moduleKey := mod.Name()
 	actualCmd := findCommandName(mod, cmdArg)
 	if actualCmd == "" {
-		_ = msg.Answer(m.getTrans("cmd404", "<tg-emoji emoji-id=5469791106591890404>🪄</tg-emoji> <b>Command not found</b>"))
+		_ = msg.Answer(m.T("cmd404", "<tg-emoji emoji-id=5469791106591890404>🪄</tg-emoji> <b>Command not found</b>"))
 		return nil
 	}
 
-	disabledCmds := m.db.GetStringMapStringSlice("goroku.main", "disabled_commands", nil)
+	disabledCmds := m.DB.GetStringMapStringSlice("goroku.main", "disabled_commands", nil)
 	modDisabled := disabledCmds[moduleKey]
 	newList, enabled := toggleStringFold(modDisabled, actualCmd)
 
 	if enabled {
 		disabledCmds[moduleKey] = newList
-		if err := m.db.SetStringMapStringSlice("goroku.main", "disabled_commands", disabledCmds); err != nil {
+		if err := m.DB.SetStringMapStringSlice("goroku.main", "disabled_commands", disabledCmds); err != nil {
 			return answerSettingsPersistenceFailure(msg, err)
 		}
 		loader.UnregisterCommand(actualCmd)
@@ -772,7 +753,7 @@ func (m *SettingsModule) ToggleCmdCmd(msg *goroku.Message) error {
 		} else {
 			disabledCmds[moduleKey] = newList
 		}
-		if err := m.db.SetStringMapStringSlice("goroku.main", "disabled_commands", disabledCmds); err != nil {
+		if err := m.DB.SetStringMapStringSlice("goroku.main", "disabled_commands", disabledCmds); err != nil {
 			return answerSettingsPersistenceFailure(msg, err)
 		}
 		loader.RegisterCommand(actualCmd, mod.Commands()[actualCmd])
@@ -785,7 +766,7 @@ func (m *SettingsModule) ToggleCmdCmd(msg *goroku.Message) error {
 func (m *SettingsModule) ToggleModCmd(msg *goroku.Message) error {
 	args := utils.GetArgs(msg.Text)
 	if len(args) == 0 {
-		_ = msg.Answer(m.getTrans("wrong_usage_tmc", "Usage: togglemod <module>"))
+		_ = msg.Answer(m.T("wrong_usage_tmc", "Usage: togglemod <module>"))
 		return nil
 	}
 
@@ -797,26 +778,26 @@ func (m *SettingsModule) ToggleModCmd(msg *goroku.Message) error {
 
 	moduleKey := mod.Name()
 
-	disabled := m.db.GetStringSlice("goroku.main", "disabled_modules", nil)
+	disabled := m.DB.GetStringSlice("goroku.main", "disabled_modules", nil)
 	newDisabled, enabled := toggleString(disabled, moduleKey)
 
 	if !enabled {
-		if err := m.db.SetStringSlice("goroku.main", "disabled_modules", newDisabled); err != nil {
+		if err := m.DB.SetStringSlice("goroku.main", "disabled_modules", newDisabled); err != nil {
 			return answerSettingsPersistenceFailure(msg, err)
 		}
 		for cmdName, handler := range mod.Commands() {
 			loader.RegisterCommand(cmdName, handler)
 		}
-		text := formatTrans(m.getTrans("mod_enabled", "Module {} enabled"), moduleKey)
+		text := formatTrans(m.T("mod_enabled", "Module {} enabled"), moduleKey)
 		_ = msg.Answer(text)
 	} else {
-		if err := m.db.SetStringSlice("goroku.main", "disabled_modules", newDisabled); err != nil {
+		if err := m.DB.SetStringSlice("goroku.main", "disabled_modules", newDisabled); err != nil {
 			return answerSettingsPersistenceFailure(msg, err)
 		}
 		for cmdName := range mod.Commands() {
 			loader.UnregisterCommand(cmdName)
 		}
-		text := formatTrans(m.getTrans("mod_disabled", "Module {} disabled"), moduleKey)
+		text := formatTrans(m.T("mod_disabled", "Module {} disabled"), moduleKey)
 		_ = msg.Answer(text)
 	}
 
@@ -826,7 +807,7 @@ func (m *SettingsModule) ToggleModCmd(msg *goroku.Message) error {
 func (m *SettingsModule) ClearModuleCmd(msg *goroku.Message) error {
 	args := utils.GetArgs(msg.Text)
 	if len(args) == 0 {
-		_ = msg.Answer(m.getTrans("wrong_usage_cmc", "Cleared DB for module {}"))
+		_ = msg.Answer(m.T("wrong_usage_cmc", "Cleared DB for module {}"))
 		return nil
 	}
 
@@ -839,7 +820,7 @@ func (m *SettingsModule) ClearModuleCmd(msg *goroku.Message) error {
 		}
 	}
 
-	data := m.db.GetAll()
+	data := m.DB.GetAll()
 	for owner := range data {
 		if strings.EqualFold(owner, moduleKey) {
 			delete(data, owner)
@@ -856,10 +837,10 @@ func (m *SettingsModule) ClearModuleCmd(msg *goroku.Message) error {
 	if data[mainOwner] == nil {
 		data[mainOwner] = make(map[string]any)
 	}
-	disabledCmds := m.db.GetStringMapStringSlice("goroku.main", "disabled_commands", nil)
+	disabledCmds := m.DB.GetStringMapStringSlice("goroku.main", "disabled_commands", nil)
 	delete(disabledCmds, moduleKey)
 	data[mainOwner]["disabled_commands"] = disabledCmds
-	disabled := m.db.GetStringSlice("goroku.main", "disabled_modules", nil)
+	disabled := m.DB.GetStringSlice("goroku.main", "disabled_modules", nil)
 	newDisabled := make([]string, 0, len(disabled))
 	for _, item := range disabled {
 		if item != moduleKey {
@@ -867,7 +848,7 @@ func (m *SettingsModule) ClearModuleCmd(msg *goroku.Message) error {
 		}
 	}
 	data[mainOwner]["disabled_modules"] = newDisabled
-	if err := m.db.Reset(data); err != nil {
+	if err := m.DB.Reset(data); err != nil {
 		return answerSettingsPersistenceFailure(msg, err)
 	}
 
@@ -877,8 +858,8 @@ func (m *SettingsModule) ClearModuleCmd(msg *goroku.Message) error {
 
 func (m *SettingsModule) GorokuCmd(msg *goroku.Message) error {
 	isPremium := false
-	if m.client != nil && m.client.GorokuMe != nil {
-		if u := m.client.GorokuMe; u != nil {
+	if m.Client != nil && m.Client.GorokuMe != nil {
+		if u := m.Client.GorokuMe; u != nil {
 			isPremium = u.Premium
 		}
 	}
@@ -903,12 +884,12 @@ func (m *SettingsModule) GorokuCmd(msg *goroku.Message) error {
 
 	libraryStr := fmt.Sprintf("gotd v0.161.0 #%d", tg.Layer)
 
-	template := m.getTrans("goroku", "{} <b>{}.{}.{}</b> <i>{}</i>\n\n<b><tg-emoji emoji-id=5289608677244811430>📁</emoji> <b>goroku-tl:</b> <i>{}</i>\n\n<tg-emoji emoji-id=5228879218363872764>⌨</emoji> <b>Developers: <a href=\"t.me/coddrago\">@coddrago</a>, <a href=\"t.me/zetgo\">@zetgo</a></b>")
+	template := m.T("goroku", "{} <b>{}.{}.{}</b> <i>{}</i>\n\n<b><tg-emoji emoji-id=5289608677244811430>📁</emoji> <b>goroku-tl:</b> <i>{}</i>\n\n<tg-emoji emoji-id=5228879218363872764>⌨</emoji> <b>Developers: <a href=\"t.me/coddrago\">@coddrago</a>, <a href=\"t.me/zetgo\">@zetgo</a></b>")
 	formattedText := formatTrans(template, platform, verStr[0], verStr[1], verStr[2], commitURLHTML, libraryStr)
 
 	branch := goroku.GetVersionBranch()
 	if branch != "master" {
-		unstableTemplate := m.getTrans("unstable", "\n\n<tg-emoji emoji-id=5355133243773435190>❕</tg-emoji> <b>You are using an unstable branch</b> <code>{}</code><b>!</b>")
+		unstableTemplate := m.T("unstable", "\n\n<tg-emoji emoji-id=5355133243773435190>❕</tg-emoji> <b>You are using an unstable branch</b> <code>{}</code><b>!</b>")
 		formattedText += formatTrans(unstableTemplate, branch)
 	}
 
@@ -923,7 +904,7 @@ func (m *SettingsModule) GorokuCmd(msg *goroku.Message) error {
 		_ = msg.Delete()
 	}
 
-	_, err := m.client.SendFileWithOptions(goroku.ChatRefID(msg.ChatID), fileURL, formattedText, opts...)
+	_, err := m.Client.SendFileWithOptions(goroku.ChatRefID(msg.ChatID), fileURL, formattedText, opts...)
 	return err
 }
 
@@ -933,12 +914,12 @@ func (m *SettingsModule) getInstallationMarkup() [][]inline.Button {
 	for _, p := range platforms {
 		platformName := p
 		buttons = append(buttons, inline.Button{
-			Text: m.getTrans(platformName, platformName),
+			Text: m.T(platformName, platformName),
 			Data: "install_" + platformName,
 			Handler: func(c inline.CallbackQuery) error {
 				_ = c.Answer("Loading...", false)
 				guideKey := platformName + "_install"
-				guideText := m.getTrans(guideKey, guideKey)
+				guideText := m.T(guideKey, guideKey)
 				markup := c.Manager.GenerateMarkup(m.getInstallationMarkup())
 				return c.Edit(guideText, markup)
 			},
@@ -957,14 +938,14 @@ func (m *SettingsModule) InstallationCmd(msg *goroku.Message) error {
 	}
 
 	if guideKey, ok := validArgs[args]; ok {
-		guideText := m.getTrans(guideKey, guideKey)
+		guideText := m.T(guideKey, guideKey)
 		_ = msg.Answer(guideText)
 		return nil
 	}
 
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im != nil {
-		text := m.getTrans("choose_installation", "<tg-emoji emoji-id=5363805650327450240>🪐</tg-emoji> <b>Choose your Goroku installation option:</b>")
+		text := m.T("choose_installation", "<tg-emoji emoji-id=5363805650327450240>🪐</tg-emoji> <b>Choose your Goroku installation option:</b>")
 		markup := m.getInstallationMarkup()
 		photoURL := "https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/goroku_installation.png"
 
@@ -978,7 +959,7 @@ func (m *SettingsModule) InstallationCmd(msg *goroku.Message) error {
 	}
 
 	photoURL := "https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/goroku_installation.png"
-	text := m.getTrans("vds_install", "VDS Installation")
+	text := m.T("vds_install", "VDS Installation")
 
 	var opts []goroku.MsgOption
 	if msg.ReplyToMsgID != 0 {
@@ -989,7 +970,7 @@ func (m *SettingsModule) InstallationCmd(msg *goroku.Message) error {
 		_ = msg.Delete()
 	}
 
-	_, err := m.client.SendFileWithOptions(goroku.ChatRefID(msg.ChatID), photoURL, text, opts...)
+	_, err := m.Client.SendFileWithOptions(goroku.ChatRefID(msg.ChatID), photoURL, text, opts...)
 	return err
 }
 

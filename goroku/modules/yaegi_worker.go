@@ -326,12 +326,12 @@ func (m *Eval) buildYaegiRequest(msg *goroku.Message, code string) yaegiWorkerRe
 			ViaBotID:     msg.ViaBotID,
 		}
 	}
-	if m.client != nil {
+	if m.Client != nil {
 		req.Client = &yaegiClientSnap{
-			TGID:     m.client.TGID,
-			Username: m.client.Username,
+			TGID:     m.Client.TGID,
+			Username: m.Client.Username,
 		}
-		if u := m.client.GorokuMe; u != nil {
+		if u := m.Client.GorokuMe; u != nil {
 			req.Client.GorokuMe = &yaegiUserSnap{
 				ID:                    u.ID,
 				FirstName:             u.FirstName,
@@ -354,9 +354,9 @@ func (m *Eval) buildYaegiRequest(msg *goroku.Message, code string) yaegiWorkerRe
 			}
 		}
 	}
-	if m.db != nil {
+	if m.DB != nil {
 		// Snapshot only — worker cannot mutate parent DB.
-		dump := m.db.Dump()
+		dump := m.DB.Dump()
 		if dump != nil {
 			req.DB = make(map[string]any, len(dump))
 			for k, v := range dump {

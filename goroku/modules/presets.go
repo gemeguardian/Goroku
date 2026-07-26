@@ -85,10 +85,7 @@ var defaultPresets = map[string][]string{
 }
 
 type Presets struct {
-	client     *goroku.CustomTelegramClient
-	db         *goroku.Database
-	translator *goroku.Translator
-
+	goroku.Base
 	// Narrow seams used by module transaction tests.
 	installHotModuleApply func(*goroku.Message, string, string, []byte) error
 	setLoadedModulesApply func(map[string]string) error
@@ -113,20 +110,12 @@ func (m *Presets) Strings() map[string]string {
 	}
 }
 
-func (m *Presets) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
-	m.client = client
-	m.db = db
-	m.translator = goroku.NewTranslator(client, db)
-	m.translator.Init()
-	return nil
-}
-
 func (m *Presets) ClientReady() error {
-	if m.db.GetBool("Presets", "sent", false) {
+	if m.DB.GetBool("Presets", "sent", false) {
 		return nil
 	}
 
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im != nil {
 		go func() {
 			defer func() {
@@ -141,10 +130,10 @@ func (m *Presets) ClientReady() error {
 				time.Sleep(500 * time.Millisecond)
 			}
 			if im.IsComplete() {
-				if err := m.sendMenu(m.client.TGID); err != nil {
+				if err := m.sendMenu(m.Client.TGID); err != nil {
 					return
 				}
-				if err := m.db.SetBool("Presets", "sent", true); err != nil {
+				if err := m.DB.SetBool("Presets", "sent", true); err != nil {
 					goroku.L().Error("background database write failed", zap.String("operation", "set"), zap.String("owner", "Presets"), zap.String("key", "sent"), zap.Error(err))
 				}
 			}
@@ -152,8 +141,7 @@ func (m *Presets) ClientReady() error {
 	}
 	return nil
 }
-func (m *Presets) OnUnload() error { return nil }
-func (m *Presets) OnDlmod() error  { return nil }
+func (m *Presets) OnDlmod() error { return nil }
 
 func (m *Presets) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
@@ -206,22 +194,18 @@ func (m *Presets) CommandMetas() map[string]goroku.CommandMeta {
 	}
 }
 
-func (m *Presets) Watchers() []goroku.WatcherHandler {
-	return []goroku.WatcherHandler{}
-}
-
 func (m *Presets) HandleBotPM(msg *tgbotapi.Message) {
 	if msg == nil {
 		return
 	}
 
-	if msg.Text == "/presets" && msg.From != nil && msg.From.ID == m.client.TGID {
+	if msg.Text == "/presets" && msg.From != nil && msg.From.ID == m.Client.TGID {
 		_ = m.sendMenu(msg.Chat.ID)
 	}
 }
 
 func (m *Presets) sendMenu(chatID int64) error {
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
@@ -229,7 +213,7 @@ func (m *Presets) sendMenu(chatID int64) error {
 	var btns [][]inline.Button
 	for _, preset := range presetKeys() {
 		p := preset
-		title := m.getTrans(fmt.Sprintf("_%s_title", p), p)
+		title := m.T(fmt.Sprintf("_%s_title", p), p)
 		btns = append(btns, []inline.Button{
 			m.makeButton(title, func(call inline.CallbackQuery) error {
 				return m.ChoosePresetDetail(call, p)
@@ -239,7 +223,7 @@ func (m *Presets) sendMenu(chatID int64) error {
 
 	btns = append(btns, []inline.Button{
 		{
-			Text: m.getTrans("close_menu", "🙈 Close this menu"),
+			Text: m.T("close_menu", "🙈 Close this menu"),
 			Handler: func(call inline.CallbackQuery) error {
 				return closeForm(call)
 			},
@@ -247,7 +231,7 @@ func (m *Presets) sendMenu(chatID int64) error {
 	})
 	markup := im.GenerateMarkup(btns)
 
-	welcomeText := m.getTrans("welcome", "👋 <b>Hi there! Tired of scrolling through endless modules in channels? Let me suggest you some pre-made collections.</b>")
+	welcomeText := m.T("welcome", "👋 <b>Hi there! Tired of scrolling through endless modules in channels? Let me suggest you some pre-made collections.</b>")
 
 	photoConfig := tgbotapi.NewPhoto(chatID, tgbotapi.FileURL("https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/presets_cmd.png"))
 	photoConfig.Caption = welcomeText
@@ -256,10 +240,6 @@ func (m *Presets) sendMenu(chatID int64) error {
 
 	_, err := im.GetBotAPI().Send(photoConfig)
 	return err
-}
-
-func (m *Presets) getTrans(key, def string) string {
-	return getTrans(m.translator, m.Name(), key, def)
 }
 
 func (m *Presets) makeButton(text string, handler func(inline.CallbackQuery) error) inline.Button {
@@ -307,7 +287,7 @@ func (m *Presets) _isInstalled(link string) bool {
 }
 
 func (m *Presets) getLoadedModules() map[string]string {
-	return m.db.GetStringMap("Loader", "loaded_modules", nil)
+	return m.DB.GetStringMap("Loader", "loaded_modules", nil)
 }
 
 func downloadPresetModuleURL(link string) ([]byte, error) {
@@ -325,8 +305,7 @@ func (m *Presets) installDownloadedModule(msg *goroku.Message, modName, link str
 	}
 
 	loader := &LoaderModule{
-		client:                m.client,
-		db:                    m.db,
+		Base:                  goroku.NewBase(m.Client, m.DB),
 		installHotModuleApply: m.installHotModuleApply,
 		setLoadedModulesApply: m.setLoadedModulesApply,
 	}
@@ -334,16 +313,16 @@ func (m *Presets) installDownloadedModule(msg *goroku.Message, modName, link str
 }
 
 func (m *Presets) getCustomPresets() map[string][]string {
-	return m.db.GetStringMapStringSlice("Presets", "custom_presets", nil)
+	return m.DB.GetStringMapStringSlice("Presets", "custom_presets", nil)
 }
 
 func (m *Presets) saveCustomPresets(presets map[string][]string) error {
-	return m.db.SetStringMapStringSlice("Presets", "custom_presets", presets)
+	return m.DB.SetStringMapStringSlice("Presets", "custom_presets", presets)
 }
 
 func (m *Presets) ListPresetsCmd(msg *goroku.Message) error {
 	var text strings.Builder
-	text.WriteString(m.getTrans("welcome", "👋 <b>Hi there! Tired of scrolling through endless modules in channels? Let me suggest you some pre-made collections.</b>"))
+	text.WriteString(m.T("welcome", "👋 <b>Hi there! Tired of scrolling through endless modules in channels? Let me suggest you some pre-made collections.</b>"))
 	text.WriteString("\n\n<b>Available collections:</b>\n")
 
 	for _, k := range presetKeys() {
@@ -369,7 +348,7 @@ func (m *Presets) ListPresetsCmd(msg *goroku.Message) error {
 }
 
 func (m *Presets) PresetsCmd(msg *goroku.Message) error {
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im != nil && im.IsComplete() {
 		return m.ChoosePresetsMenu(msg)
 	}
@@ -377,7 +356,7 @@ func (m *Presets) PresetsCmd(msg *goroku.Message) error {
 }
 
 func (m *Presets) ChoosePresetsMenu(msg any) error {
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im == nil {
 		return fmt.Errorf("inline manager not ready")
 	}
@@ -385,7 +364,7 @@ func (m *Presets) ChoosePresetsMenu(msg any) error {
 	var btns [][]inline.Button
 	for _, preset := range presetKeys() {
 		p := preset
-		title := m.getTrans(fmt.Sprintf("_%s_title", p), p)
+		title := m.T(fmt.Sprintf("_%s_title", p), p)
 		btns = append(btns, []inline.Button{
 			m.makeButton(title, func(call inline.CallbackQuery) error {
 				return m.ChoosePresetDetail(call, p)
@@ -395,14 +374,14 @@ func (m *Presets) ChoosePresetsMenu(msg any) error {
 
 	btns = append(btns, []inline.Button{
 		{
-			Text: m.getTrans("close_menu", "🙈 Close this menu"),
+			Text: m.T("close_menu", "🙈 Close this menu"),
 			Handler: func(call inline.CallbackQuery) error {
 				return closeForm(call)
 			},
 		},
 	})
 
-	text := m.getTrans("welcome", "👋 <b>Hi there! Tired of scrolling through endless modules in channels? Let me suggest you some pre-made collections.</b>")
+	text := m.T("welcome", "👋 <b>Hi there! Tired of scrolling through endless modules in channels? Let me suggest you some pre-made collections.</b>")
 
 	var err error
 	if msgObj, ok := msg.(*goroku.Message); ok {
@@ -416,10 +395,10 @@ func (m *Presets) ChoosePresetsMenu(msg any) error {
 func (m *Presets) ChoosePresetDetail(call inline.CallbackQuery, preset string) error {
 	links := defaultPresets[preset]
 
-	titleTrans := m.getTrans("preset", "<b>{}:</b>\nℹ️ <i>{}</i>\n\n⚒ <b>Modules in this collection:</b>\n\n{}")
+	titleTrans := m.T("preset", "<b>{}:</b>\nℹ️ <i>{}</i>\n\n⚒ <b>Modules in this collection:</b>\n\n{}")
 
-	titleTrans = strings.Replace(titleTrans, "{}", m.getTrans(fmt.Sprintf("_%s_title", preset), preset), 1)
-	titleTrans = strings.Replace(titleTrans, "{}", m.getTrans(fmt.Sprintf("_%s_desc", preset), "Modules"), 1)
+	titleTrans = strings.Replace(titleTrans, "{}", m.T(fmt.Sprintf("_%s_title", preset), preset), 1)
+	titleTrans = strings.Replace(titleTrans, "{}", m.T(fmt.Sprintf("_%s_desc", preset), "Modules"), 1)
 
 	var modBtns []inline.Button
 	var textParts []string
@@ -431,7 +410,7 @@ func (m *Presets) ChoosePresetDetail(call inline.CallbackQuery, preset string) e
 		isInstalled := m._isInstalled(link)
 		status := "▫️"
 		if isInstalled {
-			status = m.getTrans("already_installed", "✅ [Installed]")
+			status = m.T("already_installed", "✅ [Installed]")
 			textParts = append(textParts, fmt.Sprintf("%s <b>%s</b>", status, modName))
 		} else {
 			textParts = append(textParts, fmt.Sprintf("%s <b>%s</b>", status, modName))
@@ -455,18 +434,18 @@ func (m *Presets) ChoosePresetDetail(call inline.CallbackQuery, preset string) e
 	}
 
 	var bottomRow []inline.Button
-	bottomRow = append(bottomRow, m.makeButton(m.getTrans("back", "🔙 Back"), func(c inline.CallbackQuery) error {
+	bottomRow = append(bottomRow, m.makeButton(m.T("back", "🔙 Back"), func(c inline.CallbackQuery) error {
 		return m.ChoosePresetsMenu(c)
 	}))
 
 	if len(toInstall) > 0 {
-		bottomRow = append(bottomRow, m.makeButton(m.getTrans("install", "📦 Install"), func(c inline.CallbackQuery) error {
+		bottomRow = append(bottomRow, m.makeButton(m.T("install", "📦 Install"), func(c inline.CallbackQuery) error {
 			return m.InstallPresetModules(c, preset, toInstall)
 		}))
 	}
 
 	bottomRow = append(bottomRow, inline.Button{
-		Text: m.getTrans("close_btn", "🔻 Close"),
+		Text: m.T("close_btn", "🔻 Close"),
 		Handler: func(c inline.CallbackQuery) error {
 			return closeForm(c)
 		},
@@ -477,13 +456,13 @@ func (m *Presets) ChoosePresetDetail(call inline.CallbackQuery, preset string) e
 }
 
 func (m *Presets) InstallSingleModule(call inline.CallbackQuery, preset string, link string) error {
-	if !requireOwnerCallback(m.client, call, call.FromID) {
+	if !requireOwnerCallback(m.Client, call, call.FromID) {
 		return nil
 	}
 	_ = closeForm(call)
 
-	progressMsgText := getTrans(m.translator, "Loader", "loading_module_via_file", "<tg-emoji emoji-id=5873204392429096339>🔄</tg-emoji> Loading the module...")
-	progressMsg, err := m.client.SendMessage(goroku.ChatRefID(m.client.TGID), progressMsgText)
+	progressMsgText := getTrans(m.Translator, "Loader", "loading_module_via_file", "<tg-emoji emoji-id=5873204392429096339>🔄</tg-emoji> Loading the module...")
+	progressMsg, err := m.Client.SendMessage(goroku.ChatRefID(m.Client.TGID), progressMsgText)
 	if err != nil {
 		return err
 	}
@@ -491,40 +470,40 @@ func (m *Presets) InstallSingleModule(call inline.CallbackQuery, preset string, 
 	progressMsgID := progressMsg.SentMessageID()
 	msgObj := &goroku.Message{
 		ID:     progressMsgID,
-		ChatID: m.client.TGID,
-		Client: m.client,
+		ChatID: m.Client.TGID,
+		Client: m.Client,
 	}
 
 	_, modName := moduleFileAndName(link)
 
 	bodyBytes, err := downloadPresetModuleURL(link)
 	if err != nil {
-		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, formatModuleInstallError(fmt.Errorf("download %s: %w", modName, err)))
+		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, formatModuleInstallError(fmt.Errorf("download %s: %w", modName, err)))
 		return nil
 	}
 
 	installed, err := m.installDownloadedModule(msgObj, modName, link, bodyBytes)
 	if err != nil && !errors.Is(err, goroku.ErrDatabaseCommitUncertain) {
-		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, moduleTransactionReport("Preset module install", err))
+		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, moduleTransactionReport("Preset module install", err))
 		return nil
 	}
 	if installed != nil {
-		card := formatModuleInstalledCard(installed, moduleCommandPrefix(m.db, m.client.TGID), sanitizedModuleSource(moduleSourceRepository, link), err, getTrans(m.translator, "Loader", "loaded", defaultLoadedTemplate), defaultCommandEmoji, getTrans(m.translator, "Loader", "undoc", "No docs"))
-		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, card)
+		card := formatModuleInstalledCard(installed, moduleCommandPrefix(m.DB, m.Client.TGID), sanitizedModuleSource(moduleSourceRepository, link), err, getTrans(m.Translator, "Loader", "loaded", defaultLoadedTemplate), defaultCommandEmoji, getTrans(m.Translator, "Loader", "undoc", "No docs"))
+		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, card)
 	} else {
-		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, formatModuleInstallError(errors.New("installed module is missing from the runtime registry")))
+		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, formatModuleInstallError(errors.New("installed module is missing from the runtime registry")))
 	}
 	return nil
 }
 
 func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string, links []string) error {
-	if !requireOwnerCallback(m.client, call, call.FromID) {
+	if !requireOwnerCallback(m.Client, call, call.FromID) {
 		return nil
 	}
 	_ = closeForm(call)
 
-	progressMsgText := fmt.Sprintf(m.getTrans("installing", "⏳ <b>Installing preset</b> <code>%s</code><b>...</b>"), preset)
-	progressMsg, err := m.client.SendMessage(goroku.ChatRefID(m.client.TGID), progressMsgText)
+	progressMsgText := fmt.Sprintf(m.T("installing", "⏳ <b>Installing preset</b> <code>%s</code><b>...</b>"), preset)
+	progressMsg, err := m.Client.SendMessage(goroku.ChatRefID(m.Client.TGID), progressMsgText)
 	if err != nil {
 		return err
 	}
@@ -532,8 +511,8 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 	progressMsgID := progressMsg.SentMessageID()
 	msgObj := &goroku.Message{
 		ID:     progressMsgID,
-		ChatID: m.client.TGID,
-		Client: m.client,
+		ChatID: m.Client.TGID,
+		Client: m.Client,
 	}
 
 	installed := 0
@@ -542,8 +521,8 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 	for i, link := range links {
 		_, modName := moduleFileAndName(link)
 
-		updateText := fmt.Sprintf(m.getTrans("installing_module", "⏳ <b>Installing preset %s (%d/%d modules)... Installing module %s...</b>"), html.EscapeString(preset), i+1, len(links), html.EscapeString(modName))
-		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, updateText)
+		updateText := fmt.Sprintf(m.T("installing_module", "⏳ <b>Installing preset %s (%d/%d modules)... Installing module %s...</b>"), html.EscapeString(preset), i+1, len(links), html.EscapeString(modName))
+		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, updateText)
 		bodyBytes, err := downloadPresetModuleURL(link)
 		if err != nil {
 			failed++
@@ -568,7 +547,7 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 	if installed == 0 {
 		summary = fmt.Sprintf("❌ <b>No preset modules were installed</b>\n<blockquote><b>Preset:</b> %s\n<b>Failed:</b> %d</blockquote>", html.EscapeString(preset), failed)
 	}
-	_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, summary)
+	_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, summary)
 
 	return nil
 }
@@ -746,7 +725,7 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 	}
 
 	var buf bytes.Buffer
-	err = m.client.DownloadMedia(reply.Media, &buf)
+	err = m.Client.DownloadMedia(reply.Media, &buf)
 	if err != nil {
 		_ = msg.Answer(fmt.Sprintf("❌ <b>Failed to download preset file:</b> %v", err))
 		return nil
@@ -770,7 +749,7 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im != nil && im.IsComplete() {
 		// Use an inline form for details and owner-authorized install actions.
 		var modTextLines []string
@@ -783,7 +762,7 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 			isInstalled := m._isInstalled(link)
 			status := "▫️"
 			if isInstalled {
-				status = m.getTrans("already_installed", "✅ [Installed]")
+				status = m.T("already_installed", "✅ [Installed]")
 				modTextLines = append(modTextLines, fmt.Sprintf("%s <b>%s</b>", status, modName))
 			} else {
 				modTextLines = append(modTextLines, fmt.Sprintf("%s <b>%s</b>", status, modName))
@@ -808,12 +787,12 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 
 		var bottomRow []inline.Button
 		if len(toInstall) > 0 {
-			bottomRow = append(bottomRow, m.makeButton(m.getTrans("install", "📦 Install"), func(c inline.CallbackQuery) error {
+			bottomRow = append(bottomRow, m.makeButton(m.T("install", "📦 Install"), func(c inline.CallbackQuery) error {
 				return m.InstallPresetModules(c, presetData.Name, toInstall)
 			}))
 		}
 		bottomRow = append(bottomRow, inline.Button{
-			Text: m.getTrans("close_btn", "🔻 Close"),
+			Text: m.T("close_btn", "🔻 Close"),
 			Handler: func(c inline.CallbackQuery) error {
 				return closeForm(c)
 			},
@@ -876,7 +855,7 @@ func (m *Presets) AddToFolderCmd(msg *goroku.Message) error {
 	folderName := parts[0]
 	moduleName := parts[1]
 
-	folders := m.db.GetStringMapStringSlice("presets", "folders", nil)
+	folders := m.DB.GetStringMapStringSlice("presets", "folders", nil)
 
 	list := folders[folderName]
 	found := false
@@ -892,7 +871,7 @@ func (m *Presets) AddToFolderCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	loader := m.client.Loader
+	loader := m.Client.Loader
 	if loader == nil {
 		_ = msg.Answer("❌ Modules registry not found.")
 		return nil
@@ -905,7 +884,7 @@ func (m *Presets) AddToFolderCmd(msg *goroku.Message) error {
 	}
 
 	folders[folderName] = append(list, target.Name())
-	if err := m.db.SetStringMapStringSlice("presets", "folders", folders); err != nil {
+	if err := m.DB.SetStringMapStringSlice("presets", "folders", folders); err != nil {
 		return msg.Answer(fmt.Sprintf("❌ Failed to save folder: %v", err))
 	}
 
@@ -924,7 +903,7 @@ func (m *Presets) RemoveFromFolderCmd(msg *goroku.Message) error {
 	folderName := parts[0]
 	moduleName := strings.ToLower(parts[1])
 
-	folders := m.db.GetStringMapStringSlice("presets", "folders", nil)
+	folders := m.DB.GetStringMapStringSlice("presets", "folders", nil)
 
 	list, exists := folders[folderName]
 	if !exists {
@@ -953,7 +932,7 @@ func (m *Presets) RemoveFromFolderCmd(msg *goroku.Message) error {
 		folders[folderName] = newList
 	}
 
-	if err := m.db.SetStringMapStringSlice("presets", "folders", folders); err != nil {
+	if err := m.DB.SetStringMapStringSlice("presets", "folders", folders); err != nil {
 		return msg.Answer(fmt.Sprintf("❌ Failed to save folder: %v", err))
 	}
 	_ = msg.Answer(fmt.Sprintf("✅ <b>Module %s removed from folder %s</b>", parts[1], folderName))
@@ -967,7 +946,7 @@ func (m *Presets) FolderLoadCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	folders := m.db.GetStringMapStringSlice("presets", "folders", nil)
+	folders := m.DB.GetStringMapStringSlice("presets", "folders", nil)
 
 	list, exists := folders[rawArgs]
 	if !exists {
@@ -1011,7 +990,7 @@ func (m *Presets) FolderLoadCmd(msg *goroku.Message) error {
 	caption := fmt.Sprintf("📁 <b>Folder %s exported as preset file</b>\n\n💡 Reply to this file with <code>.lp</code> to import it on another client", rawArgs)
 
 	nr := &namedReader{r: bytes.NewReader(exportBytes), name: filename}
-	_, err := m.client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
+	_, err := m.Client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
 	return err
 }
 
@@ -1023,7 +1002,7 @@ func (m *Presets) LoadAliasesCmd(msg *goroku.Message) error {
 	}
 
 	var buf bytes.Buffer
-	err = m.client.DownloadMedia(reply.Media, &buf)
+	err = m.Client.DownloadMedia(reply.Media, &buf)
 	if err != nil {
 		_ = msg.Answer(fmt.Sprintf("❌ <b>Failed to download aliases:</b> %v", err))
 		return nil
@@ -1041,13 +1020,13 @@ func (m *Presets) LoadAliasesCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	loader := m.client.Loader
+	loader := m.Client.Loader
 	if loader == nil {
 		_ = msg.Answer("❌ Modules registry not found.")
 		return nil
 	}
 
-	dbAliases := m.db.GetAnyMap("Settings", "aliases", nil)
+	dbAliases := m.DB.GetAnyMap("Settings", "aliases", nil)
 
 	loaded := []string{}
 	for _, item := range data {
@@ -1063,7 +1042,7 @@ func (m *Presets) LoadAliasesCmd(msg *goroku.Message) error {
 		}
 	}
 
-	if err := m.db.SetAnyMap("Settings", "aliases", dbAliases); err != nil {
+	if err := m.DB.SetAnyMap("Settings", "aliases", dbAliases); err != nil {
 		for _, alias := range loaded {
 			loader.RemoveAlias(alias)
 		}
@@ -1075,7 +1054,7 @@ func (m *Presets) LoadAliasesCmd(msg *goroku.Message) error {
 }
 
 func (m *Presets) AliasLoadCmd(msg *goroku.Message) error {
-	loader := m.client.Loader
+	loader := m.Client.Loader
 	if loader == nil {
 		_ = msg.Answer("❌ Modules registry not found.")
 		return nil
@@ -1103,6 +1082,6 @@ func (m *Presets) AliasLoadCmd(msg *goroku.Message) error {
 	caption := "📋 <b>Your aliases exported</b>\n\n💡 Reply to this file with <code>.la</code> to import it on another client"
 
 	nr := &namedReader{r: bytes.NewReader(exportBytes), name: filename}
-	_, err := m.client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
+	_, err := m.Client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
 	return err
 }

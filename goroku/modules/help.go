@@ -14,10 +14,7 @@ import (
 // Help implements the Module interface and provides the .help command
 // for listing all registered modules and their commands.
 type Help struct {
-	client     *goroku.CustomTelegramClient
-	db         *goroku.Database
-	translator *goroku.Translator
-
+	goroku.Base
 	// Configs
 	coreEmoji    string
 	plainEmoji   string
@@ -47,17 +44,7 @@ func (m *Help) Strings() map[string]string {
 	}
 }
 
-func (m *Help) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
-	m.client = client
-	m.db = db
-	m.translator = goroku.NewTranslator(client, db)
-	m.translator.Init()
-	return nil
-}
-
-func (m *Help) ClientReady() error { return nil }
-func (m *Help) OnUnload() error    { return nil }
-func (m *Help) OnDlmod() error     { return nil }
+func (m *Help) OnUnload() error { return nil }
 
 // ConfigSchema is the M7 typed config surface for Help.
 func (m *Help) ConfigSchema() []goroku.ConfigField {
@@ -104,18 +91,14 @@ func (m *Help) Commands() map[string]goroku.CommandHandler {
 	}
 }
 
-func (m *Help) Watchers() []goroku.WatcherHandler {
-	return []goroku.WatcherHandler{}
-}
-
 // getPrefix fetches the command prefix for the sender
 func (m *Help) getPrefix(senderID int64) string {
-	prefixes := m.db.GetStringMap("goroku.main", "prefixes", nil)
+	prefixes := m.DB.GetStringMap("goroku.main", "prefixes", nil)
 	senderStr := strconv.FormatInt(senderID, 10)
 	if customPrefix, exists := prefixes[senderStr]; exists {
 		return customPrefix
 	}
-	return m.db.GetString("goroku.main", "command_prefix", ".")
+	return m.DB.GetString("goroku.main", "command_prefix", ".")
 }
 
 // findAliases finds all aliases pointing to command
@@ -227,15 +210,15 @@ func maxInt(a, b int) int {
 func (m *Help) HelphideCmd(msg *goroku.Message) error {
 	args := utils.GetArgs(msg.Text)
 	if len(args) == 0 {
-		return msg.Answer(getTrans(m.translator, m.Name(), "no_mod", "🚫 <b>Specify module to hide</b>"))
+		return msg.Answer(getTrans(m.Translator, m.Name(), "no_mod", "🚫 <b>Specify module to hide</b>"))
 	}
 
-	loader := m.client.Loader
+	loader := m.Client.Loader
 	if loader == nil {
 		return msg.Answer("❌ Error: Modules registry not found.")
 	}
 
-	currentlyHidden := m.db.GetStringSlice("Help", "hide", nil)
+	currentlyHidden := m.DB.GetStringSlice("Help", "hide", nil)
 
 	var hidden []string
 	var shown []string
@@ -263,7 +246,7 @@ func (m *Help) HelphideCmd(msg *goroku.Message) error {
 		}
 	}
 
-	if err := m.db.SetStringSlice("Help", "hide", currentlyHidden); err != nil {
+	if err := m.DB.SetStringSlice("Help", "hide", currentlyHidden); err != nil {
 		return msg.Answer(fmt.Sprintf("❌ Failed to save help visibility: %v", err))
 	}
 
@@ -279,14 +262,14 @@ func (m *Help) HelphideCmd(msg *goroku.Message) error {
 	}
 	shownStr := strings.Join(shownList, "\n")
 
-	tpl := getTrans(m.translator, m.Name(), "hidden_shown", "<b>{} modules hidden, {} modules shown:</b>\n{}\n{}")
+	tpl := getTrans(m.Translator, m.Name(), "hidden_shown", "<b>{} modules hidden, {} modules shown:</b>\n{}\n{}")
 	resp := formatPositional(tpl, len(hidden), len(shown), hiddenStr, shownStr)
 	return msg.Answer(resp)
 }
 
 // HelpCmd handles the .help [module] command.
 func (m *Help) HelpCmd(msg *goroku.Message) error {
-	loader := m.client.Loader
+	loader := m.Client.Loader
 	if loader == nil {
 		return msg.Answer("❌ Error: Modules registry not found.")
 	}
@@ -340,7 +323,7 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 	args := strings.TrimSpace(argsRaw)
 	modulesList := loader.GetModules()
 
-	currentlyHidden := m.db.GetStringSlice("Help", "hide", nil)
+	currentlyHidden := m.DB.GetStringSlice("Help", "hide", nil)
 
 	prefix := m.getPrefix(msg.SenderID)
 
@@ -366,7 +349,7 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 			}
 		}
 
-		replyTemplate := getTrans(m.translator, m.Name(), "all_header", "<b>{} mods available, {} hidden:</b>")
+		replyTemplate := getTrans(m.Translator, m.Name(), "all_header", "<b>{} mods available, {} hidden:</b>")
 		replyHeader := formatPositional(replyTemplate, len(modulesList), hiddenCount)
 		shownWarn := false
 
@@ -436,7 +419,7 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 				}
 			} else {
 				if !shownWarn {
-					replyTemplate := getTrans(m.translator, m.Name(), "only_allowed_warn", "<i>You have permissions to execute only these commands</i>\n")
+					replyTemplate := getTrans(m.Translator, m.Name(), "only_allowed_warn", "<i>You have permissions to execute only these commands</i>\n")
 					replyHeader = replyTemplate + replyHeader
 					shownWarn = true
 				}
@@ -461,7 +444,7 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 			contentBuilder.WriteString(formatHelpQuote(plainEntries))
 		}
 		if loaderModule, ok := loader.LookupByName("Loader").(*LoaderModule); ok && !loaderModule.FullyLoaded() {
-			contentBuilder.WriteString("\n\n" + getTrans(m.translator, m.Name(), "partial_load", "<tg-emoji emoji-id=5355133243773435190>☝️</tg-emoji> <b>Userbot is not fully loaded, so not all modules are shown</b>"))
+			contentBuilder.WriteString("\n\n" + getTrans(m.Translator, m.Name(), "partial_load", "<tg-emoji emoji-id=5355133243773435190>☝️</tg-emoji> <b>Userbot is not fully loaded, so not all modules are shown</b>"))
 		}
 
 		responseText = contentBuilder.String()
@@ -511,7 +494,7 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 		if val, exists := found.Strings()["name"]; exists {
 			name = val
 		}
-		name = getTrans(m.translator, found.Name(), "name", name)
+		name = getTrans(m.Translator, found.Name(), "name", name)
 		nameEsc := escapeHTMLExceptAllowed(name)
 
 		reply := fmt.Sprintf("%s <b>%s</b>:", descIcon, nameEsc)
@@ -520,7 +503,7 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 		if val, exists := found.Strings()["_cls_doc"]; exists {
 			defClsDoc = val
 		}
-		clsDoc := getTrans(m.translator, found.Name(), "_cls_doc", defClsDoc)
+		clsDoc := getTrans(m.Translator, found.Name(), "_cls_doc", defClsDoc)
 		if clsDoc != "" {
 			reply += fmt.Sprintf("\n<i>ℹ️ %s\n</i>", escapeHTMLExceptAllowed(clsDoc))
 		}
@@ -546,11 +529,11 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 				aliasStr = fmt.Sprintf(" (%s)", strings.Join(aliasPieces, ", "))
 			}
 
-			defDoc := getTrans(m.translator, "Help", "undoc", "🦥 No docs")
+			defDoc := getTrans(m.Translator, "Help", "undoc", "🦥 No docs")
 			if val, exists := found.Strings()["_cmd_doc_"+cmd]; exists {
 				defDoc = val
 			}
-			doc := getTrans(m.translator, found.Name(), "_cmd_doc_"+cmd, defDoc)
+			doc := getTrans(m.Translator, found.Name(), "_cmd_doc_"+cmd, defDoc)
 			escapedDoc := escapeHTMLExceptAllowed(doc)
 
 			lines = append(lines, fmt.Sprintf("%s <code>%s%s</code>%s %s", commandEmoji, html.EscapeString(prefix), cmd, aliasStr, escapedDoc))
@@ -563,10 +546,10 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 
 		resp := fmt.Sprintf("%s<blockquote expandable>%s</blockquote>", reply, cmdsStr)
 		if !exact {
-			resp += "\n" + getTrans(m.translator, "Help", "not_exact", "<tg-emoji emoji-id=5355133243773435190>☝️</tg-emoji> <b>No exact match occured, so the closest result is shown instead</b>")
+			resp += "\n" + getTrans(m.Translator, "Help", "not_exact", "<tg-emoji emoji-id=5355133243773435190>☝️</tg-emoji> <b>No exact match occured, so the closest result is shown instead</b>")
 		}
 		if isCoreModule(found.Name()) {
-			resp += "\n" + getTrans(m.translator, "Help", "core_notice", "<tg-emoji emoji-id=5355133243773435190>☝️</tg-emoji> <b>This is a core module. You can't unload it nor replace</b>")
+			resp += "\n" + getTrans(m.Translator, "Help", "core_notice", "<tg-emoji emoji-id=5355133243773435190>☝️</tg-emoji> <b>This is a core module. You can't unload it nor replace</b>")
 		}
 
 		responseText = resp

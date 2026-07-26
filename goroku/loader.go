@@ -220,6 +220,10 @@ func (m *Modules) registerModule(mod Module, ready func() error) error {
 	if withTranslator, ok := mod.(ModuleWithTranslator); ok {
 		withTranslator.SetTranslator(NewTranslator(m.client, m.db))
 	}
+	// Populate an embedded Base before Init, so a module that declares its own
+	// Init still finds Client/DB/Translator ready rather than having to call
+	// back into Base. Modules that do not embed Base are unaffected.
+	bindModuleBase(mod, m.client, m.db)
 
 	if err := mod.Init(m.client, m.db); err != nil {
 		initErr := fmt.Errorf("failed to init module %s: %w", name, err)

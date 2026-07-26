@@ -1735,7 +1735,7 @@ func TestRestoreLaterFileApplyFailureRollsBackFilesAndDB(t *testing.T) {
 	}
 	applyCalls := 0
 	m := &GorokuBackup{
-		db:                      db,
+		Base:                    goroku.Base{DB: db},
 		compileModuleValidation: acceptModuleCompilation,
 		restoreApplyFile: func(source, destination string) error {
 			applyCalls++
@@ -1938,7 +1938,7 @@ func TestBackupRedactsInlineAndModuleMetadataSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := newBackupTestModule(db)
-	m.client = client
+	m.Client = client
 
 	backup, err := m.buildDBJSON()
 	if err != nil {
@@ -1963,7 +1963,7 @@ func TestRestorePreservesExistingSecretsInsteadOfWritingMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := newBackupTestModule(db)
-	m.client = client
+	m.Client = client
 	if err := db.Reset(map[string]map[string]any{
 		"goroku.inline":    {"bot_token": "old-inline"},
 		"BackupSecretTest": {"credential": "old-module", "public": "from-backup"},
@@ -2001,7 +2001,7 @@ func TestBackupLifecyclePeriodReadsPropagateUnavailableDatabase(t *testing.T) {
 		t.Fatalf("Init() error = %v, want database lifecycle error", err)
 	}
 
-	m := &GorokuBackup{db: db, backupPeriod: 6 * time.Hour}
+	m := &GorokuBackup{Base: goroku.Base{DB: db}, backupPeriod: 6 * time.Hour}
 	if err := m.ClientReady(); !errors.Is(err, goroku.ErrDatabaseNotInitialized) {
 		t.Fatalf("ClientReady() error = %v, want database lifecycle error", err)
 	}
@@ -2032,7 +2032,7 @@ func TestSetBackupPeriodPersistenceFailureDoesNotMarkScheduleSuccessful(t *testi
 	oldPeriod := 12 * time.Hour
 	oldBackup := time.Unix(123, 0)
 	m := &GorokuBackup{
-		db:           goroku.NewDatabase(1),
+		Base:         goroku.Base{DB: goroku.NewDatabase(1)},
 		backupPeriod: oldPeriod,
 		lastBackup:   oldBackup,
 	}
@@ -2049,7 +2049,7 @@ func TestSetBackupPeriodPersistenceFailureDoesNotMarkScheduleSuccessful(t *testi
 func TestUpdaterPrepareRestartPersistenceFailureDoesNotRestart(t *testing.T) {
 	restarted := false
 	m := &Updater{
-		db:      goroku.NewDatabase(1),
+		Base:    goroku.Base{DB: goroku.NewDatabase(1)},
 		restart: func() { restarted = true },
 	}
 
@@ -2118,7 +2118,7 @@ func TestRestoreDatabaseRejectsInvalidTopLevelPayloadWithoutReset(t *testing.T) 
 				t.Fatal(err)
 			}
 			resetCalls := 0
-			m := &GorokuBackup{db: db, compileModuleValidation: acceptModuleCompilation, restoreDBReset: func(data map[string]map[string]any) error {
+			m := &GorokuBackup{Base: goroku.Base{DB: db}, compileModuleValidation: acceptModuleCompilation, restoreDBReset: func(data map[string]map[string]any) error {
 				resetCalls++
 				return db.Reset(data)
 			}}
@@ -2269,7 +2269,7 @@ func (*AliasCompatible) Watchers() []Watcher { return nil }
 		"alias.go":     source,
 	})
 
-	if err := (&GorokuBackup{db: newBackupTestDB(t)}).restoreModulesFromData(mods); err != nil {
+	if err := (&GorokuBackup{Base: goroku.Base{DB: newBackupTestDB(t)}}).restoreModulesFromData(mods); err != nil {
 		t.Fatalf("supported module restore failed: %v", err)
 	}
 	if _, err := os.Stat(initMarker); !os.IsNotExist(err) {
@@ -2282,7 +2282,7 @@ func (*AliasCompatible) Watchers() []Watcher { return nil }
 		"db_mods.json": []byte(`{"alias":"local"}`),
 		"alias.go":     invalid,
 	})
-	if err := (&GorokuBackup{db: newBackupTestDB(t)}).restoreModulesFromData(mods); err == nil || !strings.Contains(err.Error(), "plugin build failed") {
+	if err := (&GorokuBackup{Base: goroku.Base{DB: newBackupTestDB(t)}}).restoreModulesFromData(mods); err == nil || !strings.Contains(err.Error(), "plugin build failed") {
 		t.Fatalf("production validation error = %v, want type-check failure", err)
 	}
 	if _, err := os.Stat(initMarker); !os.IsNotExist(err) {
@@ -2461,7 +2461,7 @@ func (*backupSecretTestModule) ConfigValidators() map[string]goroku.Validator {
 }
 
 func newBackupTestModule(db *goroku.Database) *GorokuBackup {
-	return &GorokuBackup{db: db, compileModuleValidation: acceptModuleCompilation}
+	return &GorokuBackup{Base: goroku.Base{DB: db}, compileModuleValidation: acceptModuleCompilation}
 }
 
 func acceptModuleCompilation(string, []byte) error { return nil }

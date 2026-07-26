@@ -19,9 +19,7 @@ import (
 )
 
 type GorokuSecurity struct {
-	client     *goroku.CustomTelegramClient
-	db         *goroku.Database
-	translator *goroku.Translator
+	goroku.Base
 }
 
 func (m *GorokuSecurity) Name() string {
@@ -34,19 +32,10 @@ func (m *GorokuSecurity) Strings() map[string]string {
 	}
 }
 
-func (m *GorokuSecurity) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
-	m.client = client
-	m.db = db
-	m.translator = goroku.NewTranslator(client, db)
-	m.translator.Init()
-	return nil
-}
-
 func (m *GorokuSecurity) ClientReady() error {
 	return m.applyGroupsToManager()
 }
-func (m *GorokuSecurity) OnUnload() error { return nil }
-func (m *GorokuSecurity) OnDlmod() error  { return nil }
+func (m *GorokuSecurity) OnDlmod() error { return nil }
 
 func (m *GorokuSecurity) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
@@ -83,14 +72,6 @@ func (m *GorokuSecurity) CommandMetas() map[string]goroku.CommandMeta {
 	}
 }
 
-func (m *GorokuSecurity) Watchers() []goroku.WatcherHandler {
-	return []goroku.WatcherHandler{}
-}
-
-func (m *GorokuSecurity) getTrans(key, def string) string {
-	return getTrans(m.translator, m.Name(), key, def)
-}
-
 // securityGroup holds a named group of users with permissions.
 type securityGroup struct {
 	Users       []int64          `json:"users"`
@@ -98,12 +79,12 @@ type securityGroup struct {
 }
 
 func (m *GorokuSecurity) loadGroups() (map[string]securityGroup, error) {
-	raw, err := m.db.Get("goroku.security", "sgroups", nil)
+	raw, err := m.DB.Get("goroku.security", "sgroups", nil)
 	if err != nil {
 		return nil, err
 	}
 	if raw == nil {
-		raw, err = m.db.Get("goroku.security", "security_groups", map[string]any{})
+		raw, err = m.DB.Get("goroku.security", "security_groups", map[string]any{})
 		if err != nil {
 			return nil, err
 		}
@@ -117,7 +98,7 @@ func (m *GorokuSecurity) loadGroups() (map[string]securityGroup, error) {
 			for name, group := range typedGroups {
 				rawMap[name] = securityGroup{Users: group.Users, Permissions: group.Permissions}
 			}
-			if err := m.db.Set("goroku.security", "sgroups", rawMap); err != nil {
+			if err := m.DB.Set("goroku.security", "sgroups", rawMap); err != nil {
 				return nil, fmt.Errorf("migrate security groups: %w", err)
 			}
 		} else {
@@ -146,7 +127,7 @@ func (m *GorokuSecurity) saveGroups(groups map[string]securityGroup) error {
 		for k, v := range groups {
 			out[k] = v
 		}
-		return m.db.Set("goroku.security", "sgroups", out)
+		return m.DB.Set("goroku.security", "sgroups", out)
 	}
 	smGroups := make(map[string]goroku.SecurityGroup, len(groups))
 	for name, group := range groups {
@@ -164,7 +145,7 @@ func (m *GorokuSecurity) getOwnerList() *goroku.PointerList[int64] {
 }
 
 func (m *GorokuSecurity) getSecurityManager() *goroku.SecurityManager {
-	loader := m.client.Loader
+	loader := m.Client.Loader
 	if loader == nil {
 		return nil
 	}
@@ -204,10 +185,10 @@ func userClassFromFull(full any) any {
 
 func (m *GorokuSecurity) resolveSecurityUser(ref any) (resolvedSecurityUser, bool) {
 	var res resolvedSecurityUser
-	if m.client == nil {
+	if m.Client == nil {
 		return res, false
 	}
-	peer, err := m.client.ResolvePeer(ref)
+	peer, err := m.Client.ResolvePeer(ref)
 	if err != nil {
 		if id, ok := ref.(int64); ok && id > 0 {
 			res.ID = id
@@ -217,14 +198,14 @@ func (m *GorokuSecurity) resolveSecurityUser(ref any) (resolvedSecurityUser, boo
 		}
 		return res, false
 	}
-	id := inputPeerUserID(peer, m.client.TGID)
+	id := inputPeerUserID(peer, m.Client.TGID)
 	if id == 0 {
 		return res, false
 	}
 	res.ID = id
 	res.Name = fmt.Sprintf("User%d", id)
 	res.URL = fmt.Sprintf("tg://user?id=%d", id)
-	if full, err := m.client.GetFullUser(ref, 3600, false); err == nil {
+	if full, err := m.Client.GetFullUser(ref, 3600, false); err == nil {
 		entity := userClassFromFull(full)
 		if name := getDisplayName(entity); name != "" {
 			res.Name = name
@@ -250,7 +231,7 @@ func (m *GorokuSecurity) resolveUserFromMessage(msg *goroku.Message) (resolvedSe
 			return m.resolveSecurityUser(replyMsg.SenderID)
 		}
 	}
-	if msg.IsPrivate && msg.ChatID != m.client.TGID {
+	if msg.IsPrivate && msg.ChatID != m.Client.TGID {
 		return m.resolveSecurityUser(msg.ChatID)
 	}
 	return resolvedSecurityUser{}, false
@@ -328,7 +309,7 @@ func parseUserID(client *goroku.CustomTelegramClient, arg string) (int64, string
 func (m *GorokuSecurity) OwnerCmd(msg *goroku.Message) error {
 	ol := m.getOwnerList()
 	if ol == nil {
-		return msg.Answer(m.getTrans("no_owner", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Нет пользователей в группе</b> <code>owner</code>"))
+		return msg.Answer(m.T("no_owner", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Нет пользователей в группе</b> <code>owner</code>"))
 	}
 
 	seen := map[int64]bool{}
@@ -344,19 +325,19 @@ func (m *GorokuSecurity) OwnerCmd(msg *goroku.Message) error {
 			users = append(users, resolvedSecurityUser{ID: id, Name: fmt.Sprintf("User%d", id), URL: fmt.Sprintf("tg://user?id=%d", id)})
 		}
 	}
-	if m.client != nil && m.client.TGID != 0 && !seen[m.client.TGID] {
-		if u, ok := m.resolveSecurityUser(m.client.TGID); ok {
+	if m.Client != nil && m.Client.TGID != 0 && !seen[m.Client.TGID] {
+		if u, ok := m.resolveSecurityUser(m.Client.TGID); ok {
 			users = append(users, u)
 		} else {
-			users = append(users, resolvedSecurityUser{ID: m.client.TGID, Name: fmt.Sprintf("User%d", m.client.TGID), URL: fmt.Sprintf("tg://user?id=%d", m.client.TGID)})
+			users = append(users, resolvedSecurityUser{ID: m.Client.TGID, Name: fmt.Sprintf("User%d", m.Client.TGID), URL: fmt.Sprintf("tg://user?id=%d", m.Client.TGID)})
 		}
 	}
 
 	if len(users) == 0 {
-		return msg.Answer(m.getTrans("no_owner", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Нет пользователей в группе</b> <code>owner</code>"))
+		return msg.Answer(m.T("no_owner", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Нет пользователей в группе</b> <code>owner</code>"))
 	}
 
-	prefixes := m.db.GetStringMap("goroku.main", "command_prefixes", nil)
+	prefixes := m.DB.GetStringMap("goroku.main", "command_prefixes", nil)
 	var lines []string
 	for _, u := range users {
 		line := fmt.Sprintf("<tg-emoji emoji-id=4974307891025543730>▫️</tg-emoji> <b><a href=\"%s\">%s</a></b>", u.URL, utils.EscapeHTML(u.Name))
@@ -366,20 +347,20 @@ func (m *GorokuSecurity) OwnerCmd(msg *goroku.Message) error {
 		lines = append(lines, line)
 	}
 
-	template := m.getTrans("owner_list", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Пользователи группы</b> <code>owner</code><b>:</b>\n\n<blockquote expandable>{0}</blockquote>")
+	template := m.T("owner_list", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Пользователи группы</b> <code>owner</code><b>:</b>\n\n<blockquote expandable>{0}</blockquote>")
 	return msg.Answer(formatTrans(template, strings.Join(lines, "\n")))
 }
 
 func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 	user, ok := m.resolveUserFromMessage(msg)
 	if !ok {
-		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Укажи, кому выдавать права</b>"))
+		return msg.Answer(m.T("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Укажи, кому выдавать права</b>"))
 	}
-	if user.ID == m.client.TGID {
-		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</tg-emoji> <b>Нельзя управлять своими правами!</b>"))
+	if user.ID == m.Client.TGID {
+		return msg.Answer(m.T("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</tg-emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im == nil || !im.IsComplete() {
 		sm := m.getSecurityManager()
 		if sm == nil {
@@ -388,23 +369,23 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 		if _, err := sm.AddOwner(user.ID); err != nil {
 			return err
 		}
-		template := m.getTrans("owner_added", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> добавлен в группу</b> <code>owner</code>")
+		template := m.T("owner_added", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> добавлен в группу</b> <code>owner</code>")
 		return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), utils.EscapeHTML(user.Name)))
 	}
 
-	warningTemplate := m.getTrans("warning", "⚠️ <b>Ты действительно хочешь добавить <a href=\"tg://user?id={0}\">{1}</a> в группу <code>{2}</code>!</b>")
+	warningTemplate := m.T("warning", "⚠️ <b>Ты действительно хочешь добавить <a href=\"tg://user?id={0}\">{1}</a> в группу <code>{2}</code>!</b>")
 	warningText := formatTrans(warningTemplate, strconv.FormatInt(user.ID, 10), utils.EscapeHTML(user.Name), "owner")
 
 	markup := [][]inline.Button{
 		{
 			{
-				Text: m.getTrans("cancel", "🚫 Отмена"),
+				Text: m.T("cancel", "🚫 Отмена"),
 				Handler: func(call inline.CallbackQuery) error {
 					return closeForm(call)
 				},
 			},
 			{
-				Text: m.getTrans("confirm", "👑 Подтвердить"),
+				Text: m.T("confirm", "👑 Подтвердить"),
 				Handler: func(call inline.CallbackQuery) error {
 					sm := m.getSecurityManager()
 					if sm == nil {
@@ -414,24 +395,24 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 						return err
 					}
 
-					addedTemplate := m.getTrans("owner_added", "добавлен в группу owner")
+					addedTemplate := m.T("owner_added", "добавлен в группу owner")
 					addedText := formatTrans(addedTemplate, strconv.FormatInt(user.ID, 10), utils.EscapeHTML(user.Name))
 
-					suggestTemplate := m.getTrans("suggest_nonick", "Хочешь ли ты включить NoNick для этого пользователя?")
+					suggestTemplate := m.T("suggest_nonick", "Хочешь ли ты включить NoNick для этого пользователя?")
 					fullText := addedText + "\n\n" + suggestTemplate
 
 					noNickMarkup := [][]inline.Button{
 						{
 							{
-								Text: m.getTrans("cancel", "🚫 Отмена"),
+								Text: m.T("cancel", "🚫 Отмена"),
 								Handler: func(callSub inline.CallbackQuery) error {
 									return closeForm(callSub)
 								},
 							},
 							{
-								Text: m.getTrans("enable_nonick_btn", "🔰 Включить"),
+								Text: m.T("enable_nonick_btn", "🔰 Включить"),
 								Handler: func(callSub inline.CallbackQuery) error {
-									list := m.db.GetInt64Slice("goroku.main", "nonickusers", nil)
+									list := m.DB.GetInt64Slice("goroku.main", "nonickusers", nil)
 									alreadyIn := false
 									for _, id := range list {
 										if id == user.ID {
@@ -441,12 +422,12 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 									}
 									if !alreadyIn {
 										list = append(list, user.ID)
-										if err := m.db.SetInt64Slice("goroku.main", "nonickusers", list); err != nil {
+										if err := m.DB.SetInt64Slice("goroku.main", "nonickusers", list); err != nil {
 											return err
 										}
 									}
 
-									nnTemplate := m.getTrans("user_nn", "NoNick для ... включен")
+									nnTemplate := m.T("user_nn", "NoNick для ... включен")
 									nnText := formatTrans(nnTemplate, strconv.FormatInt(user.ID, 10), utils.EscapeHTML(user.Name))
 									return callSub.Edit(nnText, tgbotapi.InlineKeyboardMarkup{})
 								},
@@ -467,10 +448,10 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 func (m *GorokuSecurity) DelownerCmd(msg *goroku.Message) error {
 	user, ok := m.resolveUserFromMessage(msg)
 	if !ok {
-		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Укажи, кому выдавать права</b>"))
+		return msg.Answer(m.T("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Укажи, кому выдавать права</b>"))
 	}
-	if user.ID == m.client.TGID {
-		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</tg-emoji> <b>Нельзя управлять своими правами!</b>"))
+	if user.ID == m.Client.TGID {
+		return msg.Answer(m.T("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</tg-emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
 	sm := m.getSecurityManager()
@@ -480,12 +461,12 @@ func (m *GorokuSecurity) DelownerCmd(msg *goroku.Message) error {
 	if _, err := sm.RemoveOwner(user.ID); err != nil {
 		return err
 	}
-	template := m.getTrans("owner_removed", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> удален из группы</b> <code>owner</code>")
+	template := m.T("owner_removed", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> удален из группы</b> <code>owner</code>")
 	return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), utils.EscapeHTML(user.Name)))
 }
 
 func (m *GorokuSecurity) SudoCmd(msg *goroku.Message) error {
-	sudoList := m.db.GetInt64Slice("goroku.security", "sudo", nil)
+	sudoList := m.DB.GetInt64Slice("goroku.security", "sudo", nil)
 	var lines []string
 	for _, id := range sudoList {
 		if id != 0 {
@@ -494,11 +475,11 @@ func (m *GorokuSecurity) SudoCmd(msg *goroku.Message) error {
 	}
 
 	if len(lines) == 0 {
-		template := m.getTrans("no_owner", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Нет пользователей в группе</b> <code>owner</code>")
+		template := m.T("no_owner", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Нет пользователей в группе</b> <code>owner</code>")
 		return msg.Answer(strings.ReplaceAll(template, "owner", "sudo"))
 	}
 
-	template := m.getTrans("owner_list", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Пользователи группы</b> <code>owner</code><b>:</b>\n\n<blockquote expandable>{0}</blockquote>")
+	template := m.T("owner_list", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b>Пользователи группы</b> <code>owner</code><b>:</b>\n\n<blockquote expandable>{0}</blockquote>")
 	template = strings.ReplaceAll(template, "owner", "sudo")
 	return msg.Answer(formatTrans(template, strings.Join(lines, "\n")))
 }
@@ -506,14 +487,14 @@ func (m *GorokuSecurity) SudoCmd(msg *goroku.Message) error {
 func (m *GorokuSecurity) AddsudoCmd(msg *goroku.Message) error {
 	user, ok := m.resolveUserFromMessage(msg)
 	if !ok {
-		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
+		return msg.Answer(m.T("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
 	}
 
-	if user.ID == m.client.TGID {
-		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
+	if user.ID == m.Client.TGID {
+		return msg.Answer(m.T("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
-	raw := m.db.GetInt64Slice("goroku.security", "sudo", nil)
+	raw := m.DB.GetInt64Slice("goroku.security", "sudo", nil)
 	sudoList := make([]int64, len(raw))
 	copy(sudoList, raw)
 	alreadyPresent := false
@@ -525,7 +506,7 @@ func (m *GorokuSecurity) AddsudoCmd(msg *goroku.Message) error {
 	}
 	if !alreadyPresent {
 		sudoList = append(sudoList, user.ID)
-		if err := m.db.SetInt64Slice("goroku.security", "sudo", sudoList); err != nil {
+		if err := m.DB.SetInt64Slice("goroku.security", "sudo", sudoList); err != nil {
 			return err
 		}
 		if sm := m.getSecurityManager(); sm != nil {
@@ -533,7 +514,7 @@ func (m *GorokuSecurity) AddsudoCmd(msg *goroku.Message) error {
 		}
 	}
 
-	template := m.getTrans("owner_added", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> добавлен в группу</b> <code>owner</code>")
+	template := m.T("owner_added", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> добавлен в группу</b> <code>owner</code>")
 	template = strings.ReplaceAll(template, "owner", "sudo")
 	return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), user.Name))
 }
@@ -541,14 +522,14 @@ func (m *GorokuSecurity) AddsudoCmd(msg *goroku.Message) error {
 func (m *GorokuSecurity) DelsudoCmd(msg *goroku.Message) error {
 	user, ok := m.resolveUserFromMessage(msg)
 	if !ok {
-		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
+		return msg.Answer(m.T("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
 	}
 
-	if user.ID == m.client.TGID {
-		return msg.Answer(m.getTrans("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
+	if user.ID == m.Client.TGID {
+		return msg.Answer(m.T("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
-	raw := m.db.GetInt64Slice("goroku.security", "sudo", nil)
+	raw := m.DB.GetInt64Slice("goroku.security", "sudo", nil)
 	foundIdx := -1
 	for idx, id := range raw {
 		if id == user.ID {
@@ -558,7 +539,7 @@ func (m *GorokuSecurity) DelsudoCmd(msg *goroku.Message) error {
 	}
 	if foundIdx != -1 {
 		sudoList := append(raw[:foundIdx], raw[foundIdx+1:]...)
-		if err := m.db.SetInt64Slice("goroku.security", "sudo", sudoList); err != nil {
+		if err := m.DB.SetInt64Slice("goroku.security", "sudo", sudoList); err != nil {
 			return err
 		}
 		if sm := m.getSecurityManager(); sm != nil {
@@ -566,7 +547,7 @@ func (m *GorokuSecurity) DelsudoCmd(msg *goroku.Message) error {
 		}
 	}
 
-	template := m.getTrans("owner_removed", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> удален из группы</b> <code>owner</code>")
+	template := m.T("owner_removed", "<tg-emoji emoji-id=5386399931378440814>😎</tg-emoji> <b><a href=\"tg://user?id={0}\">{1}</a> удален из группы</b> <code>owner</code>")
 	template = strings.ReplaceAll(template, "owner", "sudo")
 	return msg.Answer(formatTrans(template, strconv.FormatInt(user.ID, 10), user.Name))
 }
@@ -578,45 +559,45 @@ func (m *GorokuSecurity) SecurityCmd(msg *goroku.Message) error {
 		args = strings.TrimSpace(parts[1])
 	}
 
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im == nil || !im.IsComplete() {
 		if args != "" {
-			loader := m.client.Loader
+			loader := m.Client.Loader
 			if loader == nil {
 				return msg.Answer("❌ Error: Modules loader not ready.")
 			}
 			_, exists := loader.Dispatch(args)
 			if !exists {
-				template := m.getTrans("no_command", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Команда</b> <code>{0}</code> <b>не найдена!</b>")
+				template := m.T("no_command", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Команда</b> <code>{0}</code> <b>не найдена!</b>")
 				return msg.Answer(formatTrans(template, args))
 			}
 
-			template := m.getTrans("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
-			prefix := m.db.GetString("goroku.main", "command_prefix", ".")
+			template := m.T("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
+			prefix := m.DB.GetString("goroku.main", "command_prefix", ".")
 			return msg.Answer(formatTrans(template, prefix, args))
 		}
-		return msg.Answer(m.getTrans("global", "🔐 <b>Здесь можно настроить глобальную исключающую маску. Если тумблер выключен здесь, он выключен для всех команд</b>"))
+		return msg.Answer(m.T("global", "🔐 <b>Здесь можно настроить глобальную исключающую маску. Если тумблер выключен здесь, он выключен для всех команд</b>"))
 	}
 
 	if args == "" {
-		text := m.getTrans("global", "🔐 <b>Здесь можно настроить глобальную исключающую маску. Если тумблер выключен здесь, он выключен для всех команд</b>")
+		text := m.T("global", "🔐 <b>Здесь можно настроить глобальную исключающую маску. Если тумблер выключен здесь, он выключен для всех команд</b>")
 		markup := m.buildMarkupGlobal(false)
 		_, err := im.Form(text, msg, markup)
 		return err
 	}
 
-	loader := m.client.Loader
+	loader := m.Client.Loader
 	if loader == nil {
 		return msg.Answer("❌ Error: Modules loader not ready.")
 	}
 	_, exists := loader.Dispatch(args)
 	if !exists {
-		template := m.getTrans("no_command", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Команда</b> <code>{0}</code> <b>не найдена!</b>")
+		template := m.T("no_command", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Команда</b> <code>{0}</code> <b>не найдена!</b>")
 		return msg.Answer(formatTrans(template, args))
 	}
 
-	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
-	template := m.getTrans("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
+	prefix := m.DB.GetString("goroku.main", "command_prefix", ".")
+	template := m.T("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
 	textFormatted := formatTrans(template, prefix, args)
 
 	markup := m.buildMarkupCommand(args, false)
@@ -637,7 +618,7 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 
 	targetType := strings.ToLower(args[0])
 	if targetType != "user" && targetType != "chat" && targetType != "sgroup" {
-		return msg.Answer(m.getTrans("what", "Вам нужно указать тип цели первым аргументом (user, chat, sgroup)"))
+		return msg.Answer(m.T("what", "Вам нужно указать тип цели первым аргументом (user, chat, sgroup)"))
 	}
 
 	var targetID int64
@@ -649,7 +630,7 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 
 	if targetType == "sgroup" {
 		if len(args) < 2 {
-			return msg.Answer(m.getTrans("no_target", "Не указана цель правила безопасности"))
+			return msg.Answer(m.T("no_target", "Не указана цель правила безопасности"))
 		}
 		targetName = args[1]
 		groups, err := m.loadGroups()
@@ -657,7 +638,7 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 			return err
 		}
 		if _, exists := groups[targetName]; !exists {
-			template := m.getTrans("sgroup_not_found", "Группа безопасности {0} не найдена")
+			template := m.T("sgroup_not_found", "Группа безопасности {0} не найдена")
 			return msg.Answer(formatTrans(template, targetName))
 		}
 		ruleArgsStart = 2
@@ -676,12 +657,12 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 				}
 			}
 			if !isTimeArg {
-				uid, uname := parseUserID(m.client, arg)
+				uid, uname := parseUserID(m.Client, arg)
 				if uid != 0 {
 					targetID = uid
 					targetName = uname
 					targetURL = fmt.Sprintf("tg://user?id=%d", uid)
-					if full, err := m.client.GetFullUser(uid, 3600, false); err == nil {
+					if full, err := m.Client.GetFullUser(uid, 3600, false); err == nil {
 						if display := getDisplayName(userClassFromFull(full)); display != "" {
 							targetName = display
 						}
@@ -705,11 +686,11 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 				targetID = msg.ChatID
 			}
 			if targetID == 0 {
-				return msg.Answer(m.getTrans("no_target", "Не указан пользователь"))
+				return msg.Answer(m.T("no_target", "Не указан пользователь"))
 			}
 			targetName = fmt.Sprintf("User%d", targetID)
 			targetURL = fmt.Sprintf("tg://user?id=%d", targetID)
-			if full, err := m.client.GetFullUser(targetID, 3600, false); err == nil {
+			if full, err := m.Client.GetFullUser(targetID, 3600, false); err == nil {
 				if display := getDisplayName(userClassFromFull(full)); display != "" {
 					targetName = display
 				}
@@ -721,7 +702,7 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 
 		ol := m.getOwnerList()
 		if pointerContainsID(ol, targetID) {
-			return msg.Answer(m.getTrans("owner_target", "Этот пользователь - владелец..."))
+			return msg.Answer(m.T("owner_target", "Этот пользователь - владелец..."))
 		}
 	} else if targetType == "chat" {
 		hasChatArg := false
@@ -747,19 +728,19 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 		}
 		if !hasChatArg {
 			if msg.IsPrivate {
-				return msg.Answer(m.getTrans("no_target", "Не указана цель правила безопасности"))
+				return msg.Answer(m.T("no_target", "Не указана цель правила безопасности"))
 			}
 			targetID = msg.ChatID
 		}
 		targetName = fmt.Sprintf("Chat%d", targetID)
 		targetURL = ""
-		if peer, err := m.client.ResolvePeer(targetID); err == nil {
+		if peer, err := m.Client.ResolvePeer(targetID); err == nil {
 			targetURL = utils.GetEntityURL(peer, false)
 		}
 	}
 
 	if len(args) <= ruleArgsStart {
-		return msg.Answer(m.getTrans("no_rule", "Не указано правило безопасности"))
+		return msg.Answer(m.T("no_rule", "Не указано правило безопасности"))
 	}
 
 	var possibleRules []string
@@ -781,25 +762,25 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 	}
 
 	if len(possibleRules) == 0 {
-		return msg.Answer(m.getTrans("no_rule", "Не указано правило безопасности"))
+		return msg.Answer(m.T("no_rule", "Не указано правило безопасности"))
 	}
 
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if len(possibleRules) > 1 && im != nil && im.IsComplete() {
 		var lines []string
 		for _, rule := range possibleRules {
 			ruleParts := strings.Split(rule, "/")
-			line := fmt.Sprintf("🛡 <b>%s</b> <code>%s</code>", cases.Title(language.English).String(m.getTrans(ruleParts[0], ruleParts[0])), ruleParts[1])
+			line := fmt.Sprintf("🛡 <b>%s</b> <code>%s</code>", cases.Title(language.English).String(m.T(ruleParts[0], ruleParts[0])), ruleParts[1])
 			lines = append(lines, line)
 		}
-		textTemplate := m.getTrans("multiple_rules", "Не получилось однозначно распознать... Выберите то, которое имели ввиду:\n\n{0}")
+		textTemplate := m.T("multiple_rules", "Не получилось однозначно распознать... Выберите то, которое имели ввиду:\n\n{0}")
 		textFormatted := formatTrans(textTemplate, strings.Join(lines, "\n"))
 
 		var buttons []inline.Button
 		for _, r := range possibleRules {
 			ruleParts := strings.Split(r, "/")
 			ruleVal := r
-			btnText := fmt.Sprintf("🛡 %s %s", cases.Title(language.English).String(m.getTrans(ruleParts[0], ruleParts[0])), ruleParts[1])
+			btnText := fmt.Sprintf("🛡 %s %s", cases.Title(language.English).String(m.T(ruleParts[0], ruleParts[0])), ruleParts[1])
 			buttons = append(buttons, inline.Button{
 				Text: btnText,
 				Handler: func(call inline.CallbackQuery) error {
@@ -827,22 +808,22 @@ func (m *GorokuSecurity) TsecCmd(msg *goroku.Message) error {
 func (m *GorokuSecurity) TtsecCmd(msg *goroku.Message) error {
 	parts := strings.SplitN(msg.Text, " ", 2)
 	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-		return msg.Answer(m.getTrans("no_target", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указана цель правила безопасности</b>"))
+		return msg.Answer(m.T("no_target", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указана цель правила безопасности</b>"))
 	}
 
 	args := strings.Fields(parts[1])
 	if len(args) == 0 {
-		return msg.Answer(m.getTrans("no_target", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указана цель правила безопасности</b>"))
+		return msg.Answer(m.T("no_target", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указана цель правила безопасности</b>"))
 	}
 
 	targetType := strings.ToLower(args[0])
 	if targetType != "user" && targetType != "chat" && targetType != "sgroup" {
-		return msg.Answer(m.getTrans("what", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Вам нужно указать тип цели первым аргументом (user, chat, sgroup)</b>"))
+		return msg.Answer(m.T("what", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Вам нужно указать тип цели первым аргументом (user, chat, sgroup)</b>"))
 	}
 
 	if targetType == "sgroup" {
 		if len(args) < 3 {
-			return msg.Answer(m.getTrans("no_target", "Не указаны аргументы"))
+			return msg.Answer(m.T("no_target", "Не указаны аргументы"))
 		}
 		groupName := args[1]
 		ruleName := args[2]
@@ -853,7 +834,7 @@ func (m *GorokuSecurity) TtsecCmd(msg *goroku.Message) error {
 		}
 		group, exists := groups[groupName]
 		if !exists {
-			template := m.getTrans("sgroup_not_found", "Группа безопасности {0} не найдена")
+			template := m.T("sgroup_not_found", "Группа безопасности {0} не найдена")
 			return msg.Answer(formatTrans(template, groupName))
 		}
 
@@ -866,7 +847,7 @@ func (m *GorokuSecurity) TtsecCmd(msg *goroku.Message) error {
 		}
 
 		if !any {
-			return msg.Answer(m.getTrans("no_rules", "Нет правил безопасности"))
+			return msg.Answer(m.T("no_rules", "Нет правил безопасности"))
 		}
 
 		groups[groupName] = group
@@ -874,12 +855,12 @@ func (m *GorokuSecurity) TtsecCmd(msg *goroku.Message) error {
 			return err
 		}
 
-		template := m.getTrans("rule_removed", "Удалено правило безопасности для...")
+		template := m.T("rule_removed", "Удалено правило безопасности для...")
 		return msg.Answer(formatTrans(template, "", utils.EscapeHTML(groupName), utils.EscapeHTML(ruleName)))
 	}
 
 	if len(args) < 2 {
-		return msg.Answer(m.getTrans("no_target", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указана цель правила безопасности</b>"))
+		return msg.Answer(m.T("no_target", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указана цель правила безопасности</b>"))
 	}
 
 	var targetID int64
@@ -889,7 +870,7 @@ func (m *GorokuSecurity) TtsecCmd(msg *goroku.Message) error {
 	if targetType == "user" {
 		hasUserArg := false
 		if len(args) >= 3 {
-			uid, uname := parseUserID(m.client, args[1])
+			uid, uname := parseUserID(m.Client, args[1])
 			if uid != 0 {
 				targetID = uid
 				targetName = uname
@@ -908,7 +889,7 @@ func (m *GorokuSecurity) TtsecCmd(msg *goroku.Message) error {
 			}
 		}
 		if targetID == 0 {
-			return msg.Answer(m.getTrans("no_target", "Не указан пользователь"))
+			return msg.Answer(m.T("no_target", "Не указан пользователь"))
 		}
 		if targetName == "" {
 			targetName = fmt.Sprintf("User%d", targetID)
@@ -939,17 +920,17 @@ func (m *GorokuSecurity) TtsecCmd(msg *goroku.Message) error {
 		return err
 	}
 	if removed {
-		template := m.getTrans("rule_removed", "Удалено правило безопасности...")
+		template := m.T("rule_removed", "Удалено правило безопасности...")
 		return msg.Answer(formatTrans(template, targetURL, utils.EscapeHTML(targetName), utils.EscapeHTML(ruleName)))
 	}
 
-	return msg.Answer(m.getTrans("no_rules", "Нет таргетированных правил безопасности"))
+	return msg.Answer(m.T("no_rules", "Нет таргетированных правил безопасности"))
 }
 
 func (m *GorokuSecurity) NewsgroupCmd(msg *goroku.Message) error {
 	parts := strings.SplitN(msg.Text, " ", 2)
 	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-		return msg.Answer(m.getTrans("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
+		return msg.Answer(m.T("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
 	}
 
 	name := strings.TrimSpace(parts[1])
@@ -959,7 +940,7 @@ func (m *GorokuSecurity) NewsgroupCmd(msg *goroku.Message) error {
 	}
 
 	if _, exists := groups[name]; exists {
-		template := m.getTrans("sgroup_already_exists", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>уже существует</b>")
+		template := m.T("sgroup_already_exists", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>уже существует</b>")
 		return msg.Answer(formatTrans(template, name))
 	}
 
@@ -971,7 +952,7 @@ func (m *GorokuSecurity) NewsgroupCmd(msg *goroku.Message) error {
 		return err
 	}
 
-	template := m.getTrans("created_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Создана группа безопасности</b> <code>{0}</code>")
+	template := m.T("created_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Создана группа безопасности</b> <code>{0}</code>")
 	return msg.Answer(formatTrans(template, name))
 }
 
@@ -982,29 +963,29 @@ func (m *GorokuSecurity) SgroupsCmd(msg *goroku.Message) error {
 	}
 
 	if len(groups) == 0 {
-		return msg.Answer(m.getTrans("no_rules", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Нет таргетированных правил безопасности</b>"))
+		return msg.Answer(m.T("no_rules", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Нет таргетированных правил безопасности</b>"))
 	}
 
 	var lines []string
-	liTemplate := m.getTrans("sgroup_li", "<tg-emoji emoji-id=4974264756668990388>▫️</tg-emoji> <code>{0}</code> · <b>{1} пользовател(-ей)</b> · <b>{2} правил(-о)</b>")
+	liTemplate := m.T("sgroup_li", "<tg-emoji emoji-id=4974264756668990388>▫️</tg-emoji> <code>{0}</code> · <b>{1} пользовател(-ей)</b> · <b>{2} правил(-о)</b>")
 	for name, sg := range groups {
 		lines = append(lines, formatTrans(liTemplate, name, strconv.Itoa(len(sg.Users)), strconv.Itoa(len(sg.Permissions))))
 	}
 	sort.Strings(lines)
 
-	template := m.getTrans("sgroups_list", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Группы безопасности:</b>\n\n{0}")
+	template := m.T("sgroups_list", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Группы безопасности:</b>\n\n{0}")
 	return msg.Answer(formatTrans(template, strings.Join(lines, "\n")))
 }
 
 func (m *GorokuSecurity) SgroupaddCmd(msg *goroku.Message) error {
 	parts := strings.SplitN(msg.Text, " ", 2)
 	if len(parts) < 2 {
-		return msg.Answer(m.getTrans("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
+		return msg.Answer(m.T("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
 	}
 
 	args := strings.Fields(parts[1])
 	if len(args) < 1 {
-		return msg.Answer(m.getTrans("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
+		return msg.Answer(m.T("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
 	}
 
 	groupName := args[0]
@@ -1012,7 +993,7 @@ func (m *GorokuSecurity) SgroupaddCmd(msg *goroku.Message) error {
 	var targetUserName string
 
 	if len(args) >= 2 {
-		targetUserID, targetUserName = parseUserID(m.client, args[1])
+		targetUserID, targetUserName = parseUserID(m.Client, args[1])
 	} else if msg.ReplyToMsgID != 0 {
 		replyMsg, err := msg.GetReplyMessage()
 		if err == nil && replyMsg != nil {
@@ -1022,7 +1003,7 @@ func (m *GorokuSecurity) SgroupaddCmd(msg *goroku.Message) error {
 	}
 
 	if targetUserID == 0 {
-		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
+		return msg.Answer(m.T("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
 	}
 
 	groups, err := m.loadGroups()
@@ -1031,13 +1012,13 @@ func (m *GorokuSecurity) SgroupaddCmd(msg *goroku.Message) error {
 	}
 	sg, exists := groups[groupName]
 	if !exists {
-		template := m.getTrans("sgroup_not_found", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>не найдена</b>")
+		template := m.T("sgroup_not_found", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>не найдена</b>")
 		return msg.Answer(formatTrans(template, groupName))
 	}
 
 	for _, uid := range sg.Users {
 		if uid == targetUserID {
-			template := m.getTrans("user_already_in_sgroup", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Пользователь</b> <code>{0}</code> <b>уже состоит в группе безопасности</b> <code>{1}</code>")
+			template := m.T("user_already_in_sgroup", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Пользователь</b> <code>{0}</code> <b>уже состоит в группе безопасности</b> <code>{1}</code>")
 			return msg.Answer(formatTrans(template, targetUserName, groupName))
 		}
 	}
@@ -1048,19 +1029,19 @@ func (m *GorokuSecurity) SgroupaddCmd(msg *goroku.Message) error {
 		return err
 	}
 
-	template := m.getTrans("user_added_to_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Пользователь</b> <code>{0}</code> <b>добавлен в группу безопасности</b> <code>{1}</code>")
+	template := m.T("user_added_to_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Пользователь</b> <code>{0}</code> <b>добавлен в группу безопасности</b> <code>{1}</code>")
 	return msg.Answer(formatTrans(template, targetUserName, groupName))
 }
 
 func (m *GorokuSecurity) SgroupdelCmd(msg *goroku.Message) error {
 	parts := strings.SplitN(msg.Text, " ", 2)
 	if len(parts) < 2 {
-		return msg.Answer(m.getTrans("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
+		return msg.Answer(m.T("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
 	}
 
 	args := strings.Fields(parts[1])
 	if len(args) < 1 {
-		return msg.Answer(m.getTrans("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
+		return msg.Answer(m.T("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
 	}
 
 	groupName := args[0]
@@ -1068,7 +1049,7 @@ func (m *GorokuSecurity) SgroupdelCmd(msg *goroku.Message) error {
 	var targetUserName string
 
 	if len(args) >= 2 {
-		targetUserID, targetUserName = parseUserID(m.client, args[1])
+		targetUserID, targetUserName = parseUserID(m.Client, args[1])
 	} else if msg.ReplyToMsgID != 0 {
 		replyMsg, err := msg.GetReplyMessage()
 		if err == nil && replyMsg != nil {
@@ -1078,7 +1059,7 @@ func (m *GorokuSecurity) SgroupdelCmd(msg *goroku.Message) error {
 	}
 
 	if targetUserID == 0 {
-		return msg.Answer(m.getTrans("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
+		return msg.Answer(m.T("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
 	}
 
 	groups, err := m.loadGroups()
@@ -1087,7 +1068,7 @@ func (m *GorokuSecurity) SgroupdelCmd(msg *goroku.Message) error {
 	}
 	sg, exists := groups[groupName]
 	if !exists {
-		template := m.getTrans("sgroup_not_found", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>не найдена</b>")
+		template := m.T("sgroup_not_found", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>не найдена</b>")
 		return msg.Answer(formatTrans(template, groupName))
 	}
 
@@ -1100,7 +1081,7 @@ func (m *GorokuSecurity) SgroupdelCmd(msg *goroku.Message) error {
 	}
 
 	if foundIdx == -1 {
-		template := m.getTrans("user_not_in_sgroup", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Пользователь</b> <code>{0}</code> <b>не состоит в группе безопасности</b> <code>{1}</code>")
+		template := m.T("user_not_in_sgroup", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Пользователь</b> <code>{0}</code> <b>не состоит в группе безопасности</b> <code>{1}</code>")
 		return msg.Answer(formatTrans(template, targetUserName, groupName))
 	}
 
@@ -1110,7 +1091,7 @@ func (m *GorokuSecurity) SgroupdelCmd(msg *goroku.Message) error {
 		return err
 	}
 
-	template := m.getTrans("user_removed_from_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Пользователь</b> <code>{0}</code> <b>удален из группы</b> <code>{1}</code>")
+	template := m.T("user_removed_from_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Пользователь</b> <code>{0}</code> <b>удален из группы</b> <code>{1}</code>")
 	return msg.Answer(formatTrans(template, targetUserName, groupName))
 }
 
@@ -1137,7 +1118,7 @@ func (m *GorokuSecurity) applyGroupsToManager() error {
 func (m *GorokuSecurity) SgroupCmd(msg *goroku.Message) error {
 	parts := strings.SplitN(msg.Text, " ", 2)
 	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-		return msg.Answer(m.getTrans("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
+		return msg.Answer(m.T("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
 	}
 
 	name := strings.TrimSpace(parts[1])
@@ -1148,7 +1129,7 @@ func (m *GorokuSecurity) SgroupCmd(msg *goroku.Message) error {
 
 	sg, exists := groups[name]
 	if !exists {
-		template := m.getTrans("sgroup_not_found", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>не найдена</b>")
+		template := m.T("sgroup_not_found", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>не найдена</b>")
 		return msg.Answer(formatTrans(template, name))
 	}
 
@@ -1156,9 +1137,9 @@ func (m *GorokuSecurity) SgroupCmd(msg *goroku.Message) error {
 	for _, uid := range sg.Users {
 		usersList = append(usersList, fmt.Sprintf("<tg-emoji emoji-id=4974307891025543730>▫️</tg-emoji> <b><a href=\"tg://user?id=%d\">User%d</a></b>", uid, uid))
 	}
-	usersText := m.getTrans("no_users", "<tg-emoji emoji-id=5870772616305839506>👥</tg-emoji> <b>Нет пользователей</b>")
+	usersText := m.T("no_users", "<tg-emoji emoji-id=5870772616305839506>👥</tg-emoji> <b>Нет пользователей</b>")
 	if len(usersList) > 0 {
-		template := m.getTrans("users_list", "<tg-emoji emoji-id=5870772616305839506>👥</tg-emoji> <b>Пользователи:</b>\n{0}\n")
+		template := m.T("users_list", "<tg-emoji emoji-id=5870772616305839506>👥</tg-emoji> <b>Пользователи:</b>\n{0}\n")
 		usersText = formatTrans(template, strings.Join(usersList, "\n"))
 	}
 
@@ -1179,22 +1160,22 @@ func (m *GorokuSecurity) SgroupCmd(msg *goroku.Message) error {
 				ts = int64(t)
 			}
 			if ts > 0 {
-				expiresStr = m.getTrans("until", "до") + " " + time.Unix(ts, 0).Format("2006-01-02 15:04:05")
+				expiresStr = m.T("until", "до") + " " + time.Unix(ts, 0).Format("2006-01-02 15:04:05")
 			} else {
-				expiresStr = m.getTrans("forever", "навсегда")
+				expiresStr = m.T("forever", "навсегда")
 			}
 		} else {
-			expiresStr = m.getTrans("forever", "навсегда")
+			expiresStr = m.T("forever", "навсегда")
 		}
 		permsList = append(permsList, fmt.Sprintf("<tg-emoji emoji-id=4974307891025543730>▫️</tg-emoji> <b>%s</b> <code>%s</code> <b>%s</b>", ruleType, rule, expiresStr))
 	}
-	permsText := m.getTrans("no_permissions", "<tg-emoji emoji-id=5870450390679425417>🗒</tg-emoji> <b>Нет разрешений</b>")
+	permsText := m.T("no_permissions", "<tg-emoji emoji-id=5870450390679425417>🗒</tg-emoji> <b>Нет разрешений</b>")
 	if len(permsList) > 0 {
-		template := m.getTrans("permissions_list", "<tg-emoji emoji-id=5870450390679425417>🗒</tg-emoji> <b>Права доступа:</b>\n{0}\n")
+		template := m.T("permissions_list", "<tg-emoji emoji-id=5870450390679425417>🗒</tg-emoji> <b>Права доступа:</b>\n{0}\n")
 		permsText = formatTrans(template, strings.Join(permsList, "\n"))
 	}
 
-	template := m.getTrans("sgroup_info", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Информация о группе безопасности</b> <code>{0}</code>:\n\n{1}\n{2}")
+	template := m.T("sgroup_info", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Информация о группе безопасности</b> <code>{0}</code>:\n\n{1}\n{2}")
 	msg.Text = formatTrans(template, name, usersText, permsText)
 	return msg.Answer(msg.Text)
 }
@@ -1202,7 +1183,7 @@ func (m *GorokuSecurity) SgroupCmd(msg *goroku.Message) error {
 func (m *GorokuSecurity) DelsgroupCmd(msg *goroku.Message) error {
 	parts := strings.SplitN(msg.Text, " ", 2)
 	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-		return msg.Answer(m.getTrans("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
+		return msg.Answer(m.T("no_args", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указаны аргументы</b>"))
 	}
 
 	name := strings.TrimSpace(parts[1])
@@ -1212,7 +1193,7 @@ func (m *GorokuSecurity) DelsgroupCmd(msg *goroku.Message) error {
 	}
 
 	if _, exists := groups[name]; !exists {
-		template := m.getTrans("sgroup_not_found", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>не найдена</b>")
+		template := m.T("sgroup_not_found", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Группа безопасности</b> <code>{0}</code> <b>не найдена</b>")
 		return msg.Answer(formatTrans(template, name))
 	}
 
@@ -1221,7 +1202,7 @@ func (m *GorokuSecurity) DelsgroupCmd(msg *goroku.Message) error {
 		return err
 	}
 
-	template := m.getTrans("deleted_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Группа безопасности</b> <code>{0}</code> <b>удалена</b>")
+	template := m.T("deleted_sgroup", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <b>Группа безопасности</b> <code>{0}</code> <b>удалена</b>")
 	return msg.Answer(formatTrans(template, name))
 }
 
@@ -1233,13 +1214,13 @@ func (m *GorokuSecurity) InlinesecCmd(msg *goroku.Message) error {
 	}
 	args = strings.ToLower(args)
 
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im == nil || !im.IsComplete() {
 		return msg.Answer("❌ Error: Inline bot is not active.")
 	}
 
 	if args == "" {
-		text := m.getTrans("global", "🔐 <b>Здесь можно настроить глобальную исключающую маску. Если тумблер выключен здесь, он выключен для всех команд</b>")
+		text := m.T("global", "🔐 <b>Здесь можно настроить глобальную исключающую маску. Если тумблер выключен здесь, он выключен для всех команд</b>")
 		markup := m.buildMarkupGlobal(true)
 		_, err := im.Form(text, msg, markup)
 		return err
@@ -1259,12 +1240,12 @@ func (m *GorokuSecurity) InlinesecCmd(msg *goroku.Message) error {
 	}
 
 	if !exists {
-		template := m.getTrans("no_command", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Команда</b> <code>{0}</code> <b>не найдена!</b>")
+		template := m.T("no_command", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Команда</b> <code>{0}</code> <b>не найдена!</b>")
 		return msg.Answer(formatTrans(template, args))
 	}
 
 	prefix := "@" + im.BotUsernameStr() + " "
-	textTemplate := m.getTrans("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
+	textTemplate := m.T("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
 	textFormatted := formatTrans(textTemplate, prefix, args)
 
 	markup := m.buildMarkupCommand(args, true)
@@ -1273,12 +1254,12 @@ func (m *GorokuSecurity) InlinesecCmd(msg *goroku.Message) error {
 }
 
 func (m *GorokuSecurity) QuerysecCmd(msg *goroku.Message) error {
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im == nil || !im.IsComplete() {
 		return msg.Answer("❌ Error: Inline bot is not active.")
 	}
 
-	text := m.getTrans("querysec_info", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> Здесь вы можете переключить возможность использования инлайн запросов для всех сторонних пользователей")
+	text := m.T("querysec_info", "<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> Здесь вы можете переключить возможность использования инлайн запросов для всех сторонних пользователей")
 	markup := m.buildMarkupQuerysec()
 	_, err := im.Form(text, msg, markup)
 	return err
@@ -1287,22 +1268,22 @@ func (m *GorokuSecurity) QuerysecCmd(msg *goroku.Message) error {
 func (m *GorokuSecurity) TsecclrCmd(msg *goroku.Message) error {
 	parts := strings.SplitN(msg.Text, " ", 2)
 	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-		return msg.Answer(m.getTrans("no_target", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указана цель правила безопасности</b>"))
+		return msg.Answer(m.T("no_target", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указана цель правила безопасности</b>"))
 	}
 
 	args := strings.Fields(parts[1])
 	if len(args) == 0 {
-		return msg.Answer(m.getTrans("no_target", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указана цель правила безопасности</b>"))
+		return msg.Answer(m.T("no_target", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Не указана цель правила безопасности</b>"))
 	}
 
 	targetType := strings.ToLower(args[0])
 	if targetType != "user" && targetType != "chat" && targetType != "sgroup" {
-		return msg.Answer(m.getTrans("what", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Вам нужно указать тип цели первым аргументом (user, chat, sgroup)</b>"))
+		return msg.Answer(m.T("what", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Вам нужно указать тип цели первым аргументом (user, chat, sgroup)</b>"))
 	}
 
 	if targetType == "sgroup" {
 		if len(args) < 2 {
-			return msg.Answer(m.getTrans("no_target", "Не указана цель"))
+			return msg.Answer(m.T("no_target", "Не указана цель"))
 		}
 		groupName := args[1]
 		groups, err := m.loadGroups()
@@ -1311,7 +1292,7 @@ func (m *GorokuSecurity) TsecclrCmd(msg *goroku.Message) error {
 		}
 		group, exists := groups[groupName]
 		if !exists {
-			template := m.getTrans("sgroup_not_found", "Группа безопасности {0} не найдена")
+			template := m.T("sgroup_not_found", "Группа безопасности {0} не найдена")
 			return msg.Answer(formatTrans(template, groupName))
 		}
 
@@ -1321,7 +1302,7 @@ func (m *GorokuSecurity) TsecclrCmd(msg *goroku.Message) error {
 			return err
 		}
 
-		template := m.getTrans("rules_removed", "Правила безопасности для... удалены")
+		template := m.T("rules_removed", "Правила безопасности для... удалены")
 		return msg.Answer(formatTrans(template, "", utils.EscapeHTML(groupName)))
 	}
 
@@ -1332,7 +1313,7 @@ func (m *GorokuSecurity) TsecclrCmd(msg *goroku.Message) error {
 	if targetType == "user" {
 		hasUserArg := false
 		if len(args) >= 2 {
-			uid, uname := parseUserID(m.client, args[1])
+			uid, uname := parseUserID(m.Client, args[1])
 			if uid != 0 {
 				targetID = uid
 				targetName = uname
@@ -1351,7 +1332,7 @@ func (m *GorokuSecurity) TsecclrCmd(msg *goroku.Message) error {
 			}
 		}
 		if targetID == 0 {
-			return msg.Answer(m.getTrans("no_target", "Не указан пользователь"))
+			return msg.Answer(m.T("no_target", "Не указан пользователь"))
 		}
 		if targetName == "" {
 			targetName = fmt.Sprintf("User%d", targetID)
@@ -1381,11 +1362,11 @@ func (m *GorokuSecurity) TsecclrCmd(msg *goroku.Message) error {
 		return err
 	}
 	if removed {
-		template := m.getTrans("rules_removed", "Правила безопасности для... удалены")
+		template := m.T("rules_removed", "Правила безопасности для... удалены")
 		return msg.Answer(formatTrans(template, targetURL, utils.EscapeHTML(targetName)))
 	}
 
-	return msg.Answer(m.getTrans("no_rules", "Нет таргетированных правил безопасности"))
+	return msg.Answer(m.T("no_rules", "Нет таргетированных правил безопасности"))
 }
 
 func extractTime(args []string) int {
@@ -1413,7 +1394,7 @@ func extractTime(args []string) int {
 
 func (m *GorokuSecurity) convertTime(duration int) string {
 	if duration <= 0 {
-		return m.getTrans("forever", "навсегда")
+		return m.T("forever", "навсегда")
 	}
 	if duration >= 24*60*60 {
 		days := duration / (24 * 60 * 60)
@@ -1421,7 +1402,7 @@ func (m *GorokuSecurity) convertTime(duration int) string {
 		if days > 1 {
 			suffix = "days"
 		}
-		return fmt.Sprintf("%d %s", days, m.getTrans(suffix, "дня(-ей)"))
+		return fmt.Sprintf("%d %s", days, m.T(suffix, "дня(-ей)"))
 	}
 	if duration >= 60*60 {
 		hours := duration / (60 * 60)
@@ -1429,7 +1410,7 @@ func (m *GorokuSecurity) convertTime(duration int) string {
 		if hours > 1 {
 			suffix = "hours"
 		}
-		return fmt.Sprintf("%d %s", hours, m.getTrans(suffix, "часа(-ов)"))
+		return fmt.Sprintf("%d %s", hours, m.T(suffix, "часа(-ов)"))
 	}
 	if duration >= 60 {
 		minutes := duration / 60
@@ -1437,18 +1418,18 @@ func (m *GorokuSecurity) convertTime(duration int) string {
 		if minutes > 1 {
 			suffix = "minutes"
 		}
-		return fmt.Sprintf("%d %s", minutes, m.getTrans(suffix, "минут(-ы)"))
+		return fmt.Sprintf("%d %s", minutes, m.T(suffix, "минут(-ы)"))
 	}
 	suffix := "second"
 	if duration > 1 {
 		suffix = "seconds"
 	}
-	return fmt.Sprintf("%d %s", duration, m.getTrans(suffix, "секунд(-ы)"))
+	return fmt.Sprintf("%d %s", duration, m.T(suffix, "секунд(-ы)"))
 }
 
 func (m *GorokuSecurity) convertTimeAbs(ts int64) string {
 	if ts <= 0 {
-		return m.getTrans("forever", "навсегда")
+		return m.T("forever", "навсегда")
 	}
 	return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
 }
@@ -1456,7 +1437,7 @@ func (m *GorokuSecurity) convertTimeAbs(ts int64) string {
 func (m *GorokuSecurity) lookupRules(needle string) []string {
 	var prefixes []string
 	prefixes = append(prefixes, ".")
-	prefixes = append(prefixes, m.db.GetString("goroku.main", "command_prefix", "."))
+	prefixes = append(prefixes, m.DB.GetString("goroku.main", "command_prefix", "."))
 
 	command := needle
 	for _, pref := range prefixes {
@@ -1468,7 +1449,7 @@ func (m *GorokuSecurity) lookupRules(needle string) []string {
 
 	var results []string
 
-	loader := m.client.Loader
+	loader := m.Client.Loader
 	if loader != nil {
 		_, isCmd := loader.Dispatch(command)
 		if isCmd {
@@ -1481,7 +1462,7 @@ func (m *GorokuSecurity) lookupRules(needle string) []string {
 		}
 	}
 
-	if im := m.client.GorokuInline; im != nil {
+	if im := m.Client.GorokuInline; im != nil {
 		for _, inlineMod := range im.InlineModules() {
 			for cmd := range inlineMod.InlineHandlers() {
 				cleanNeedle := strings.TrimPrefix(strings.ToLower(needle), "@")
@@ -1518,7 +1499,7 @@ func (m *GorokuSecurity) getCommandMask(commandName string) int {
 		return goroku.OWNER
 	}
 	key := ""
-	loader := m.client.Loader
+	loader := m.Client.Loader
 	if loader != nil {
 		for _, mod := range loader.GetModules() {
 			if _, exists := mod.Commands()[commandName]; exists {
@@ -1531,7 +1512,7 @@ func (m *GorokuSecurity) getCommandMask(commandName string) int {
 		key = commandName
 	}
 
-	masks := m.db.GetStringMapInt("goroku.security", "masks", nil)
+	masks := m.DB.GetStringMapInt("goroku.security", "masks", nil)
 	for _, lookup := range []string{key, strings.ToLower(key)} {
 		if val, exists := masks[lookup]; exists {
 			return val
@@ -1555,7 +1536,7 @@ func (m *GorokuSecurity) getCommandMask(commandName string) int {
 }
 
 func (m *GorokuSecurity) getBoundingMask() int {
-	return m.db.GetInt("goroku.security", "bounding_mask", goroku.DEFAULT_PERMISSIONS)
+	return m.DB.GetInt("goroku.security", "bounding_mask", goroku.DEFAULT_PERMISSIONS)
 }
 
 func (m *GorokuSecurity) buttonsWithCloseRows(buttons []inline.Button, rowSize int) [][]inline.Button {
@@ -1569,7 +1550,7 @@ func (m *GorokuSecurity) buttonsWithCloseRows(buttons []inline.Button, rowSize i
 	}
 
 	markup = append(markup, []inline.Button{{
-		Text: m.getTrans("close_menu", "🙈 Закрыть это меню"),
+		Text: m.T("close_menu", "🙈 Закрыть это меню"),
 		Handler: func(call inline.CallbackQuery) error {
 			return closeForm(call)
 		},
@@ -1589,9 +1570,9 @@ func (m *GorokuSecurity) buildMarkupGlobal(isInline bool) [][]inline.Button {
 		name := sg.Name
 		hasBit := (mask & bit) != 0
 
-		text := "🚫 " + m.getTrans(name, name)
+		text := "🚫 " + m.T(name, name)
 		if hasBit {
-			text = "✅ " + m.getTrans(name, name)
+			text = "✅ " + m.T(name, name)
 		}
 
 		buttons = append(buttons, inline.Button{
@@ -1603,14 +1584,14 @@ func (m *GorokuSecurity) buildMarkupGlobal(isInline bool) [][]inline.Button {
 				} else {
 					newMask |= bit
 				}
-				if err := m.db.SetInt("goroku.security", "bounding_mask", newMask); err != nil {
+				if err := m.DB.SetInt("goroku.security", "bounding_mask", newMask); err != nil {
 					return err
 				}
 				_ = call.Answer("Bounding mask value set!", false)
 
-				im := m.client.GorokuInline
+				im := m.Client.GorokuInline
 				newMarkup := im.GenerateMarkup(m.buildMarkupGlobal(isInline))
-				return call.Edit(m.getTrans("global", "Global bounding mask..."), newMarkup)
+				return call.Edit(m.T("global", "Global bounding mask..."), newMarkup)
 			},
 		})
 	}
@@ -1630,9 +1611,9 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 		name := sg.Name
 		hasBit := (mask & bit) != 0
 
-		text := "🚫 " + m.getTrans(name, name)
+		text := "🚫 " + m.T(name, name)
 		if hasBit {
-			text = "✅ " + m.getTrans(name, name)
+			text = "✅ " + m.T(name, name)
 		}
 
 		buttons = append(buttons, inline.Button{
@@ -1646,7 +1627,7 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 				}
 
 				key := ""
-				loader := m.client.Loader
+				loader := m.Client.Loader
 				if loader != nil {
 					for _, mod := range loader.GetModules() {
 						if _, exists := mod.Commands()[commandName]; exists {
@@ -1659,13 +1640,13 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 					key = commandName
 				}
 
-				masks := m.db.GetStringMapInt("goroku.security", "masks", nil)
+				masks := m.DB.GetStringMapInt("goroku.security", "masks", nil)
 				if masks == nil {
 					masks = make(map[string]int)
 				}
 				masks[key] = newMask
 				masks[strings.ToLower(key)] = newMask
-				if err := m.db.SetStringMapInt("goroku.security", "masks", masks); err != nil {
+				if err := m.DB.SetStringMapInt("goroku.security", "masks", masks); err != nil {
 					return err
 				}
 
@@ -1677,14 +1658,14 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 					_ = call.Answer("Security value set!", false)
 				}
 
-				prefix := m.db.GetString("goroku.main", "command_prefix", ".")
+				prefix := m.DB.GetString("goroku.main", "command_prefix", ".")
 				if isInline {
 					prefix = "@" + call.Manager.BotUsernameStr() + " "
 				}
-				textTemplate := m.getTrans("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
+				textTemplate := m.T("permissions", "🔐 <b>Здесь можно настроить разрешения для команды</b> <code>{0}{1}</code>")
 				textFormatted := formatTrans(textTemplate, prefix, commandName)
 
-				im := m.client.GorokuInline
+				im := m.Client.GorokuInline
 				newMarkup := im.GenerateMarkup(m.buildMarkupCommand(commandName, isInline))
 				return call.Edit(textFormatted, newMarkup)
 			},
@@ -1695,7 +1676,7 @@ func (m *GorokuSecurity) buildMarkupCommand(commandName string, isInline bool) [
 }
 
 func (m *GorokuSecurity) buildMarkupQuerysec() [][]inline.Button {
-	allowQuery := m.db.GetBool("goroku.security", "allow_inline_query", false)
+	allowQuery := m.DB.GetBool("goroku.security", "allow_inline_query", false)
 
 	btnText := "❌"
 	if allowQuery {
@@ -1708,20 +1689,20 @@ func (m *GorokuSecurity) buildMarkupQuerysec() [][]inline.Button {
 				Text: btnText,
 				Handler: func(call inline.CallbackQuery) error {
 					newVal := !allowQuery
-					if err := m.db.SetBool("goroku.security", "allow_inline_query", newVal); err != nil {
+					if err := m.DB.SetBool("goroku.security", "allow_inline_query", newVal); err != nil {
 						return err
 					}
 					_ = call.Answer("Inline query permission set!", false)
 
-					im := m.client.GorokuInline
+					im := m.Client.GorokuInline
 					newMarkup := im.GenerateMarkup(m.buildMarkupQuerysec())
-					return call.Edit(m.getTrans("querysec_info", "Здесь вы можете переключить..."), newMarkup)
+					return call.Edit(m.T("querysec_info", "Здесь вы можете переключить..."), newMarkup)
 				},
 			},
 		},
 		{
 			{
-				Text: m.getTrans("close_menu", "🙈 Закрыть это меню"),
+				Text: m.T("close_menu", "🙈 Закрыть это меню"),
 				Handler: func(call inline.CallbackQuery) error {
 					return closeForm(call)
 				},
@@ -1746,7 +1727,7 @@ func (m *GorokuSecurity) listAllRules(msg *goroku.Message) error {
 		}
 		timeStr := m.convertTime(timeDiff)
 		line := fmt.Sprintf("<tg-emoji emoji-id=6037355667365300960>👥</tg-emoji> <b><a href='%s'>%s</a> %s %s %s</b> <code>%s</code>",
-			rule.EntityURL, utils.EscapeHTML(rule.EntityName), timeStr, m.getTrans("for", "на"), m.getTrans(rule.RuleType, rule.RuleType), rule.Rule)
+			rule.EntityURL, utils.EscapeHTML(rule.EntityName), timeStr, m.T("for", "на"), m.T(rule.RuleType, rule.RuleType), rule.Rule)
 		lines = append(lines, line)
 	}
 
@@ -1757,7 +1738,7 @@ func (m *GorokuSecurity) listAllRules(msg *goroku.Message) error {
 		}
 		timeStr := m.convertTime(timeDiff)
 		line := fmt.Sprintf("<tg-emoji emoji-id=6037122016849432064>👤</tg-emoji> <b><a href='%s'>%s</a> %s %s %s</b> <code>%s</code>",
-			rule.EntityURL, utils.EscapeHTML(rule.EntityName), timeStr, m.getTrans("for", "на"), m.getTrans(rule.RuleType, rule.RuleType), rule.Rule)
+			rule.EntityURL, utils.EscapeHTML(rule.EntityName), timeStr, m.T("for", "на"), m.T(rule.RuleType, rule.RuleType), rule.Rule)
 		lines = append(lines, line)
 	}
 
@@ -1785,21 +1766,21 @@ func (m *GorokuSecurity) listAllRules(msg *goroku.Message) error {
 			}
 			timeStr := m.convertTime(timeDiff)
 			line := fmt.Sprintf("<tg-emoji emoji-id=5870704313440932932>🔒</tg-emoji> <code>%s</code> <b>%s %s %s</b> <code>%s</code>",
-				utils.EscapeHTML(name), timeStr, m.getTrans("for", "на"), m.getTrans(ruleType, ruleType), ruleName)
+				utils.EscapeHTML(name), timeStr, m.T("for", "на"), m.T(ruleType, ruleType), ruleName)
 			lines = append(lines, line)
 		}
 	}
 
 	if len(lines) == 0 {
-		return msg.Answer(m.getTrans("no_rules", "Нет таргетированных правил безопасности"))
+		return msg.Answer(m.T("no_rules", "Нет таргетированных правил безопасности"))
 	}
 
-	template := m.getTrans("rules", "<tg-emoji emoji-id=5472308992514464048>🔐</tg-emoji> <b>Таргетированные правила безопасности:</b>\n\n<blockquote expandable>{0}</blockquote>")
+	template := m.T("rules", "<tg-emoji emoji-id=5472308992514464048>🔐</tg-emoji> <b>Таргетированные правила безопасности:</b>\n\n<blockquote expandable>{0}</blockquote>")
 	return msg.Answer(formatTrans(template, strings.Join(lines, "\n")))
 }
 
 func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType string, targetID int64, targetName string, targetURL string, rule string, duration int) error {
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im == nil || !im.IsComplete() {
 		if targetType == "sgroup" {
 			groups, err := m.loadGroups()
@@ -1833,34 +1814,34 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 				}
 			}
 		}
-		template := m.getTrans("rule_added", "Вы выдали право...")
+		template := m.T("rule_added", "Вы выдали право...")
 		ruleParts := strings.Split(rule, "/")
-		forStr := m.getTrans("forever", "навсегда")
+		forStr := m.T("forever", "навсегда")
 		if duration > 0 {
-			forStr = m.getTrans("until", "до") + " " + time.Now().Add(time.Duration(duration)*time.Second).Format("2006-01-02 15:04:05")
+			forStr = m.T("until", "до") + " " + time.Now().Add(time.Duration(duration)*time.Second).Format("2006-01-02 15:04:05")
 		}
-		return msg.Answer(formatTrans(template, m.getTrans(targetType, targetType), targetURL, targetName, m.getTrans(ruleParts[0], ruleParts[0]), ruleParts[1], forStr))
+		return msg.Answer(formatTrans(template, m.T(targetType, targetType), targetURL, targetName, m.T(ruleParts[0], ruleParts[0]), ruleParts[1], forStr))
 	}
 
 	ruleParts := strings.Split(rule, "/")
-	forStr := m.getTrans("forever", "навсегда")
+	forStr := m.T("forever", "навсегда")
 	if duration > 0 {
-		forStr = m.getTrans("for", "на") + " " + m.convertTime(duration)
+		forStr = m.T("for", "на") + " " + m.convertTime(duration)
 	}
 
-	confirmTemplate := m.getTrans("confirm_rule", "Пожалуйста, подтвердите что хотите выдать...")
-	confirmText := formatTrans(confirmTemplate, m.getTrans(targetType, targetType), targetURL, utils.EscapeHTML(targetName), m.getTrans(ruleParts[0], ruleParts[0]), ruleParts[1], forStr)
+	confirmTemplate := m.T("confirm_rule", "Пожалуйста, подтвердите что хотите выдать...")
+	confirmText := formatTrans(confirmTemplate, m.T(targetType, targetType), targetURL, utils.EscapeHTML(targetName), m.T(ruleParts[0], ruleParts[0]), ruleParts[1], forStr)
 
 	markup := [][]inline.Button{
 		{
 			{
-				Text: m.getTrans("cancel", "🚫 Отмена"),
+				Text: m.T("cancel", "🚫 Отмена"),
 				Handler: func(call inline.CallbackQuery) error {
 					return closeForm(call)
 				},
 			},
 			{
-				Text: m.getTrans("confirm", "👑 Подтвердить"),
+				Text: m.T("confirm", "👑 Подтвердить"),
 				Handler: func(call inline.CallbackQuery) error {
 					if targetType == "sgroup" {
 						groups, err := m.loadGroups()
@@ -1891,7 +1872,7 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 						if sm != nil {
 							entityName := strconv.FormatInt(targetID, 10)
 							entityURL := ""
-							if full, err := m.client.GetFullUser(targetID, 3600, false); err == nil {
+							if full, err := m.Client.GetFullUser(targetID, 3600, false); err == nil {
 								entity := userClassFromFull(full)
 								if display := getDisplayName(entity); display != "" {
 									entityName = display
@@ -1920,12 +1901,12 @@ func (m *GorokuSecurity) showConfirmRuleForm(msg *goroku.Message, targetType str
 						}
 					}
 
-					template := m.getTrans("rule_added", "Вы выдали право...")
+					template := m.T("rule_added", "Вы выдали право...")
 					ruleText := ruleParts[1]
 					if ruleParts[0] == "inline" {
 						ruleText = "@" + call.Manager.BotUsernameStr() + " " + ruleText
 					}
-					addedText := formatTrans(template, m.getTrans(targetType, targetType), targetURL, utils.EscapeHTML(targetName), m.getTrans(ruleParts[0], ruleParts[0]), ruleText, forStr)
+					addedText := formatTrans(template, m.T(targetType, targetType), targetURL, utils.EscapeHTML(targetName), m.T(ruleParts[0], ruleParts[0]), ruleText, forStr)
 					return call.Edit(addedText, tgbotapi.InlineKeyboardMarkup{})
 				},
 			},

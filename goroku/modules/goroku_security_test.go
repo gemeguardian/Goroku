@@ -116,7 +116,7 @@ func TestExtractTime(t *testing.T) {
 
 func TestSecurityMaskWriteFailureReturnsError(t *testing.T) {
 	client, db := newFailingModuleTest(t)
-	m := &GorokuSecurity{client: client, db: db}
+	m := &GorokuSecurity{Base: goroku.Base{Client: client, DB: db}}
 	buttons := m.buildMarkupGlobal(false)
 	err := buttons[0][0].Handler(inline.CallbackQuery{})
 	if !errors.Is(err, goroku.ErrDatabasePersistence) {
@@ -152,7 +152,7 @@ func TestAPIProtectionWriteFailureDoesNotChangeState(t *testing.T) {
 
 func TestAPIProtectionReadsPropagateLifecycleErrors(t *testing.T) {
 	db := goroku.NewDatabase(2002)
-	m := &APIProtection{db: db}
+	m := &APIProtection{Base: goroku.Base{DB: db}}
 	if err := m.ConfigReady(map[string]any{}); !errors.Is(err, goroku.ErrDatabaseNotInitialized) {
 		t.Fatalf("ConfigReady() error = %v, want ErrDatabaseNotInitialized", err)
 	}
@@ -167,7 +167,7 @@ func TestAPIProtectionReadsPropagateLifecycleErrors(t *testing.T) {
 func TestAPIProtectionMissingKeysUseDefaults(t *testing.T) {
 	db := newSecurityModuleTestDatabase(t)
 	client := goroku.NewCustomTelegramClient(2003)
-	m := &APIProtection{client: client, db: db}
+	m := &APIProtection{Base: goroku.Base{Client: client, DB: db}}
 	if err := m.ConfigReady(map[string]any{}); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestAPIProtectionMissingKeysUseDefaults(t *testing.T) {
 
 func TestSecurityGroupsDistinguishEmptyFromUnavailable(t *testing.T) {
 	uninitialized := goroku.NewDatabase(2005)
-	m := &GorokuSecurity{db: uninitialized}
+	m := &GorokuSecurity{Base: goroku.Base{DB: uninitialized}}
 	if _, err := m.loadGroups(); !errors.Is(err, goroku.ErrDatabaseNotInitialized) {
 		t.Fatalf("loadGroups() error = %v, want ErrDatabaseNotInitialized", err)
 	}
@@ -187,7 +187,7 @@ func TestSecurityGroupsDistinguishEmptyFromUnavailable(t *testing.T) {
 	}
 
 	active := newSecurityModuleTestDatabase(t)
-	m.db = active
+	m.DB = active
 	groups, err := m.loadGroups()
 	if err != nil {
 		t.Fatal(err)

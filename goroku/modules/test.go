@@ -15,10 +15,7 @@ import (
 )
 
 type Test struct {
-	client     *goroku.CustomTelegramClient
-	db         *goroku.Database
-	translator *goroku.Translator
-
+	goroku.Base
 	// Configs
 	forceSendAll        bool
 	tglogLevel          string
@@ -52,23 +49,14 @@ func (m *Test) Strings() map[string]string {
 	}
 }
 
-func (m *Test) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
-	m.client = client
-	m.db = db
-	m.translator = goroku.NewTranslator(client, db)
-	m.translator.Init()
-	return nil
-}
-
 func (m *Test) ClientReady() error {
-	logChatID := m.client.GetLogChatID()
+	logChatID := m.Client.GetLogChatID()
 	if logChatID != 0 && goroku.TGLogHandler != nil {
-		goroku.TGLogHandler.InstallTGLog(m.client, logChatID)
+		goroku.TGLogHandler.InstallTGLog(m.Client, logChatID)
 	}
 	return nil
 }
-func (m *Test) OnUnload() error { return nil }
-func (m *Test) OnDlmod() error  { return nil }
+func (m *Test) OnDlmod() error { return nil }
 
 var _ goroku.ModuleWithConfigSchema = (*Test)(nil)
 
@@ -132,25 +120,6 @@ func (m *Test) Commands() map[string]goroku.CommandHandler {
 	}
 }
 
-func (m *Test) Watchers() []goroku.WatcherHandler {
-	return []goroku.WatcherHandler{}
-}
-
-func (m *Test) getTrans(key, def string) string {
-	if m.translator == nil {
-		return def
-	}
-	searchKey := fmt.Sprintf("goroku.modules.%s.%s", m.Name(), key)
-	if val := m.translator.GetKey(searchKey); val != nil {
-		return fmt.Sprintf("%v", val)
-	}
-	searchKeyLower := fmt.Sprintf("goroku.modules.%s.%s", strings.ToLower(m.Name()), key)
-	if val := m.translator.GetKey(searchKeyLower); val != nil {
-		return fmt.Sprintf("%v", val)
-	}
-	return def
-}
-
 func formatCustomMessage(tmpl string, data map[string]string) string {
 	res := tmpl
 	for k, v := range data {
@@ -189,7 +158,7 @@ func (m *Test) PingCmd(msg *goroku.Message) error {
 		_ = msg.Edit(emoji)
 		targetMsgID = msg.ID
 	} else {
-		sentMsg, err := m.client.SendMessage(goroku.ChatRefID(msg.ChatID), emoji)
+		sentMsg, err := m.Client.SendMessage(goroku.ChatRefID(msg.ChatID), emoji)
 		if err == nil {
 			targetMsgID = sentMsg.SentMessageID()
 		}
@@ -221,7 +190,7 @@ func (m *Test) PingCmd(msg *goroku.Message) error {
 
 	response := formatCustomMessage(tmpl, data)
 	if targetMsgID != 0 {
-		_, err := m.client.EditMessage(goroku.ChatRefID(msg.ChatID), targetMsgID, response)
+		_, err := m.Client.EditMessage(goroku.ChatRefID(msg.ChatID), targetMsgID, response)
 		return err
 	}
 	return msg.Answer(response)
@@ -232,7 +201,7 @@ func (m *Test) ClearLogsCmd(msg *goroku.Message) error {
 	if goroku.TGLogHandler != nil {
 		goroku.TGLogHandler.Clear()
 	}
-	msg.Text = m.getTrans("logs_cleared", "🗑 <b>Logs cleared</b>")
+	msg.Text = m.T("logs_cleared", "🗑 <b>Logs cleared</b>")
 	return nil
 }
 
@@ -241,16 +210,16 @@ func (m *Test) SuspendCmd(msg *goroku.Message) error {
 	raw := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
 	timeSleep, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		msg.Text = m.getTrans("suspend_invalid_time", "❌ Invalid time")
+		msg.Text = m.T("suspend_invalid_time", "❌ Invalid time")
 		return nil
 	}
 
 	if timeSleep > 86400*365*100 {
-		msg.Text = m.getTrans("suspend_invalid_time", "❌ Invalid time")
+		msg.Text = m.T("suspend_invalid_time", "❌ Invalid time")
 		return nil
 	}
 
-	trans := m.getTrans("suspended", "Suspended for {} seconds")
+	trans := m.T("suspended", "Suspended for {} seconds")
 	msg.Text = formatTrans(trans, fmt.Sprintf("%g", timeSleep))
 	time.Sleep(time.Duration(timeSleep * float64(time.Second)))
 	return nil
@@ -284,7 +253,7 @@ func (m *Test) LogsCmd(msg *goroku.Message) error {
 		}
 	}
 
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if lvl == -1 {
 		if im != nil && im.IsComplete() {
 			markup := [][]inline.Button{
@@ -314,14 +283,14 @@ func (m *Test) LogsCmd(msg *goroku.Message) error {
 				},
 				{
 					{
-						Text: m.getTrans("cancel", "🚫 Cancel"),
+						Text: m.T("cancel", "🚫 Cancel"),
 						Handler: func(call inline.CallbackQuery) error {
 							return closeForm(call)
 						},
 					},
 				},
 			}
-			chooseText := m.getTrans("choose_loglevel", "💁‍♂️ <b>Choose log level</b>")
+			chooseText := m.T("choose_loglevel", "💁‍♂️ <b>Choose log level</b>")
 			_, err := im.Form(chooseText, msg, markup)
 			return err
 		}
@@ -354,22 +323,22 @@ func (m *Test) SendLogs(msg any, lvl int, force bool) error {
 	}
 
 	if lvl < 30 && !force && !strings.Contains(strings.ToLower(rawText), "force_insecure") {
-		im := m.client.GorokuInline
+		im := m.Client.GorokuInline
 		if im != nil && im.IsComplete() {
 			markup := [][]inline.Button{
 				{
-					m.makeButton(m.getTrans("send_anyway", "📤 Send anyway"), func(call inline.CallbackQuery) error {
+					m.makeButton(m.T("send_anyway", "📤 Send anyway"), func(call inline.CallbackQuery) error {
 						return m.SendLogs(call, lvl, true)
 					}),
 					{
-						Text: m.getTrans("cancel", "🚫 Cancel"),
+						Text: m.T("cancel", "🚫 Cancel"),
 						Handler: func(call inline.CallbackQuery) error {
 							return closeForm(call)
 						},
 					},
 				},
 			}
-			warnText := formatTrans(m.getTrans("confidential_text", "⚠️ <b>Log level</b> <code>{0}</code> <b>may reveal your confidential info, be careful</b>\n<b>Type</b> <code>.logs {0} force_insecure</code> <b>to ignore this warning</b>"), namedLvl)
+			warnText := formatTrans(m.T("confidential_text", "⚠️ <b>Log level</b> <code>{0}</code> <b>may reveal your confidential info, be careful</b>\n<b>Type</b> <code>.logs {0} force_insecure</code> <b>to ignore this warning</b>"), namedLvl)
 
 			var err error
 			if msgObj, ok := msg.(*goroku.Message); ok {
@@ -394,7 +363,7 @@ func (m *Test) SendLogs(msg any, lvl int, force bool) error {
 
 	if len(filteredLines) == 0 {
 		var err error
-		noLogsText := formatTrans(m.getTrans("no_logs", "🤷‍♀️ <b>You don't have any logs at verbosity</b> <code>{}</code><b>.</b>"), namedLvl)
+		noLogsText := formatTrans(m.T("no_logs", "🤷‍♀️ <b>You don't have any logs at verbosity</b> <code>{}</code><b>.</b>"), namedLvl)
 		if msgObj, ok := msg.(*goroku.Message); ok {
 			err = msgObj.Answer(noLogsText)
 		} else if callObj, ok := msg.(inline.CallbackQuery); ok {
@@ -422,7 +391,7 @@ func (m *Test) SendLogs(msg any, lvl int, force bool) error {
 		gitLink = fmt.Sprintf(" <a href=\"https://github.com/gemeguardian/Goroku/commit/%s\">@%s</a>", hash, hash[:8])
 	}
 	caption := formatTrans(
-		m.getTrans("logs_caption", "📋 <b>Goroku logs with verbosity</b> <code>{0}</code>\n\n⚪️ <b>Version: {1}.{2}.{3}</b>{4}"),
+		m.T("logs_caption", "📋 <b>Goroku logs with verbosity</b> <code>{0}</code>\n\n⚪️ <b>Version: {1}.{2}.{3}</b>{4}"),
 		namedLvl,
 		strconv.Itoa(ver[0]),
 		strconv.Itoa(ver[1]),
@@ -431,7 +400,7 @@ func (m *Test) SendLogs(msg any, lvl int, force bool) error {
 	)
 
 	nr := &namedReader{r: bytes.NewReader([]byte(censoredLogs)), name: filename}
-	_, err := m.client.SendFile(goroku.ChatRefID(chatID), nr, caption)
+	_, err := m.Client.SendFile(goroku.ChatRefID(chatID), nr, caption)
 	return err
 }
 

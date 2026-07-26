@@ -38,7 +38,7 @@ func L() *zap.Logger { return logger.L() }
 // originating chat instead. Returning here rather than blocking is what keeps a
 // never-created channel from pinning a dispatcher slot.
 func (m *GorokuBackup) contentChannelOrFallback(ctx context.Context, topicID int32) (int64, int32) {
-	channelID, err := utils.WaitForContentChannel(ctx, m.db, 3*time.Second, 0)
+	channelID, err := utils.WaitForContentChannel(ctx, m.DB, 3*time.Second, 0)
 	if err != nil {
 		L().Warn("content channel unavailable; delivering backup to the originating chat instead",
 			zap.Error(err))
@@ -49,9 +49,7 @@ func (m *GorokuBackup) contentChannelOrFallback(ctx context.Context, topicID int
 
 // GorokuBackup handles database and module backups.
 type GorokuBackup struct {
-	client       *goroku.CustomTelegramClient
-	db           *goroku.Database
-	translator   *goroku.Translator
+	goroku.Base
 	backupPeriod time.Duration
 	lastBackup   time.Time
 	stopBackup   chan struct{}
@@ -92,37 +90,26 @@ func (m *GorokuBackup) Strings() map[string]string {
 }
 
 func (m *GorokuBackup) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
-	m.client = client
-	m.db = db
-	m.translator = goroku.NewTranslator(client, db)
-	m.translator.Init()
+	if err := m.Base.Init(client, db); err != nil {
+		return err
+	}
 	m.stopBackup = make(chan struct{})
-
 	// Recover FS from an interrupted restore before any scheduled backup work.
 	// See restore_journal.go for residual crash-window documentation.
-	if err := recoverIncompleteModuleRestore(m.db); err != nil {
+	if err := recoverIncompleteModuleRestore(m.DB); err != nil {
 		return fmt.Errorf("recover incomplete module restore: %w", err)
 	}
-
 	if err := m.reloadBackupPeriod(); err != nil {
 		return fmt.Errorf("load backup period: %w", err)
 	}
-
-	rawLastBackup, err := m.db.Get("GorokuBackup", "last_backup", nil)
+	rawLastBackup, err := m.DB.Get("GorokuBackup", "last_backup", nil)
 	if err != nil {
 		return fmt.Errorf("load last backup timestamp: %w", err)
 	}
 	if ts := backupTimestamp(rawLastBackup); ts > 0 {
 		m.lastBackup = time.Unix(ts, 0)
 	}
-
 	return nil
-}
-
-func (m *GorokuBackup) OnDlmod() error { return nil }
-
-func (m *GorokuBackup) getTrans(key, def string) string {
-	return getTrans(m.translator, m.Name(), key, def)
 }
 
 func scheduleBackupRestart() {
@@ -142,7 +129,7 @@ func (m *GorokuBackup) scheduleBackupRestart() {
 
 func (m *GorokuBackup) loadedModulesMapChecked() (map[string]string, error) {
 	loadedMods := make(map[string]string)
-	val, err := m.db.Get("Loader", "loaded_modules", nil)
+	val, err := m.DB.Get("Loader", "loaded_modules", nil)
 	if err != nil {
 		return nil, fmt.Errorf("read module manifest: %w", err)
 	}
@@ -161,12 +148,12 @@ func (m *GorokuBackup) loadedModulesMapChecked() (map[string]string, error) {
 
 // ClientReady starts the periodic backup goroutine and shows period setups if not set.
 func (m *GorokuBackup) ClientReady() error {
-	periodVal, err := m.db.Get("GorokuBackup", "period", nil)
+	periodVal, err := m.DB.Get("GorokuBackup", "period", nil)
 	if err != nil {
 		return fmt.Errorf("read backup period during client-ready: %w", err)
 	}
 	if periodVal == nil {
-		im := m.client.GorokuInline
+		im := m.Client.GorokuInline
 		if im != nil {
 			go func() {
 				// Wait for inline manager to be ready
@@ -212,9 +199,9 @@ func (m *GorokuBackup) ClientReady() error {
 					},
 				}
 
-				periodText := m.getTrans("period", "⌚️ <b>The unit «ALPHA»</b> creates regular backups...")
+				periodText := m.T("period", "⌚️ <b>The unit «ALPHA»</b> creates regular backups...")
 
-				photo := tgbotapi.NewPhoto(m.client.TGID, tgbotapi.FileURL("https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/unit_alpha.png"))
+				photo := tgbotapi.NewPhoto(m.Client.TGID, tgbotapi.FileURL("https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/unit_alpha.png"))
 				photo.Caption = periodText
 				photo.ParseMode = tgbotapi.ModeHTML
 				photo.ReplyMarkup = im.GenerateMarkup(markup)
@@ -246,7 +233,7 @@ func backupTimestamp(value any) int64 {
 }
 
 func (m *GorokuBackup) reloadBackupPeriod() error {
-	rawPeriod, err := m.db.Get("GorokuBackup", "period", nil)
+	rawPeriod, err := m.DB.Get("GorokuBackup", "period", nil)
 	if err != nil {
 		return err
 	}
@@ -266,7 +253,7 @@ func (m *GorokuBackup) reloadBackupPeriod() error {
 func (m *GorokuBackup) commandPrefix() string {
 	// Prefix is presentation-only. Keep the typed getter's compatibility
 	// fallback so a lifecycle read failure cannot hide the primary operation.
-	return m.db.GetString("goroku.main", "command_prefix", ".")
+	return m.DB.GetString("goroku.main", "command_prefix", ".")
 }
 
 func (m *GorokuBackup) completeRestore(err error, notify func(error)) error {
@@ -298,7 +285,7 @@ func (m *GorokuBackup) handleSetBackupPeriodCallback(call inline.CallbackQuery, 
 			return fmt.Errorf("disable backup period: %w", err)
 		}
 
-		neverTrans := m.getTrans("never_bot", "✅ I will not make automatic backups. Can be cancelled using {prefix}set_backup_period")
+		neverTrans := m.T("never_bot", "✅ I will not make automatic backups. Can be cancelled using {prefix}set_backup_period")
 		neverMsg := strings.ReplaceAll(neverTrans, "{prefix}", prefix)
 
 		_ = call.Answer(neverMsg, true)
@@ -310,7 +297,7 @@ func (m *GorokuBackup) handleSetBackupPeriodCallback(call inline.CallbackQuery, 
 		return fmt.Errorf("save backup schedule: %w", err)
 	}
 
-	savedTrans := m.getTrans("saved_bot", "✅ The periodicity is saved! It can be changed with {prefix}set_backup_period")
+	savedTrans := m.T("saved_bot", "✅ The periodicity is saved! It can be changed with {prefix}set_backup_period")
 	savedMsg := strings.ReplaceAll(savedTrans, "{prefix}", prefix)
 
 	_ = call.Answer(savedMsg, true)
@@ -347,10 +334,6 @@ func (m *GorokuBackup) CommandMetas() map[string]goroku.CommandMeta {
 			Aliases: []string{"setbackupperiod"},
 		},
 	}
-}
-
-func (m *GorokuBackup) Watchers() []goroku.WatcherHandler {
-	return []goroku.WatcherHandler{}
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -487,11 +470,11 @@ func restoreModulesPayload(data []byte) ([]byte, error) {
 }
 
 func (m *GorokuBackup) restoreFailure(key, fallback string, err error) string {
-	return formatTrans(m.getTrans(key, fallback), utils.EscapeHTML(err.Error()))
+	return formatTrans(m.T(key, fallback), utils.EscapeHTML(err.Error()))
 }
 
 func (m *GorokuBackup) getBackupTopicID() int32 {
-	val := utils.GetTopicID(m.db, "Backups")
+	val := utils.GetTopicID(m.DB, "Backups")
 	if val == nil {
 		return 0
 	}
@@ -521,7 +504,7 @@ func (m *GorokuBackup) handleConvertCallback(call inline.CallbackQuery, ans stri
 	prefix := m.commandPrefix()
 
 	if ans == "y" {
-		convertingText := m.getTrans("converting_db", "🔄 Converting...")
+		convertingText := m.T("converting_db", "🔄 Converting...")
 		_ = call.Edit(convertingText, tgbotapi.InlineKeyboardMarkup{})
 
 		re := regexp.MustCompile(`"(hikka\.)(\S+":)`)
@@ -529,12 +512,12 @@ func (m *GorokuBackup) handleConvertCallback(call inline.CallbackQuery, ans stri
 
 		filename := fmt.Sprintf("db-converted-%s.json", time.Now().Format("02-01-2006-15-04"))
 
-		captionTrans := m.getTrans("backup_caption", "")
+		captionTrans := m.T("backup_caption", "")
 		caption := strings.ReplaceAll(captionTrans, "{prefix}", utils.EscapeHTML(prefix))
 
 		nr := &namedReader{r: bytes.NewReader([]byte(converted)), name: filename}
 
-		_, err := m.client.SendFile(goroku.ChatRefID(call.ChatID), nr, caption)
+		_, err := m.Client.SendFile(goroku.ChatRefID(call.ChatID), nr, caption)
 		if err != nil {
 			L().Warn("Convert send file error", zap.Error(err))
 		}
@@ -542,7 +525,7 @@ func (m *GorokuBackup) handleConvertCallback(call inline.CallbackQuery, ans stri
 		return nil
 	}
 
-	adviceText := m.getTrans("advice_converting", "You can manually replace...")
+	adviceText := m.T("advice_converting", "You can manually replace...")
 	markup := [][]inline.Button{
 		{
 			{
@@ -554,7 +537,7 @@ func (m *GorokuBackup) handleConvertCallback(call inline.CallbackQuery, ans stri
 			},
 		},
 	}
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im != nil {
 		_ = call.Edit(adviceText, im.GenerateMarkup(markup))
 	}
@@ -572,7 +555,7 @@ func (m *GorokuBackup) BackupDBCmd(msg *goroku.Message) error {
 
 	filename := fmt.Sprintf("db-backup-%s.json", time.Now().Format("02-01-2006-15-04"))
 	prefix := m.commandPrefix()
-	captionTrans := m.getTrans("backup_caption", "")
+	captionTrans := m.T("backup_caption", "")
 	caption := strings.ReplaceAll(captionTrans, "{prefix}", utils.EscapeHTML(prefix))
 
 	nr := &namedReader{r: bytes.NewReader(jsonBytes), name: filename}
@@ -580,14 +563,14 @@ func (m *GorokuBackup) BackupDBCmd(msg *goroku.Message) error {
 	contentChannelID, topicID := m.contentChannelOrFallback(msg.Context(), m.getBackupTopicID())
 
 	if topicID == 0 {
-		_, err = m.client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
+		_, err = m.Client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
 		if err != nil {
 			return msg.Answer(fmt.Sprintf("❌ Failed to send backup: %v", err))
 		}
 		return nil
 	}
 
-	res, err := m.client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
+	res, err := m.Client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
 		nr,
 		caption,
 		goroku.WithReplyTo(int64(topicID)),
@@ -599,7 +582,7 @@ func (m *GorokuBackup) BackupDBCmd(msg *goroku.Message) error {
 	msgID := goroku.GetSentMessageID(res)
 	link := fmt.Sprintf("https://t.me/c/%d/%d/%d", cleanChannelIDForLink(contentChannelID), topicID, msgID)
 
-	sentTrans := m.getTrans("backup_sent", "")
+	sentTrans := m.T("backup_sent", "")
 	sentMsg := formatTrans(sentTrans, link)
 
 	return msg.Answer(sentMsg)
@@ -609,12 +592,12 @@ func (m *GorokuBackup) BackupDBCmd(msg *goroku.Message) error {
 func (m *GorokuBackup) RestoreDBCmd(msg *goroku.Message) error {
 	reply, err := msg.GetReplyMessage()
 	if err != nil || reply == nil || reply.Media == nil {
-		replyToTrans := m.getTrans("reply_to_file", "Reply with .json or .zip file")
+		replyToTrans := m.T("reply_to_file", "Reply with .json or .zip file")
 		return msg.Answer(replyToTrans)
 	}
 
 	backupBytes, err := downloadRestoreMedia(func(w io.Writer) error {
-		return m.client.DownloadMedia(reply.Media, w)
+		return m.Client.DownloadMedia(reply.Media, w)
 	})
 	if err != nil {
 		return msg.Answer(m.restoreFailure("restore_db_failed", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Database restore failed:</b> <code>{}</code>", fmt.Errorf("could not download the replied file: %w", err)))
@@ -628,7 +611,7 @@ func (m *GorokuBackup) RestoreDBCmd(msg *goroku.Message) error {
 
 	reHikka := regexp.MustCompile(`"(hikka\.)(\S+":)`)
 	if reHikka.MatchString(fileContent) {
-		im := m.client.GorokuInline
+		im := m.Client.GorokuInline
 		if im != nil && im.IsComplete() {
 			markup := [][]inline.Button{
 				{
@@ -648,7 +631,7 @@ func (m *GorokuBackup) RestoreDBCmd(msg *goroku.Message) error {
 					},
 				},
 			}
-			warningTrans := m.getTrans("db_warning", "❗️ Hikka backup detected...")
+			warningTrans := m.T("db_warning", "❗️ Hikka backup detected...")
 			_, err = im.Form(warningTrans, msg, markup)
 			return err
 		}
@@ -660,7 +643,7 @@ func (m *GorokuBackup) RestoreDBCmd(msg *goroku.Message) error {
 	}
 
 	return m.completeRestore(restoreErr, func(warning error) {
-		dbRestoredTrans := m.getTrans("db_restored", "Database updated, restarting...")
+		dbRestoredTrans := m.T("db_restored", "Database updated, restarting...")
 		if warning != nil {
 			dbRestoredTrans += fmt.Sprintf("\n\n⚠️ Database was restored, but durability could not be confirmed: %v", warning)
 		}
@@ -697,7 +680,7 @@ func (m *GorokuBackup) BackupModsCmd(msg *goroku.Message) error {
 
 	filename := fmt.Sprintf("mods-%s.zip", time.Now().Format("02-01-2006-15-04"))
 
-	captionTrans := m.getTrans("modules_backup", "")
+	captionTrans := m.T("modules_backup", "")
 	caption := formatTrans(captionTrans, strconv.Itoa(modsCount), prefix)
 
 	nr := &namedReader{r: bytes.NewReader(modsArchive), name: filename}
@@ -705,14 +688,14 @@ func (m *GorokuBackup) BackupModsCmd(msg *goroku.Message) error {
 	contentChannelID, topicID := m.contentChannelOrFallback(msg.Context(), m.getBackupTopicID())
 
 	if topicID == 0 {
-		_, err = m.client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
+		_, err = m.Client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
 		if err != nil {
 			return msg.Answer(fmt.Sprintf("❌ Failed to send backup: %v", err))
 		}
 		return nil
 	}
 
-	res, err := m.client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
+	res, err := m.Client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
 		nr,
 		caption,
 		goroku.WithReplyTo(int64(topicID)),
@@ -724,7 +707,7 @@ func (m *GorokuBackup) BackupModsCmd(msg *goroku.Message) error {
 	msgID := goroku.GetSentMessageID(res)
 	link := fmt.Sprintf("https://t.me/c/%d/%d/%d", cleanChannelIDForLink(contentChannelID), topicID, msgID)
 
-	sentTrans := m.getTrans("backup_sent", "")
+	sentTrans := m.T("backup_sent", "")
 	sentMsg := formatTrans(sentTrans, link)
 
 	return msg.Answer(sentMsg)
@@ -734,12 +717,12 @@ func (m *GorokuBackup) BackupModsCmd(msg *goroku.Message) error {
 func (m *GorokuBackup) RestoreModsCmd(msg *goroku.Message) error {
 	reply, err := msg.GetReplyMessage()
 	if err != nil || reply == nil || reply.Media == nil {
-		replyToTrans := m.getTrans("reply_to_file", "Reply with .json or .zip file")
+		replyToTrans := m.T("reply_to_file", "Reply with .json or .zip file")
 		return msg.Answer(replyToTrans)
 	}
 
 	backupBytes, err := downloadRestoreMedia(func(w io.Writer) error {
-		return m.client.DownloadMedia(reply.Media, w)
+		return m.Client.DownloadMedia(reply.Media, w)
 	})
 	if err != nil {
 		return msg.Answer(m.restoreFailure("restore_modules_failed", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Modules restore failed:</b> <code>{}</code>", fmt.Errorf("could not download the replied file: %w", err)))
@@ -755,7 +738,7 @@ func (m *GorokuBackup) RestoreModsCmd(msg *goroku.Message) error {
 	}
 
 	return m.completeRestore(restoreErr, func(warning error) {
-		modsRestoredTrans := m.getTrans("mods_restored", "Modules restored, restarting")
+		modsRestoredTrans := m.T("mods_restored", "Modules restored, restarting")
 		if warning != nil {
 			modsRestoredTrans += fmt.Sprintf("\n\n⚠️ Modules and database were restored, but durability could not be confirmed: %v", warning)
 		}
@@ -1036,11 +1019,11 @@ func stageModuleRestore(modsDir string, files map[string][]byte) (*moduleRestore
 // retained staged-db candidate when probes are unreadable.
 func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *moduleRestorePlan) error {
 	// Clear any leftover incomplete restore before starting a new one.
-	if err := recoverIncompleteModuleRestoreLocked(m.db); err != nil {
+	if err := recoverIncompleteModuleRestoreLocked(m.DB); err != nil {
 		return fmt.Errorf("recover incomplete module restore: %w", err)
 	}
 
-	oldDB := m.db.GetAll()
+	oldDB := m.DB.GetAll()
 	modsDir := runtimeModuleSourceDir()
 	createdModsDir := false
 	var journal *restoreJournal
@@ -1050,7 +1033,7 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 	rollbackFiles := func() error {
 		if journalState == nil || journal == nil {
 			if stagedDBPath != "" {
-				_ = m.db.AbortStagedReset(stagedDBPath)
+				_ = m.DB.AbortStagedReset(stagedDBPath)
 				stagedDBPath = ""
 			}
 			return nil
@@ -1144,8 +1127,8 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 		}
 
 		dbFile := ""
-		if m.db != nil {
-			dbFile = m.db.LocalPath()
+		if m.DB != nil {
+			dbFile = m.DB.LocalPath()
 		}
 		journal = openRestoreJournal()
 		if err := journal.begin(modsDir, createdModsDir, entries, stagedSources, dbFile); err != nil {
@@ -1169,7 +1152,7 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 		// wait until files_applied is durable. Primary remains pre-restore.
 		// Keep a journal-retained copy until journal clear so recovery can
 		// forward-commit if the same-dir rename candidate is consumed/lost.
-		if staged, stageErr := m.db.StageReset(backupData); stageErr != nil {
+		if staged, stageErr := m.DB.StageReset(backupData); stageErr != nil {
 			cleanupCreatedDir()
 			_ = journal.remove()
 			journal = nil
@@ -1179,7 +1162,7 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			stagedDBPath = staged
 			retained, retainErr := journal.retainStagedDB(staged)
 			if retainErr != nil {
-				_ = m.db.AbortStagedReset(stagedDBPath)
+				_ = m.DB.AbortStagedReset(stagedDBPath)
 				cleanupCreatedDir()
 				_ = journal.remove()
 				journal = nil
@@ -1187,7 +1170,7 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 				return fmt.Errorf("retain staged database candidate: %w", retainErr)
 			}
 			if err := journal.setStagedDBPath(journalState, retained); err != nil {
-				_ = m.db.AbortStagedReset(stagedDBPath)
+				_ = m.DB.AbortStagedReset(stagedDBPath)
 				cleanupCreatedDir()
 				_ = journal.remove()
 				journal = nil
@@ -1197,7 +1180,7 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 		}
 
 		if err := journal.markApplying(journalState); err != nil {
-			_ = m.db.AbortStagedReset(stagedDBPath)
+			_ = m.DB.AbortStagedReset(stagedDBPath)
 			cleanupCreatedDir()
 			_ = journal.remove()
 			journal = nil
@@ -1283,10 +1266,10 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 			// Test seam: still exercise the injected path, then drop the same-dir
 			// candidate. Journal-retained staged-db stays until finish/rollback.
 			dbErr = m.restoreDBReset(backupData)
-			_ = m.db.AbortStagedReset(stagedDBPath)
+			_ = m.DB.AbortStagedReset(stagedDBPath)
 			stagedDBPath = ""
 		} else {
-			dbErr = m.db.CommitStagedReset(stagedDBPath, backupData)
+			dbErr = m.DB.CommitStagedReset(stagedDBPath, backupData)
 			if dbErr == nil {
 				// Same-dir candidate consumed by rename; retained journal copy
 				// stays until finishForwardCommit clears the journal.
@@ -1296,7 +1279,7 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 	} else {
 		resetDB := m.restoreDBReset
 		if resetDB == nil {
-			resetDB = m.db.Reset
+			resetDB = m.DB.Reset
 		}
 		dbErr = resetDB(backupData)
 	}
@@ -1312,7 +1295,7 @@ func (m *GorokuBackup) applyRestore(backupData map[string]map[string]any, plan *
 		}
 		resetDB := m.restoreDBReset
 		if resetDB == nil {
-			resetDB = m.db.Reset
+			resetDB = m.DB.Reset
 		}
 		dbRollbackErr := resetDB(oldDB)
 		filesErr := rollbackFiles()
@@ -1382,7 +1365,7 @@ func (m *GorokuBackup) restoreModulesFromData(data []byte) error {
 		return err
 	}
 	defer func() { _ = os.RemoveAll(plan.dir) }()
-	desiredDB := m.db.GetAll()
+	desiredDB := m.DB.GetAll()
 	loaderData := desiredDB["Loader"]
 	if loaderData == nil {
 		loaderData = make(map[string]any)
@@ -1398,12 +1381,12 @@ func (m *GorokuBackup) restoreModulesFromData(data []byte) error {
 func (m *GorokuBackup) RestoreAllCmd(msg *goroku.Message) error {
 	reply, err := msg.GetReplyMessage()
 	if err != nil || reply == nil || reply.Media == nil {
-		replyToTrans := m.getTrans("reply_to_file", "Reply with .json or .zip file")
+		replyToTrans := m.T("reply_to_file", "Reply with .json or .zip file")
 		return msg.Answer(replyToTrans)
 	}
 
 	backupBytes, err := downloadRestoreMedia(func(w io.Writer) error {
-		return m.client.DownloadMedia(reply.Media, w)
+		return m.Client.DownloadMedia(reply.Media, w)
 	})
 	if err != nil {
 		return msg.Answer(m.restoreFailure("restore_all_failed", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Full backup restore failed:</b> <code>{}</code>", fmt.Errorf("could not download the replied file: %w", err)))
@@ -1415,7 +1398,7 @@ func (m *GorokuBackup) RestoreAllCmd(msg *goroku.Message) error {
 	}
 
 	return m.completeRestore(err, func(warning error) {
-		allRestoredTrans := m.getTrans("all_restored", "Your full backup has been restored, restarting...")
+		allRestoredTrans := m.T("all_restored", "Your full backup has been restored, restarting...")
 		if warning != nil {
 			allRestoredTrans += fmt.Sprintf("\n\n⚠️ The backup was restored, but database durability could not be confirmed: %v", warning)
 		}
@@ -1434,7 +1417,7 @@ func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
 
 	filename := fmt.Sprintf("goroku-%s.backup", time.Now().Format("02-01-2006-15-04"))
 
-	infoTrans := m.getTrans("backupall_info", "")
+	infoTrans := m.T("backupall_info", "")
 	caption := strings.ReplaceAll(infoTrans, "{prefix}", utils.EscapeHTML(prefix))
 
 	nr := &namedReader{r: bytes.NewReader(archiveBytes), name: filename}
@@ -1444,9 +1427,9 @@ func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
 	// 1. Send file via userbot to the forum topic (or PM if topicID == 0)
 	var res any
 	if topicID == 0 {
-		res, err = m.client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
+		res, err = m.Client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
 	} else {
-		res, err = m.client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
+		res, err = m.Client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
 			nr,
 			caption,
 			goroku.WithReplyTo(int64(topicID)),
@@ -1462,7 +1445,7 @@ func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
 	}
 
 	// 2. If inline bot is ready, send a Form with "Restore this" button that references the sent message ID
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im != nil && im.IsComplete() {
 		markup := [][]inline.Button{
 			{
@@ -1486,7 +1469,7 @@ func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
 			id:     int64(topicID),
 		}
 
-		formText := m.getTrans("backupall_sent", "")
+		formText := m.T("backupall_sent", "")
 		link := fmt.Sprintf("https://t.me/c/%d/%d/%d", cleanChannelIDForLink(contentChannelID), topicID, msgID)
 		formTextFormatted := formatTrans(formText, link)
 
@@ -1508,7 +1491,7 @@ func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
 
 	// If inline is not complete, just print the text link to the sent file
 	link := fmt.Sprintf("https://t.me/c/%d/%d/%d", cleanChannelIDForLink(contentChannelID), topicID, msgID)
-	sentTrans := m.getTrans("backupall_sent", "")
+	sentTrans := m.T("backupall_sent", "")
 	sentMsg := formatTrans(sentTrans, link)
 	return msg.Answer(sentMsg)
 }
@@ -1525,7 +1508,7 @@ func (m *GorokuBackup) handleRestoreFromMessageCallback(call inline.CallbackQuer
 			},
 		},
 	}
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im != nil {
 		_ = call.Edit("❓ <b>Are you sure?</b>", im.GenerateMarkup(markup))
 	}
@@ -1533,15 +1516,15 @@ func (m *GorokuBackup) handleRestoreFromMessageCallback(call inline.CallbackQuer
 }
 
 func (m *GorokuBackup) handleRestoreExecuteFromMessageCallback(call inline.CallbackQuery, targetMsgID int64) error {
-	msg, err := m.client.GetMessage(goroku.ChatRefID(call.ChatID), targetMsgID)
+	msg, err := m.Client.GetMessage(goroku.ChatRefID(call.ChatID), targetMsgID)
 	if err != nil || msg == nil || msg.Media == nil {
-		alertText := m.getTrans("reply_to_file", "Reply with .json or .zip file")
+		alertText := m.T("reply_to_file", "Reply with .json or .zip file")
 		_ = call.Answer(alertText, true)
 		return nil
 	}
 
 	backupBytes, err := downloadRestoreMedia(func(w io.Writer) error {
-		return m.client.DownloadMedia(msg.Media, w)
+		return m.Client.DownloadMedia(msg.Media, w)
 	})
 	if err != nil {
 		_ = call.Answer(fmt.Sprintf("Full backup download failed: %v", err), true)
@@ -1555,7 +1538,7 @@ func (m *GorokuBackup) handleRestoreExecuteFromMessageCallback(call inline.Callb
 	}
 
 	return m.completeRestore(err, func(warning error) {
-		restoredText := m.getTrans("all_restored_bot", "Your full backup has been restored, restarting...")
+		restoredText := m.T("all_restored_bot", "Your full backup has been restored, restarting...")
 		if warning != nil {
 			restoredText += fmt.Sprintf("\n\n⚠️ The backup was restored, but database durability could not be confirmed: %v", warning)
 		}
@@ -1572,7 +1555,7 @@ func (m *GorokuBackup) SetBackupPeriodCmd(msg *goroku.Message) error {
 
 	hours, err := strconv.Atoi(arg)
 	if err != nil || hours < 0 || hours >= 200 {
-		invalidTrans := m.getTrans("invalid_args", "🚫 <b>Please specify the correct frequency in hours, or `0` to disable</b>")
+		invalidTrans := m.T("invalid_args", "🚫 <b>Please specify the correct frequency in hours, or `0` to disable</b>")
 		return msg.Answer(invalidTrans)
 	}
 
@@ -1581,7 +1564,7 @@ func (m *GorokuBackup) SetBackupPeriodCmd(msg *goroku.Message) error {
 			return msg.Answer(fmt.Sprintf("❌ Failed to save backup period: %v", err))
 		}
 
-		neverTrans := m.getTrans("never", "✅ I will not make automatic backups. Can be cancelled using {prefix}set_backup_period")
+		neverTrans := m.T("never", "✅ I will not make automatic backups. Can be cancelled using {prefix}set_backup_period")
 		neverMsg := "<b>" + strings.ReplaceAll(neverTrans, "{prefix}", prefix) + "</b>"
 		return msg.Answer(neverMsg)
 	}
@@ -1590,14 +1573,14 @@ func (m *GorokuBackup) SetBackupPeriodCmd(msg *goroku.Message) error {
 		return msg.Answer(fmt.Sprintf("❌ Failed to save backup period: %v", err))
 	}
 
-	savedTrans := m.getTrans("saved", "✅ The periodicity is saved! It can be changed with {prefix}set_backup_period")
+	savedTrans := m.T("saved", "✅ The periodicity is saved! It can be changed with {prefix}set_backup_period")
 	savedMsg := "<b>" + strings.ReplaceAll(savedTrans, "{prefix}", prefix) + "</b>"
 	return msg.Answer(savedMsg)
 }
 
 func (m *GorokuBackup) setBackupPeriod(hours int, now time.Time) error {
 	if hours == 0 {
-		if err := m.db.Set("GorokuBackup", "period", "disabled"); err != nil {
+		if err := m.DB.Set("GorokuBackup", "period", "disabled"); err != nil {
 			return err
 		}
 		m.backupPeriod = 0
@@ -1605,7 +1588,7 @@ func (m *GorokuBackup) setBackupPeriod(hours int, now time.Time) error {
 	}
 
 	periodSecs := hours * 3600
-	if err := m.db.Update(map[string]map[string]any{
+	if err := m.DB.Update(map[string]map[string]any{
 		"GorokuBackup": {"period": float64(periodSecs), "last_backup": now.Unix()},
 	}); err != nil {
 		return err
@@ -1660,7 +1643,7 @@ func (m *GorokuBackup) backupLoop() {
 				continue
 			}
 			now := time.Now()
-			if err := m.db.SetInt64("GorokuBackup", "last_backup", now.Unix()); err != nil {
+			if err := m.DB.SetInt64("GorokuBackup", "last_backup", now.Unix()); err != nil {
 				L().Error("background database write failed",
 					zap.String("operation", "set"),
 					zap.String("owner", "GorokuBackup"),
@@ -1697,7 +1680,7 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 	filename := fmt.Sprintf("backup-%s.backup", time.Now().Format("02-01-2006-15-04"))
 
 	prefix := m.commandPrefix()
-	infoTrans := m.getTrans("backupall_info", "")
+	infoTrans := m.T("backupall_info", "")
 	caption := strings.ReplaceAll(infoTrans, "{prefix}", utils.EscapeHTML(prefix))
 
 	nr := &namedReader{r: bytes.NewReader(archiveBytes), name: filename}
@@ -1707,9 +1690,9 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 	// Send document via userbot
 	var res any
 	if topicID == 0 {
-		res, err = m.client.SendFile(goroku.ChatRefID(m.client.TGID), nr, caption)
+		res, err = m.Client.SendFile(goroku.ChatRefID(m.Client.TGID), nr, caption)
 	} else {
-		res, err = m.client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
+		res, err = m.Client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
 			nr,
 			caption,
 			goroku.WithReplyTo(int64(topicID)),
@@ -1725,7 +1708,7 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 	}
 
 	// Send Form with button if inline is ready
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im != nil && im.IsComplete() {
 		markup := [][]inline.Button{
 			{
@@ -1739,7 +1722,7 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 			},
 		}
 
-		targetChat := m.client.TGID
+		targetChat := m.Client.TGID
 		if topicID != 0 {
 			targetChat = int64(-1000000000000 - contentChannelID)
 		}
@@ -1749,7 +1732,7 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 			id:     int64(topicID),
 		}
 
-		formText := m.getTrans("backupall_sent", "")
+		formText := m.T("backupall_sent", "")
 		link := fmt.Sprintf("https://t.me/c/%d/%d/%d", cleanChannelIDForLink(contentChannelID), topicID, msgID)
 		formTextFormatted := formatTrans(formText, link)
 
@@ -1778,10 +1761,10 @@ func (m *GorokuBackup) backupSecretPaths() []backupSecretPath {
 		{owner: "loader", key: "token"},
 		{owner: "goroku.loader", key: "token"},
 	}
-	if m.client == nil || m.client.Loader == nil {
+	if m.Client == nil || m.Client.Loader == nil {
 		return paths
 	}
-	for _, module := range m.client.Loader.GetModules() {
+	for _, module := range m.Client.Loader.GetModules() {
 		withValidators, ok := module.(goroku.ModuleWithConfigValidators)
 		if !ok {
 			continue
@@ -1842,7 +1825,7 @@ func isBackupSecretMarker(value any) bool {
 }
 
 func (m *GorokuBackup) preserveRestoreSecrets(restored map[string]map[string]any) {
-	current := m.db.GetAll()
+	current := m.DB.GetAll()
 	paths := m.backupSecretPaths()
 	for owner, values := range restored {
 		for key, value := range values {
@@ -1870,7 +1853,7 @@ func (m *GorokuBackup) preserveRestoreSecrets(restored map[string]map[string]any
 // buildDBJSON serialises the database with known secrets replaced by a stable
 // marker. Restore never writes that marker into the live database.
 func (m *GorokuBackup) buildDBJSON() ([]byte, error) {
-	data := copyDatabaseData(m.db.GetAll())
+	data := copyDatabaseData(m.DB.GetAll())
 	for _, path := range m.backupSecretPaths() {
 		owner, key, exists := findDatabasePath(data, path)
 		if exists {

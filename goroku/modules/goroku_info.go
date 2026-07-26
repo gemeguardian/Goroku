@@ -14,9 +14,7 @@ import (
 )
 
 type GorokuInfo struct {
-	client        *goroku.CustomTelegramClient
-	db            *goroku.Database
-	translator    *goroku.Translator
+	goroku.Base
 	customMessage string
 	bannerURL     string
 	pingEmoji     string
@@ -45,14 +43,6 @@ func (m *GorokuInfo) Strings() map[string]string {
 		"_cfg_invert_media":   "Invert media position (above/below text)",
 		"_cfg_show_goroku":    "Show platform name (e.g. Goroku) if premium",
 	}
-}
-
-func (m *GorokuInfo) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
-	m.client = client
-	m.db = db
-	m.translator = goroku.NewTranslator(client, db)
-	m.translator.Init()
-	return nil
 }
 
 var _ goroku.ModuleWithConfigSchema = (*GorokuInfo)(nil)
@@ -98,9 +88,7 @@ func (m *GorokuInfo) ConfigReady(config map[string]any) error {
 	return nil
 }
 
-func (m *GorokuInfo) ClientReady() error { return nil }
-func (m *GorokuInfo) OnUnload() error    { return nil }
-func (m *GorokuInfo) OnDlmod() error     { return nil }
+func (m *GorokuInfo) OnUnload() error { return nil }
 
 func (m *GorokuInfo) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
@@ -109,16 +97,8 @@ func (m *GorokuInfo) Commands() map[string]goroku.CommandHandler {
 	}
 }
 
-func (m *GorokuInfo) Watchers() []goroku.WatcherHandler {
-	return []goroku.WatcherHandler{}
-}
-
-func (m *GorokuInfo) getTrans(key, def string) string {
-	return getTrans(m.translator, m.Name(), key, def)
-}
-
 func (m *GorokuInfo) UbinfoCmd(msg *goroku.Message) error {
-	desc := m.getTrans("desc", "Show userbot info")
+	desc := m.T("desc", "Show userbot info")
 	return msg.Answer(desc)
 }
 
@@ -166,7 +146,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 		if msg.Out {
 			_ = msg.Answer(pingEmoji)
 		} else {
-			res, err := m.client.SendMessageWithOptions(goroku.ChatRefID(msg.ChatID), pingEmoji)
+			res, err := m.Client.SendMessageWithOptions(goroku.ChatRefID(msg.ChatID), pingEmoji)
 			if err == nil {
 				var sentID int64
 				if upd, ok := res.(*tg.Updates); ok {
@@ -185,7 +165,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 						ID:        sentID,
 						ChatID:    msg.ChatID,
 						Out:       true,
-						Client:    m.client,
+						Client:    m.Client,
 						GrepQuery: msg.GrepQuery,
 						CutLines:  msg.CutLines,
 					}
@@ -197,7 +177,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 			if msg.Out {
 				_ = msg.Answer(pingEmoji)
 			} else {
-				_, _ = m.client.GetMe()
+				_, _ = m.Client.GetMe()
 			}
 		}
 	}
@@ -273,23 +253,23 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 	}
 
 	// Format update status
-	prefix := m.db.GetString("goroku.main", "command_prefix", ".")
+	prefix := m.DB.GetString("goroku.main", "command_prefix", ".")
 	if prefix == "" {
 		prefix = "."
 	}
 
 	var upd string
 	if utils.IsUpToDate() {
-		upd = m.getTrans("up-to-date", "🟢 <b>Goroku Userbot is up to date</b>")
+		upd = m.T("up-to-date", "🟢 <b>Goroku Userbot is up to date</b>")
 	} else {
-		updTemplate := m.getTrans("update_required", "🔴 <b>Goroku Userbot needs update: run</b> <code>{0}update</code>")
+		updTemplate := m.T("update_required", "🔴 <b>Goroku Userbot needs update: run</b> <code>{0}update</code>")
 		upd = formatTrans(updTemplate, prefix)
 		upd = strings.ReplaceAll(upd, "{prefix}", utils.EscapeHTML(prefix))
 	}
 
 	// Format current user me
 	var meStr string
-	me, err := m.client.GetMe()
+	me, err := m.Client.GetMe()
 	if err == nil {
 		if u, ok := me.(*tg.User); ok {
 			displayName := u.FirstName
@@ -301,7 +281,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 		}
 	}
 	if meStr == "" {
-		meStr = fmt.Sprintf("<b><a href=\"tg://user?id=%d\">User%d</a></b>", m.client.TGID, m.client.TGID)
+		meStr = fmt.Sprintf("<b><a href=\"tg://user?id=%d\">User%d</a></b>", m.Client.TGID, m.Client.TGID)
 	}
 
 	prefixFormat := fmt.Sprintf("«<code>%s</code>»", utils.EscapeHTML(prefix))
@@ -353,7 +333,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 		text = utils.FormatPlaceholders(text)
 	} else {
 		// Default from translator
-		infoTemplate := m.getTrans("info_message", m.Strings()["info_message"])
+		infoTemplate := m.T("info_message", m.Strings()["info_message"])
 		text = m.formatInfoMessage(infoTemplate, args, platformPremiumEmoji)
 	}
 
@@ -379,7 +359,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 			if msg.ReplyToMsgID != 0 {
 				opts = append(opts, goroku.WithReplyTo(int64(msg.ReplyToMsgID)))
 			}
-			_, err := m.client.SendFileWithOptions(goroku.ChatRefID(msg.ChatID), m.bannerURL, text, opts...)
+			_, err := m.Client.SendFileWithOptions(goroku.ChatRefID(msg.ChatID), m.bannerURL, text, opts...)
 			if err == nil {
 				return nil
 			}

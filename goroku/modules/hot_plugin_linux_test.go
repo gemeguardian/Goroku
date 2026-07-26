@@ -338,7 +338,7 @@ func TestPresetFailedUpdatePreservesSourceRegistryAndDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	presets := &Presets{client: client, db: db}
+	presets := &Presets{Base: goroku.Base{Client: client, DB: db}}
 	_, err = presets.installDownloadedModule(nil, "PresetRollback", "https://example.test/new.go", []byte("not go source"))
 	if err == nil {
 		t.Fatal("invalid preset update succeeded")
@@ -436,7 +436,7 @@ func TestDirectInstallPersistenceFailureRollsBackLiveModuleAndSource(t *testing.
 			if err := os.Mkdir(configPath, 0700); err != nil {
 				t.Fatal(err)
 			}
-			loader := &LoaderModule{client: client, db: db}
+			loader := &LoaderModule{Base: goroku.Base{Client: client, DB: db}}
 			loader.installHotModuleApply = func(_ *goroku.Message, fallbackName, destination string, body []byte) error {
 				if current := client.Loader.LookupByName(fallbackName); current != nil {
 					if err := client.Loader.UnloadModule(current.Name()); err != nil {
@@ -486,7 +486,7 @@ func TestRestoreAndInstallSerializeRuntimeModuleTransaction(t *testing.T) {
 	client.Loader = goroku.NewModules(client, db)
 	restoreEntered := make(chan struct{})
 	releaseRestore := make(chan struct{})
-	backup := &GorokuBackup{db: db, compileModuleValidation: func(string, []byte) error { return nil }, restoreApplyFile: func(source, destination string) error {
+	backup := &GorokuBackup{Base: goroku.Base{DB: db}, compileModuleValidation: func(string, []byte) error { return nil }, restoreApplyFile: func(source, destination string) error {
 		close(restoreEntered)
 		<-releaseRestore
 		return os.Rename(source, destination)
@@ -514,7 +514,7 @@ func TestRestoreAndInstallSerializeRuntimeModuleTransaction(t *testing.T) {
 			installDone <- pathErr
 			return
 		}
-		loader := &LoaderModule{client: client, db: db}
+		loader := &LoaderModule{Base: goroku.Base{Client: client, DB: db}}
 		loader.installHotModuleApply = func(_ *goroku.Message, fallbackName, destination string, body []byte) error {
 			if err := os.WriteFile(destination, body, 0600); err != nil {
 				return err
@@ -605,8 +605,7 @@ func TestInstallCommittedStateWarningRetainsSourceAndRuntime(t *testing.T) {
 	body := directModuleSource(name)
 	cause := errors.New("injected post-rename sync failure")
 	loader := &LoaderModule{
-		client:                client,
-		db:                    db,
+		Base:                  goroku.NewBase(client, db),
 		installHotModuleApply: testInstallApply(client),
 		setLoadedModulesApply: func(modules map[string]string) error {
 			if err := db.SetStringMap("Loader", "loaded_modules", modules); err != nil {
@@ -661,7 +660,7 @@ func TestUninstallStateFaultSemantics(t *testing.T) {
 				t.Fatal(err)
 			}
 			cause := errors.New("injected manifest persistence failure")
-			loader := &LoaderModule{client: client, db: db}
+			loader := &LoaderModule{Base: goroku.Base{Client: client, DB: db}}
 			loader.setLoadedModulesApply = func(modules map[string]string) error {
 				if tc.committed {
 					if err := db.SetStringMap("Loader", "loaded_modules", modules); err != nil {
@@ -721,8 +720,7 @@ func TestPresetManifestFaultSemantics(t *testing.T) {
 			body := directModuleSource(name)
 			cause := errors.New("injected preset manifest failure")
 			presets := &Presets{
-				client:                client,
-				db:                    db,
+				Base:                  goroku.NewBase(client, db),
 				installHotModuleApply: testInstallApply(client),
 				setLoadedModulesApply: func(modules map[string]string) error {
 					if tc.committed {
@@ -812,7 +810,7 @@ func TestLeasedHandlerSelfReplaceIsRejectedCoherently(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	loader := &LoaderModule{client: client, db: db}
+	loader := &LoaderModule{Base: goroku.Base{Client: client, DB: db}}
 	applyCalled := false
 	loader.installHotModuleApply = func(*goroku.Message, string, string, []byte) error {
 		applyCalled = true
@@ -871,7 +869,7 @@ func TestLeasedHandlerSelfUninstallIsRejectedCoherently(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	loader := &LoaderModule{client: client, db: db}
+	loader := &LoaderModule{Base: goroku.Base{Client: client, DB: db}}
 	old := &teardownOrderingModule{name: name}
 	old.command = func(msg *goroku.Message) error {
 		return loader.uninstallPersistedHotModule(msg, name, name)

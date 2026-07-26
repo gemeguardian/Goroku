@@ -56,7 +56,7 @@ func TestOwnerAuthorizedInstallNeedsNoConfirmation(t *testing.T) {
 
 	client := goroku.NewCustomTelegramClient(42)
 	client.Loader = goroku.NewModules(client, db)
-	loader := &LoaderModule{client: client, db: db}
+	loader := &LoaderModule{Base: goroku.Base{Client: client, DB: db}}
 	body := []byte("package modules\n\ntype DirectInstall struct{}\n")
 	loader.installHotModuleApply = func(_ *goroku.Message, _, dest string, source []byte) error {
 		return os.WriteFile(dest, source, 0600)
@@ -85,7 +85,7 @@ func TestInstallReturnsActualRuntimeModuleWhenSourceNameDiffers(t *testing.T) {
 
 	client := goroku.NewCustomTelegramClient(42)
 	client.Loader = goroku.NewModules(client, db)
-	loader := &LoaderModule{client: client, db: db}
+	loader := &LoaderModule{Base: goroku.Base{Client: client, DB: db}}
 	loader.installHotModuleApply = func(_ *goroku.Message, _, dest string, source []byte) error {
 		if err := os.WriteFile(dest, source, 0600); err != nil {
 			return err
@@ -120,7 +120,7 @@ func TestBootRestoreRefusesDigestMismatch(t *testing.T) {
 	if err := setModuleContentDigest(db, "Pinned", contentSHA256(pinned)); err != nil {
 		t.Fatal(err)
 	}
-	loader := &LoaderModule{db: db}
+	loader := &LoaderModule{Base: goroku.Base{DB: db}}
 	// Simulate restoreLoadedModule body verification without network.
 	if err := verifyModuleContentDigest(db, "Pinned", swapped, true); err == nil {
 		t.Fatal("expected swapped content to be rejected against recorded digest")

@@ -33,9 +33,7 @@ func supportedForbiddenMethods() []string {
 }
 
 type APIProtection struct {
-	client           *goroku.CustomTelegramClient
-	db               *goroku.Database
-	translator       *goroku.Translator
+	goroku.Base
 	forbiddenTypeIDs []uint32
 }
 
@@ -56,23 +54,16 @@ func (m *APIProtection) Strings() map[string]string {
 }
 
 func (m *APIProtection) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
-	m.client = client
-	m.db = db
-	m.translator = goroku.NewTranslator(client, db)
-	m.translator.Init()
+	if err := m.Base.Init(client, db); err != nil {
+		return err
+	}
 	if len(m.forbiddenTypeIDs) > 0 {
-		m.client.ForbiddenConstructors = m.forbiddenTypeIDs
+		m.Client.ForbiddenConstructors = m.forbiddenTypeIDs
 	}
 	return nil
 }
 
-func (m *APIProtection) getTrans(key, def string) string {
-	return getTrans(m.translator, "api_protection", key, def)
-}
-
-func (m *APIProtection) ClientReady() error { return nil }
-func (m *APIProtection) OnUnload() error    { return nil }
-func (m *APIProtection) OnDlmod() error     { return nil }
+func (m *APIProtection) OnUnload() error { return nil }
 
 // ConfigSchema is the M7 typed config surface for APILimiter (security).
 func (m *APIProtection) ConfigSchema() []goroku.ConfigField {
@@ -105,7 +96,7 @@ func (m *APIProtection) updateForbiddenMethods(config map[string]any) error {
 			return fmt.Errorf("APILimiter forbidden_methods has type %T, want string slice", raw)
 		}
 	} else {
-		rawVal, err := m.db.Get("APILimiter", "forbidden_methods", []any{"joinChannel", "importChatInvite"})
+		rawVal, err := m.DB.Get("APILimiter", "forbidden_methods", []any{"joinChannel", "importChatInvite"})
 		if err != nil {
 			return err
 		}
@@ -141,8 +132,8 @@ func (m *APIProtection) updateForbiddenMethods(config map[string]any) error {
 	}
 
 	m.forbiddenTypeIDs = typeIDs
-	if m.client != nil {
-		m.client.ForbiddenConstructors = typeIDs
+	if m.Client != nil {
+		m.Client.ForbiddenConstructors = typeIDs
 	}
 	return nil
 }
@@ -165,12 +156,8 @@ func (m *APIProtection) CommandMetas() map[string]goroku.CommandMeta {
 	}
 }
 
-func (m *APIProtection) Watchers() []goroku.WatcherHandler {
-	return []goroku.WatcherHandler{}
-}
-
 func (m *APIProtection) AntifloodCmd(msg *goroku.Message) error {
-	rawVal, err := m.db.Get("APILimiter", "disable_protection", true)
+	rawVal, err := m.DB.Get("APILimiter", "disable_protection", true)
 	if err != nil {
 		return err
 	}
@@ -179,7 +166,7 @@ func (m *APIProtection) AntifloodCmd(msg *goroku.Message) error {
 		return fmt.Errorf("APILimiter disable_protection has type %T, want bool", rawVal)
 	}
 	newDisable := !disable
-	if err := m.db.Set("APILimiter", "disable_protection", newDisable); err != nil {
+	if err := m.DB.Set("APILimiter", "disable_protection", newDisable); err != nil {
 		return err
 	}
 
@@ -192,7 +179,7 @@ func (m *APIProtection) AntifloodCmd(msg *goroku.Message) error {
 		statusKey = "on"
 		statusDef = "<tg-emoji emoji-id=5458450833857322148>👌</tg-emoji> <b>Protection enabled</b>"
 	}
-	msg.Text = m.getTrans(statusKey, statusDef)
+	msg.Text = m.T(statusKey, statusDef)
 	if msg.Client != nil {
 		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 	}
@@ -200,25 +187,25 @@ func (m *APIProtection) AntifloodCmd(msg *goroku.Message) error {
 }
 
 func (m *APIProtection) APIFWProtectionCmd(msg *goroku.Message) error {
-	im := m.client.GorokuInline
+	im := m.Client.GorokuInline
 	if im != nil && im.IsComplete() {
 		_, err := im.Form(
-			m.getTrans("u_sure", "<tg-emoji emoji-id=5312383351217201533>⚠️</tg-emoji> <b>Are you sure?</b>"),
+			m.T("u_sure", "<tg-emoji emoji-id=5312383351217201533>⚠️</tg-emoji> <b>Are you sure?</b>"),
 			msg,
 			[][]inline.Button{
 				{
 					{
-						Text: m.getTrans("btn_no", "🚫 No"),
+						Text: m.T("btn_no", "🚫 No"),
 						Data: "api_fw_no",
 						Handler: func(c inline.CallbackQuery) error {
 							return closeForm(c)
 						},
 					},
 					{
-						Text: m.getTrans("btn_yes", "✅ Yes"),
+						Text: m.T("btn_yes", "✅ Yes"),
 						Data: "api_fw_yes",
 						Handler: func(c inline.CallbackQuery) error {
-							rawVal, err := m.db.Get("APILimiter", "disable_protection", true)
+							rawVal, err := m.DB.Get("APILimiter", "disable_protection", true)
 							if err != nil {
 								return err
 							}
@@ -227,7 +214,7 @@ func (m *APIProtection) APIFWProtectionCmd(msg *goroku.Message) error {
 								return fmt.Errorf("APILimiter disable_protection has type %T, want bool", rawVal)
 							}
 							newDisable := !disable
-							if err := m.db.Set("APILimiter", "disable_protection", newDisable); err != nil {
+							if err := m.DB.Set("APILimiter", "disable_protection", newDisable); err != nil {
 								return err
 							}
 
@@ -240,7 +227,7 @@ func (m *APIProtection) APIFWProtectionCmd(msg *goroku.Message) error {
 								statusKey = "on"
 								statusDef = "<tg-emoji emoji-id=5458450833857322148>👌</tg-emoji> <b>Protection enabled</b>"
 							}
-							text := m.getTrans(statusKey, statusDef)
+							text := m.T(statusKey, statusDef)
 							return c.InlineMessage.Edit(
 								text,
 								tgbotapi.InlineKeyboardMarkup{},
@@ -260,7 +247,7 @@ func (m *APIProtection) SetfloodCmd(msg *goroku.Message) error {
 	args := utils.GetArgsRaw(msg.RawText)
 	args = strings.TrimSpace(args)
 	if args == "" {
-		msg.Text = m.getTrans("args_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Invalid arguments</b>")
+		msg.Text = m.T("args_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Invalid arguments</b>")
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
@@ -268,18 +255,18 @@ func (m *APIProtection) SetfloodCmd(msg *goroku.Message) error {
 	}
 	seconds, err := strconv.Atoi(args)
 	if err != nil || seconds < 0 {
-		msg.Text = m.getTrans("args_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Invalid arguments</b>")
+		msg.Text = m.T("args_invalid", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Invalid arguments</b>")
 		if msg.Client != nil {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
 	}
 
-	m.client.RatelimitMu.Lock()
-	m.client.BypassSuspendUntil = time.Now().Add(time.Duration(seconds) * time.Second)
-	m.client.RatelimitMu.Unlock()
+	m.Client.RatelimitMu.Lock()
+	m.Client.BypassSuspendUntil = time.Now().Add(time.Duration(seconds) * time.Second)
+	m.Client.RatelimitMu.Unlock()
 
-	template := m.getTrans("suspended_for", "<tg-emoji emoji-id=5458450833857322148>👌</tg-emoji> <b>API Flood Protection is disabled for {} seconds</b>")
+	template := m.T("suspended_for", "<tg-emoji emoji-id=5458450833857322148>👌</tg-emoji> <b>API Flood Protection is disabled for {} seconds</b>")
 	msg.Text = formatTrans(template, strconv.Itoa(seconds))
 	if msg.Client != nil {
 		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
