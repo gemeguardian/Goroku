@@ -2,6 +2,7 @@ package modules
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"goroku/goroku"
 	"goroku/goroku/utils"
@@ -223,7 +224,7 @@ func (m *TerminalMod) Watchers() []goroku.WatcherHandler {
 				}
 
 				if msg.ChatID == sess.authMsgChatID && msg.ID == sess.authMsgID {
-					if msg.SenderID != sess.ownerID && msg.SenderID != m.Client.TGID {
+					if msg.SenderID != sess.ownerID && msg.SenderID != m.Client.TGIDValue() {
 						return true
 					}
 					password := strings.TrimSpace(msg.Text)
@@ -256,7 +257,7 @@ func (m *TerminalMod) Watchers() []goroku.WatcherHandler {
 					return true
 				}
 				sess.mu.Lock()
-				if sess.done || (msg.SenderID != sess.ownerID && msg.SenderID != m.Client.TGID) {
+				if sess.done || (msg.SenderID != sess.ownerID && msg.SenderID != m.Client.TGIDValue()) {
 					sess.mu.Unlock()
 					return true
 				}
@@ -283,6 +284,7 @@ func msgKey(msg *goroku.Message) string {
 	return fmt.Sprintf("%d/%d", msg.ChatID, msg.ID)
 }
 
+// safeTruncateUTF8 keeps the first maxBytes of s without splitting a rune.
 func safeTruncateUTF8(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s
@@ -293,6 +295,21 @@ func safeTruncateUTF8(s string, maxBytes int) string {
 		}
 	}
 	return ""
+}
+
+// safeTailUTF8 keeps the last maxBytes of s without splitting a rune. Terminal
+// output is cut from the front — the tail is the interesting part — and cutting
+// at a raw byte offset produced invalid UTF-8 in the middle of a Cyrillic
+// character, which Telegram then refused or rendered as a replacement glyph.
+func safeTailUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	start := len(s) - maxBytes
+	for start < len(s) && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	return s[start:]
 }
 
 var SudoPassPrompts = []string{
@@ -340,15 +357,20 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	// Inherit ambient env for interactive shell compatibility; process group + slot still enforced.
-	cmd, err := defaultProcessExecutor.Command(ctx, ProcessSpec{
+	cmd, err := interactiveExecutor.CommandNoWait(ctx, ProcessSpec{
 		Name:       shell,
 		Args:       []string{"-c", cmdStr},
 		InheritEnv: true,
 	})
+	if errors.Is(err, ErrExecutorBusy) {
+		// One terminal at a time, but say so instead of waiting out the
+		// 15-minute deadline with the user staring at "Running…".
+		return msg.Answer(m.T("terminal_busy", "⏳ <b>Другая команда терминала ещё выполняется.</b> Дождись её завершения или сними её."))
+	}
 	if err != nil {
 		return msg.Answer(formatTrans(m.T("exec_error", "❌ <b>Failed to start command:</b> <code>{}</code>"), escapeHTML(err.Error())))
 	}
-	defer defaultProcessExecutor.Release()
+	defer interactiveExecutor.Release()
 
 	stdinPipe, _ := cmd.StdinPipe()
 
@@ -415,19 +437,19 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 			sess.authNeeded = true
 			sess.user = sudoUser
 			go func(s *terminalSession) {
-				authNeededText := formatTrans(m.T("auth_needed", ""), strconv.FormatInt(m.Client.TGID, 10))
+				authNeededText := formatTrans(m.T("auth_needed", ""), strconv.FormatInt(m.Client.TGIDValue(), 10))
 				_, _ = m.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, authNeededText)
 
 				escapedCmd := "<code>" + escapeHTML(s.cmdStr) + "</code>"
 				escapedUser := escapeHTML(s.user)
 				authMsg := formatTrans(m.T("auth_msg", ""), escapedCmd, escapedUser)
 
-				sentMsg, err := m.Client.SendMessage(goroku.ChatRefID(m.Client.TGID), authMsg)
+				sentMsg, err := m.Client.SendMessage(goroku.ChatRefID(m.Client.TGIDValue()), authMsg)
 				if err == nil {
 					sentID := sentMsg.SentMessageID()
 					s.mu.Lock()
 					s.authMsgID = sentID
-					s.authMsgChatID = m.Client.TGID
+					s.authMsgChatID = m.Client.TGIDValue()
 					s.mu.Unlock()
 				}
 			}(sess)
@@ -444,7 +466,7 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 				escapedUser := escapeHTML(s.user)
 				authMsg := formatTrans(m.T("auth_msg", ""), escapedCmd, escapedUser)
 
-				sentMsg, err := m.Client.SendMessage(goroku.ChatRefID(m.Client.TGID), authMsg)
+				sentMsg, err := m.Client.SendMessage(goroku.ChatRefID(m.Client.TGIDValue()), authMsg)
 				if err == nil {
 					sentID := sentMsg.SentMessageID()
 					s.mu.Lock()
@@ -557,6 +579,12 @@ func (m *TerminalMod) censor(text string) string {
 	return censorExecutionOutput(text, m.Client, m.DB)
 }
 
+// Bytes of stdout/stderr kept in a live terminal message.
+const (
+	terminalStdoutTailBytes = 2048
+	terminalStderrTailBytes = 1024
+)
+
 func (m *TerminalMod) buildTerminalText(cmdStr, stdout, stderr string, rc *int, elapsed time.Duration, truncateOutput bool) string {
 	runningText := formatTrans(m.T("running", ""), escapeHTML(m.censor(cmdStr)))
 	var finishedText string
@@ -566,19 +594,19 @@ func (m *TerminalMod) buildTerminalText(cmdStr, stdout, stderr string, rc *int, 
 
 	stdoutHeader := m.T("stdout", "")
 
-	stdoutStart := 0
-	if truncateOutput && len(stdout) > 2048 {
-		stdoutStart = len(stdout) - 2048
+	stdoutTail := stdout
+	if truncateOutput {
+		stdoutTail = safeTailUTF8(stdout, terminalStdoutTailBytes)
 	}
-	stdoutContent := escapeHTML(stdout[stdoutStart:])
+	stdoutContent := escapeHTML(stdoutTail)
 
 	var stderrPart string
 	if stderr != "" {
-		stderrStart := 0
-		if truncateOutput && len(stderr) > 1024 {
-			stderrStart = len(stderr) - 1024
+		stderrTail := stderr
+		if truncateOutput {
+			stderrTail = safeTailUTF8(stderr, terminalStderrTailBytes)
 		}
-		stderrContent := escapeHTML(stderr[stderrStart:])
+		stderrContent := escapeHTML(stderrTail)
 		stderrPart = m.T("stderr", "") + stderrContent
 	}
 

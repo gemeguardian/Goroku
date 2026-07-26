@@ -151,8 +151,11 @@ func (m *Eval) CommandMetas() map[string]goroku.CommandMeta {
 	}
 }
 
+// censor masks the same credentials .terminal masks. Eval output used to go out
+// verbatim, so an owner running .eval in a public chat with anything that
+// printed the bot token or api_hash published it as-is.
 func (m *Eval) censor(text string) string {
-	return text
+	return censorExecutionOutput(text, m.Client, m.DB)
 }
 
 // evalContextEnvVar carries the eval context to the child interpreter. It is
@@ -202,7 +205,7 @@ func censorExecutionOutput(text string, client *goroku.CustomTelegramClient, db 
 	var phones []string
 	if client != nil {
 		extras = append(extras, client.APIHash)
-		if u := client.GorokuMe; u != nil && u.Phone != "" {
+		if u := client.Me(); u != nil && u.Phone != "" {
 			phones = append(phones, u.Phone)
 		}
 	}
@@ -388,8 +391,8 @@ func (m *Eval) buildPythonEvalSpec(msg *goroku.Message, code string) (ProcessSpe
 		"message": messageToPythonMap(msg),
 		"reply":   messageToPythonMap(reply),
 		"client": map[string]any{
-			"tg_id":    m.Client.TGID,
-			"username": m.Client.Username,
+			"tg_id":    m.Client.TGIDValue(),
+			"username": m.Client.Username(),
 		},
 		"db": redactedDBDump(m.DB),
 	}
@@ -611,7 +614,7 @@ func (m *Eval) runPythonEval(msg *goroku.Message, code string) (*PythonEvalResul
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	proc := defaultProcessExecutor.Run(ctx, spec)
+	proc := evalExecutor.Run(ctx, spec)
 	if proc.Err != nil {
 		return nil, fmt.Errorf("python execution error: %v, stderr: %s", proc.Err, string(proc.Stderr))
 	}

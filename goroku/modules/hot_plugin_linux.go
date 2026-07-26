@@ -709,7 +709,7 @@ func compileHotPlugin(workDir, pluginFile, label string) (string, error) {
 		extraEnv = append(extraEnv, "GOFLAGS="+goFlags)
 	}
 	output := newBoundedBuffer(externalOutputLimit)
-	cmd, err := defaultProcessExecutor.Command(ctx, ProcessSpec{
+	cmd, err := buildExecutor.CommandNoWait(ctx, ProcessSpec{
 		Name:     "go",
 		Args:     buildArgs,
 		Dir:      workDir,
@@ -717,10 +717,15 @@ func compileHotPlugin(workDir, pluginFile, label string) (string, error) {
 		Stdout:   output,
 		Stderr:   output,
 	})
+	if errors.Is(err, ErrExecutorBusy) {
+		// Builds are serialized, but the caller has already been told
+		// "Compiling…" — report the queue instead of hanging on it.
+		return "", fmt.Errorf("another plugin build is already running; try again once it finishes")
+	}
 	if err != nil {
 		return "", err
 	}
-	defer defaultProcessExecutor.Release()
+	defer buildExecutor.Release()
 	err = cmd.Run()
 	if err != nil {
 		return "", fmt.Errorf("plugin build failed for %s: %v\n%s", label, err, output.String())

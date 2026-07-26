@@ -14,15 +14,11 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Re-exec path: ProcessExecutor launches this test binary as the Yaegi worker.
-	if IsYaegiWorkerProcess() {
-		os.Exit(RunYaegiWorker())
-	}
 	os.Exit(m.Run())
 }
 
 func TestEvalCommandAvailableByDefaultAndSafeguarded(t *testing.T) {
-	m := &Eval{Base: goroku.Base{Client: &goroku.CustomTelegramClient{TGID: 123}}}
+	m := &Eval{Base: goroku.Base{Client: goroku.NewCustomTelegramClient(123)}}
 	meta := m.CommandMetas()["eval"]
 	if !meta.OnlyOwner {
 		t.Fatal("eval command must remain owner-only")
@@ -55,9 +51,9 @@ func TestEvalCommandAvailableByDefaultAndSafeguarded(t *testing.T) {
 
 func TestEvalYaegiExpression(t *testing.T) {
 	m := &Eval{
-		Base: goroku.Base{Client: &goroku.CustomTelegramClient{TGID: 123}},
+		Base: goroku.Base{Client: goroku.NewCustomTelegramClient(123)},
 	}
-	res, stdout, stderr, err := m.runYaegiEval(&goroku.Message{}, "client.TGID")
+	res, stdout, stderr, err := m.runYaegiEval(&goroku.Message{}, "client.TGIDValue()")
 	if err != nil {
 		t.Fatalf("unexpected error: %v (stdout=%q stderr=%q)", err, stdout, stderr)
 	}
@@ -67,12 +63,14 @@ func TestEvalYaegiExpression(t *testing.T) {
 }
 
 func TestEvalYaegiFormatsLiveClient(t *testing.T) {
-	m := &Eval{Base: goroku.Base{Client: &goroku.CustomTelegramClient{TGID: 123, Username: "matvey"}}}
+	m := &Eval{Base: goroku.Base{Client: newUsernameTestClient(123, "matvey")}}
 	res, _, _, err := m.runYaegiEval(&goroku.Message{}, "client")
 	if err != nil {
 		t.Fatalf("client expression: %v", err)
 	}
-	if !strings.Contains(res, "TGID:123") || !strings.Contains(res, "Username:matvey") {
+	// Field names follow the struct: the identity fields are unexported and
+	// guarded since they are written by the run goroutine and read everywhere.
+	if !strings.Contains(res, "tgID:123") || !strings.Contains(res, "username:matvey") {
 		t.Fatalf("client output is not informative: %s", res)
 	}
 	if strings.Contains(res, "CustomTelegramClient:") {
@@ -81,21 +79,18 @@ func TestEvalYaegiFormatsLiveClient(t *testing.T) {
 }
 
 func TestEvalYaegiExposesLiveClient(t *testing.T) {
-	m := &Eval{
-		Base: goroku.Base{Client: &goroku.CustomTelegramClient{
-			TGID: 123,
-			GorokuMe: &tg.User{
-				ID:         123,
-				FirstName:  "Matvey",
-				Username:   "example",
-				Phone:      "+15551234567",
-				AccessHash: 987654321,
-				Premium:    true,
-			},
-		}},
-	}
+	client := goroku.NewCustomTelegramClient(123)
+	client.SetMe(&tg.User{
+		ID:         123,
+		FirstName:  "Matvey",
+		Username:   "example",
+		Phone:      "+15551234567",
+		AccessHash: 987654321,
+		Premium:    true,
+	})
+	m := &Eval{Base: goroku.Base{Client: client}}
 
-	res, _, _, err := m.runYaegiEval(&goroku.Message{}, "gorokuctx.Client.GorokuMe.ID")
+	res, _, _, err := m.runYaegiEval(&goroku.Message{}, "gorokuctx.Client.Me().ID")
 	if err != nil {
 		t.Fatalf("GorokuMe.ID: %v", err)
 	}
@@ -103,7 +98,7 @@ func TestEvalYaegiExposesLiveClient(t *testing.T) {
 		t.Fatalf("GorokuMe.ID = %q, want 123", res)
 	}
 
-	res, _, _, err = m.runYaegiEval(&goroku.Message{}, "client.GorokuMe.Phone")
+	res, _, _, err = m.runYaegiEval(&goroku.Message{}, "client.Me().Phone")
 	if err != nil {
 		t.Fatalf("GorokuMe.Phone: %v", err)
 	}
@@ -111,7 +106,7 @@ func TestEvalYaegiExposesLiveClient(t *testing.T) {
 		t.Fatalf("GorokuMe.Phone = %q, want live client value", res)
 	}
 
-	res, _, _, err = m.runYaegiEval(&goroku.Message{}, "client.GorokuMe.AccessHash")
+	res, _, _, err = m.runYaegiEval(&goroku.Message{}, "client.Me().AccessHash")
 	if err != nil {
 		t.Fatalf("GorokuMe.AccessHash: %v", err)
 	}
@@ -121,9 +116,9 @@ func TestEvalYaegiExposesLiveClient(t *testing.T) {
 }
 
 func TestEvalYaegiFallbackUsesCleanInterpreter(t *testing.T) {
-	m := &Eval{Base: goroku.Base{Client: &goroku.CustomTelegramClient{TGID: 123}}}
+	m := &Eval{Base: goroku.Base{Client: goroku.NewCustomTelegramClient(123)}}
 
-	res, _, _, err := m.runYaegiEval(&goroku.Message{}, "value := client.TGID\nreturn value")
+	res, _, _, err := m.runYaegiEval(&goroku.Message{}, "value := client.TGIDValue()\nreturn value")
 	if err != nil {
 		t.Fatalf("statement fallback: %v", err)
 	}
@@ -204,10 +199,9 @@ func TestEvalAndTerminalCensorAccountAndDatabaseSecretsConsistently(t *testing.T
 		}
 	}
 
-	client := &goroku.CustomTelegramClient{
-		APIHash:  "telegram-api-hash-value",
-		GorokuMe: &tg.User{Phone: "+15551234567"},
-	}
+	client := goroku.NewCustomTelegramClient(0)
+	client.APIHash = "telegram-api-hash-value"
+	client.SetMe(&tg.User{Phone: "+15551234567"})
 	input := "hash telegram-api-hash-value phone +1 (555) 123-4567 number 123456789"
 	for _, secret := range dbSecrets {
 		input += " secret " + secret
@@ -248,7 +242,7 @@ func TestBoundedBufferLimitsOutput(t *testing.T) {
 func TestProcessExecutorKillsProcessGroupOnTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	res := defaultProcessExecutor.Run(ctx, ProcessSpec{
+	res := evalExecutor.Run(ctx, ProcessSpec{
 		Name:          "bash",
 		Args:          []string{"-c", "sleep 30 & wait"},
 		CaptureOutput: true,
@@ -267,7 +261,7 @@ func TestProcessExecutorKillsProcessGroupOnTimeout(t *testing.T) {
 func TestProcessExecutorOutputIsBounded(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res := defaultProcessExecutor.Run(ctx, ProcessSpec{
+	res := evalExecutor.Run(ctx, ProcessSpec{
 		Name:          "bash",
 		Args:          []string{"-c", "for ((i=0;i<10000;i++)); do printf 0123456789; done"},
 		OutputLimit:   1024,
@@ -287,7 +281,7 @@ func TestProcessExecutorOutputIsBounded(t *testing.T) {
 func TestProcessExecutorDistinguishesTimeoutAndExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	exitRes := defaultProcessExecutor.Run(ctx, ProcessSpec{
+	exitRes := evalExecutor.Run(ctx, ProcessSpec{
 		Name: "bash",
 		Args: []string{"-c", "exit 7"},
 	})
@@ -297,7 +291,7 @@ func TestProcessExecutorDistinguishesTimeoutAndExit(t *testing.T) {
 
 	tctx, tcancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer tcancel()
-	timeoutRes := defaultProcessExecutor.Run(tctx, ProcessSpec{
+	timeoutRes := evalExecutor.Run(tctx, ProcessSpec{
 		Name: "bash",
 		Args: []string{"-c", "sleep 30"},
 	})
@@ -368,4 +362,11 @@ func TestExecutionAuditContainsDigestNotBody(t *testing.T) {
 	if !strings.Contains(text, "capability=eval.go") {
 		t.Fatalf("audit log missing capability: %s", text)
 	}
+}
+
+// newUsernameTestClient builds a client with a published username.
+func newUsernameTestClient(tgID int64, username string) *goroku.CustomTelegramClient {
+	client := goroku.NewCustomTelegramClient(tgID)
+	client.SetUsername(username)
+	return client
 }

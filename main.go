@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -18,10 +19,6 @@ import (
 )
 
 func main() {
-	// M4.2: out-of-process Yaegi worker (re-exec of this binary).
-	if modules.IsYaegiWorkerProcess() {
-		os.Exit(modules.RunYaegiWorker())
-	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -55,19 +52,14 @@ func run() error {
 			fmt.Println("If this action was intentional, pass --root argument instead")
 			fmt.Println(strings.Repeat("🚷", 15))
 			fmt.Println()
-			fmt.Println("Type force_insecure to ignore this warning")
-			fmt.Println("Type no_sudo if your system has no sudo (Debian vibes)")
-			fmt.Print("> ")
 
-			reader := bufio.NewReader(os.Stdin)
-			text, _ := reader.ReadString('\n')
-			text = strings.TrimSpace(strings.ToLower(text))
-
-			if text == "no_sudo" {
+			noSudo, guardErr := confirmRootRun(os.Stdin, stdinIsTerminal())
+			if guardErr != nil {
+				return guardErr
+			}
+			if noSudo {
 				_ = os.Setenv("NO_SUDO", "1")
 				fmt.Println("Added NO_SUDO in your environment variables")
-			} else if text != "force_insecure" {
-				return fmt.Errorf("refusing to run as root")
 			}
 		}
 	}
@@ -179,4 +171,51 @@ func restartProcess() error {
 		return fmt.Errorf("replace process: %w", err)
 	}
 	return nil
+}
+
+// errRootNoTerminal explains how to start as root when nobody can answer the
+// prompt. Under systemd or cron the process used to die with a bare
+// "refusing to run as root" and no indication of what to do about it.
+var errRootNoTerminal = errors.New(
+	"refusing to run as root: started without a terminal, so the confirmation prompt cannot be answered.\n" +
+		"Pass --root on the command line, or set NO_SUDO=1 (or DOCKER=1) in the unit's environment,\n" +
+		"or — preferably — run the service as an unprivileged user")
+
+// stdinIsTerminal reports whether stdin is a character device. It is a fast
+// pre-check only: /dev/null is a character device too, which is why
+// confirmRootRun also treats an unanswerable read as "no terminal".
+func stdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// confirmRootRun runs the interactive root confirmation. It reports
+// errRootNoTerminal whenever the prompt cannot be answered — no character
+// device at all (pipe, socket, closed handle), or a device that immediately
+// yields EOF (/dev/null under systemd's StandardInput=null).
+func confirmRootRun(stdin io.Reader, isTerminal bool) (noSudo bool, err error) {
+	if !isTerminal {
+		return false, errRootNoTerminal
+	}
+
+	fmt.Println("Type force_insecure to ignore this warning")
+	fmt.Println("Type no_sudo if your system has no sudo (Debian vibes)")
+	fmt.Print("> ")
+
+	text, readErr := bufio.NewReader(stdin).ReadString('\n')
+	text = strings.TrimSpace(strings.ToLower(text))
+	if readErr != nil && text == "" {
+		return false, errRootNoTerminal
+	}
+
+	switch text {
+	case "no_sudo":
+		return true, nil
+	case "force_insecure":
+		return false, nil
+	}
+	return false, fmt.Errorf("refusing to run as root")
 }

@@ -12,7 +12,23 @@ import (
 	"time"
 )
 
-const processExecutorConcurrency = 1
+// Subprocess pools.
+//
+// There used to be one global slot for every external process, so a
+// `.terminal tail -f` (15 minute timeout) blocked `.dlmod` plugin builds and
+// every eval until it finished — and the caller only saw "⏳ Compiling…" until
+// its own context expired, with no signal that it was queued behind something
+// unrelated. The pools are independent because the work is unrelated; each
+// stays serialized within itself, which is what the original limit was for.
+const (
+	interactiveExecutorConcurrency = 1 // .terminal — long-lived, user-attached
+	buildExecutorConcurrency       = 1 // plugin/compiler builds — CPU and disk heavy
+	evalExecutorConcurrency        = 2 // python/node/php/ruby/rust eval — short
+)
+
+// ErrExecutorBusy reports that a pool's slots are all taken. Callers surface it
+// to the user instead of waiting silently until their own deadline expires.
+var ErrExecutorBusy = errors.New("busy")
 
 // ProcessResult is the structured outcome of a managed external process.
 type ProcessResult struct {
@@ -60,7 +76,15 @@ func NewProcessExecutor(concurrency, outputLimit int) *ProcessExecutor {
 	}
 }
 
-var defaultProcessExecutor = NewProcessExecutor(processExecutorConcurrency, externalOutputLimit)
+var (
+	// interactiveExecutor runs .terminal: one at a time, and a caller that
+	// finds it busy is told so rather than queued.
+	interactiveExecutor = NewProcessExecutor(interactiveExecutorConcurrency, externalOutputLimit)
+	// buildExecutor runs plugin builds and compilers.
+	buildExecutor = NewProcessExecutor(buildExecutorConcurrency, externalOutputLimit)
+	// evalExecutor runs interpreted/compiled eval languages.
+	evalExecutor = NewProcessExecutor(evalExecutorConcurrency, externalOutputLimit)
+)
 
 func secureDefaultEnv(extra ...string) []string {
 	path := os.Getenv("PATH")
@@ -94,6 +118,18 @@ func (e *ProcessExecutor) acquire(ctx context.Context) error {
 	}
 }
 
+// TryAcquire takes a slot without waiting. It reports ErrExecutorBusy when the
+// pool is saturated, so a command can tell the user "busy" instead of hanging
+// until its own context expires.
+func (e *ProcessExecutor) TryAcquire() error {
+	select {
+	case e.slots <- struct{}{}:
+		return nil
+	default:
+		return ErrExecutorBusy
+	}
+}
+
 func (e *ProcessExecutor) release() {
 	select {
 	case <-e.slots:
@@ -114,10 +150,26 @@ func (e *ProcessExecutor) buildEnv(spec ProcessSpec) []string {
 // Command prepares an *exec.Cmd with process-group kill and concurrency slot.
 // Caller must Release after the process finishes (Wait/Run).
 func (e *ProcessExecutor) Command(ctx context.Context, spec ProcessSpec) (*exec.Cmd, error) {
+	return e.command(ctx, spec, true)
+}
+
+// CommandNoWait is Command that reports ErrExecutorBusy instead of queueing
+// behind another process in the same pool. Use it where the user is waiting on
+// a reply: silently blocking until the caller's own deadline expires reads as a
+// hang, not as "something else is running".
+func (e *ProcessExecutor) CommandNoWait(ctx context.Context, spec ProcessSpec) (*exec.Cmd, error) {
+	return e.command(ctx, spec, false)
+}
+
+func (e *ProcessExecutor) command(ctx context.Context, spec ProcessSpec, wait bool) (*exec.Cmd, error) {
 	if strings.TrimSpace(spec.Name) == "" {
 		return nil, fmt.Errorf("empty process name")
 	}
-	if err := e.acquire(ctx); err != nil {
+	acquire := e.acquire
+	if !wait {
+		acquire = func(context.Context) error { return e.TryAcquire() }
+	}
+	if err := acquire(ctx); err != nil {
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, spec.Name, spec.Args...) //nolint:gosec
@@ -207,13 +259,13 @@ func (e *ProcessExecutor) Run(ctx context.Context, spec ProcessSpec) ProcessResu
 	return res
 }
 
-// secureCommandContext builds a managed command using the default executor.
-// Slot is held until releaseCommandSlot. Prefer ProcessExecutor for new code.
+// secureCommandContext builds a managed command on the eval pool. The slot is
+// held until releaseCommandSlot. Prefer ProcessExecutor for new code.
 func secureCommandContext(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
-	return defaultProcessExecutor.Command(ctx, ProcessSpec{
+	return evalExecutor.Command(ctx, ProcessSpec{
 		Name: name,
 		Args: args,
 	})
 }
 
-func releaseCommandSlot() { defaultProcessExecutor.Release() }
+func releaseCommandSlot() { evalExecutor.Release() }

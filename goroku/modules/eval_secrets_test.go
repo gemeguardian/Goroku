@@ -105,23 +105,6 @@ func TestPythonEvalContextRedactsSecrets(t *testing.T) {
 	}
 }
 
-// The Yaegi worker gets its snapshot over a pipe to another process; the same
-// values must be stripped there.
-func TestYaegiRequestRedactsSecrets(t *testing.T) {
-	m := newEvalSecretsTestModule(t)
-	req := m.buildYaegiRequest(&goroku.Message{ID: 1}, "1")
-
-	payload, err := json.Marshal(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, secret := range evalSecrets() {
-		if strings.Contains(string(payload), secret) {
-			t.Fatal("a secret reached the Yaegi worker request")
-		}
-	}
-}
-
 // Redaction edits the dump in place, so Dump() has to hand out a copy or the
 // bot would lose its own bot token on the first .evalpy.
 func TestDatabaseDumpReturnsCopy(t *testing.T) {
