@@ -36,6 +36,7 @@ func (c *CustomTelegramClient) GetEntity(entity any, exp int64, force bool) (tg.
 	if c.GorokuEntityCache == nil {
 		c.GorokuEntityCache = make(map[cache.EntityCacheKey]cache.CacheRecordEntity)
 	}
+	c.sweepEntityCacheLocked(now)
 	c.GorokuEntityCache[cacheKey] = record
 	cache.CachePeerAliases(c.GorokuEntityCache, peer, record)
 	c.cacheMu.Unlock()

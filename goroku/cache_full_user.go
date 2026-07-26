@@ -40,6 +40,7 @@ func (c *CustomTelegramClient) GetFullUser(entity any, exp int64, force bool) (*
 	if c.GorokuFullUserCache == nil {
 		c.GorokuFullUserCache = make(map[cache.EntityCacheKey]cache.CacheRecordFullUser)
 	}
+	c.sweepFullUserCacheLocked(now)
 	c.GorokuFullUserCache[cacheKey] = cache.CacheRecordFullUser{
 		User: fullUser,
 		Exp:  cache.CacheExpiryUnix(now, exp),

@@ -48,7 +48,7 @@ func (c *CustomTelegramClient) resolvePeerInternal(ctx context.Context, chat any
 	}
 
 	if id, ok := chat.(int64); ok {
-		if id == c.TGID {
+		if id == c.TGIDValue() {
 			return &tg.InputPeerSelf{}, nil
 		}
 		c.cacheMu.RLock()
@@ -84,7 +84,7 @@ func (c *CustomTelegramClient) resolvePeerInternal(ctx context.Context, chat any
 		return nil, fmt.Errorf("user %d not found in entity cache", id)
 	case int:
 		id := int64(v)
-		if id == c.TGID {
+		if id == c.TGIDValue() {
 			return &tg.InputPeerSelf{}, nil
 		}
 		c.cacheMu.RLock()
@@ -245,6 +245,9 @@ func (c *CustomTelegramClient) cacheEntities(e tg.Entities) {
 	if c.GorokuEntityCache == nil {
 		c.GorokuEntityCache = make(map[cache.EntityCacheKey]cache.CacheRecordEntity)
 	}
+	// Called for every update: this is where the cache grew one to three
+	// entries per newly seen participant, with nothing ever removing them.
+	c.sweepEntityCacheLocked(time.Now().Unix())
 	exp := time.Now().Unix() + 86400*30 // 30 days cache expiration
 
 	for _, user := range e.Users {
@@ -292,6 +295,10 @@ func (c *CustomTelegramClient) cacheEntities(e tg.Entities) {
 			c.GorokuEntityCache[cache.EntityCacheKey{Username: strings.ToLower(channel.Username)}] = record
 		}
 	}
+
+	// A single update can carry hundreds of entities, so the cap has to be
+	// re-applied after the batch, not only before it.
+	c.sweepEntityCacheLocked(time.Now().Unix())
 }
 
 func (c *CustomTelegramClient) buildMessageFromTG(msg *tg.Message) *Message {
@@ -335,13 +342,23 @@ func (c *CustomTelegramClient) buildMessageFromTG(msg *tg.Message) *Message {
 		switch peer := msg.FromID.(type) {
 		case *tg.PeerUser:
 			hMsg.SenderID = peer.UserID
+		case *tg.PeerChannel:
+			// Anonymous admins and channel-signed posts: the sender is a
+			// channel, not a user. SenderID stayed 0, so such a sender could
+			// not be blacklisted or given a tsec rule at all. Record the
+			// channel separately instead of pretending there is no sender.
+			hMsg.SenderChannelID = cache.TelegramChannelChatID(peer.ChannelID)
+			hMsg.SenderIsChannel = true
+		case *tg.PeerChat:
+			hMsg.SenderChannelID = -peer.ChatID
+			hMsg.SenderIsChannel = true
 		}
-	} else if msg.Out || (hMsg.IsPrivate && hMsg.ChatID == c.TGID) {
-		hMsg.SenderID = c.TGID
+	} else if msg.Out || (hMsg.IsPrivate && hMsg.ChatID == c.TGIDValue()) {
+		hMsg.SenderID = c.TGIDValue()
 	} else if hMsg.IsPrivate {
 		hMsg.SenderID = hMsg.ChatID
 	}
-	if c.TGID != 0 && hMsg.SenderID == c.TGID {
+	if c.TGIDValue() != 0 && hMsg.SenderID == c.TGIDValue() {
 		hMsg.Out = true
 	}
 

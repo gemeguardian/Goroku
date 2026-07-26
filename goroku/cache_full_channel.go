@@ -41,6 +41,7 @@ func (c *CustomTelegramClient) GetFullChannel(entity any, exp int64, force bool)
 	if c.GorokuFullChannelCache == nil {
 		c.GorokuFullChannelCache = make(map[cache.EntityCacheKey]cache.CacheRecordFullChannel)
 	}
+	c.sweepFullChannelCacheLocked(now)
 	c.GorokuFullChannelCache[cacheKey] = cache.CacheRecordFullChannel{
 		Channel: fullChannel,
 		Exp:     cache.CacheExpiryUnix(now, exp),

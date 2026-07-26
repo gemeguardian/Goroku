@@ -41,8 +41,8 @@ func (c *CustomTelegramClient) GetPermsCached(entity any, user any, exp int64, f
 		return nil, err
 	}
 	if user == nil {
-		user = c.TGID
-		userKey = cache.EntityCacheKey{ID: c.TGID}
+		user = c.TGIDValue()
+		userKey = cache.EntityCacheKey{ID: c.TGIDValue()}
 	}
 	userPeer, err := c.ResolvePeer(user)
 	if err != nil {
@@ -59,6 +59,7 @@ func (c *CustomTelegramClient) GetPermsCached(entity any, user any, exp int64, f
 	if c.GorokuPermsCache == nil {
 		c.GorokuPermsCache = make(map[cache.EntityCacheKey]map[cache.EntityCacheKey]cache.CacheRecordPerms)
 	}
+	c.sweepPermsCacheLocked(now)
 	if _, ok := c.GorokuPermsCache[entityKey]; !ok {
 		c.GorokuPermsCache[entityKey] = make(map[cache.EntityCacheKey]cache.CacheRecordPerms)
 	}
@@ -98,7 +99,7 @@ func (c *CustomTelegramClient) fetchPermissions(peer tg.InputPeerClass, userPeer
 		}
 		userID := cache.InputPeerUserID(userPeer)
 		if userID == 0 {
-			userID = c.TGID
+			userID = c.TGIDValue()
 		}
 		for _, participant := range participants.Participants {
 			if cache.ChatParticipantUserID(participant) == userID {
