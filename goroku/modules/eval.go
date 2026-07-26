@@ -155,6 +155,48 @@ func (m *Eval) censor(text string) string {
 	return text
 }
 
+// evalContextEnvVar carries the eval context to the child interpreter. It is
+// popped by the script before user code runs.
+const evalContextEnvVar = "GOROKU_EVAL_CONTEXT"
+
+// evalRedactedPlaceholder replaces a secret in an eval context.
+const evalRedactedPlaceholder = "[REDACTED]"
+
+// evalRedactedKeys never reach an eval context under any circumstances. These
+// are the same values censorExecutionOutput masks in command output: handing
+// them to the interpreter would make the masking pointless, since the code
+// could simply print them from its own database snapshot.
+var evalRedactedKeys = map[string][]string{
+	"goroku.inline": {"bot_token"},
+	"main":          {"redis_uri", "db_uri"},
+	"loader":        {"token"},
+	"goroku.loader": {"token"},
+}
+
+// redactedDBDump returns the database dump with evalRedactedKeys blanked.
+// Dump() already returns a deep copy, so the live database is untouched.
+func redactedDBDump(db *goroku.Database) map[string]map[string]any {
+	if db == nil {
+		return nil
+	}
+	dump := db.Dump()
+	for owner, section := range dump {
+		for redactedOwner, keys := range evalRedactedKeys {
+			if !strings.EqualFold(owner, redactedOwner) {
+				continue
+			}
+			for _, key := range keys {
+				for existing := range section {
+					if strings.EqualFold(existing, key) {
+						section[existing] = evalRedactedPlaceholder
+					}
+				}
+			}
+		}
+	}
+	return dump
+}
+
 func censorExecutionOutput(text string, client *goroku.CustomTelegramClient, db *goroku.Database) string {
 	var extras []string
 	var phones []string
@@ -337,7 +379,10 @@ type PythonEvalResult struct {
 	Traceback string  `json:"traceback"`
 }
 
-func (m *Eval) runPythonEval(msg *goroku.Message, code string) (*PythonEvalResult, error) {
+// buildPythonEvalSpec assembles the child-process launch for .evalpy. It is
+// separate from runPythonEval so the shape of the launch — what ends up in
+// Args, what in the environment — can be asserted on without running python.
+func (m *Eval) buildPythonEvalSpec(msg *goroku.Message, code string) (ProcessSpec, error) {
 	reply, _ := msg.GetReplyMessage()
 	ctxData := map[string]any{
 		"message": messageToPythonMap(msg),
@@ -346,23 +391,24 @@ func (m *Eval) runPythonEval(msg *goroku.Message, code string) (*PythonEvalResul
 			"tg_id":    m.Client.TGID,
 			"username": m.Client.Username,
 		},
-		"db": m.DB.Dump(),
+		"db": redactedDBDump(m.DB),
 	}
 	ctxJSON, err := json.Marshal(ctxData)
 	if err != nil {
-		return nil, err
+		return ProcessSpec{}, err
 	}
 
 	py := fmt.Sprintf(`
 import contextlib
 import io
 import json
+import os
 import traceback
 import datetime
 import time
 from types import SimpleNamespace
 
-_ctx = json.loads(%q)
+_ctx = json.loads(os.environ.pop(%q, "{}"))
 
 def _ns(value):
     if isinstance(value, dict):
@@ -542,15 +588,30 @@ except Exception as e:
     _res_data["traceback"] = traceback.format_exc()
 
 print(json.dumps(_res_data))
-`, string(ctxJSON), code, externalOutputLimit)
+`, evalContextEnvVar, code, externalOutputLimit)
+
+	// The script goes in on stdin and the context in the environment: process
+	// arguments are world-readable through /proc/<pid>/cmdline, and the context
+	// carries the whole database dump. /proc/<pid>/environ is readable only by
+	// the process owner.
+	return ProcessSpec{
+		Name:          "python3",
+		Args:          []string{"-"},
+		Stdin:         strings.NewReader(py),
+		ExtraEnv:      []string{evalContextEnvVar + "=" + string(ctxJSON)},
+		CaptureOutput: true,
+	}, nil
+}
+
+func (m *Eval) runPythonEval(msg *goroku.Message, code string) (*PythonEvalResult, error) {
+	spec, err := m.buildPythonEvalSpec(msg, code)
+	if err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	proc := defaultProcessExecutor.Run(ctx, ProcessSpec{
-		Name:          "python3",
-		Args:          []string{"-c", py},
-		CaptureOutput: true,
-	})
+	proc := defaultProcessExecutor.Run(ctx, spec)
 	if proc.Err != nil {
 		return nil, fmt.Errorf("python execution error: %v, stderr: %s", proc.Err, string(proc.Stderr))
 	}

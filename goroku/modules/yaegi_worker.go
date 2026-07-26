@@ -355,8 +355,9 @@ func (m *Eval) buildYaegiRequest(msg *goroku.Message, code string) yaegiWorkerRe
 		}
 	}
 	if m.DB != nil {
-		// Snapshot only — worker cannot mutate parent DB.
-		dump := m.DB.Dump()
+		// Snapshot only — worker cannot mutate parent DB. Secrets are stripped:
+		// the snapshot travels through a pipe to another process.
+		dump := redactedDBDump(m.DB)
 		if dump != nil {
 			req.DB = make(map[string]any, len(dump))
 			for k, v := range dump {
