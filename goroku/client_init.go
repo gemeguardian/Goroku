@@ -61,6 +61,9 @@ func (h *Goroku) initClientContext(ctx context.Context, tgID int64, sessionPath 
 		_ = client.Disconnect()
 		return nil, joinDatabaseCloseError(err, db)
 	}
+	// From here on a dead transport must either come back or take the process
+	// with it; silently standing dead is what /readyz used to hide.
+	h.superviseConnection(client)
 	if err := ctx.Err(); err != nil {
 		return nil, errors.Join(err, h.cleanupUnregisteredRuntime(client, nil, db))
 	}

@@ -26,18 +26,21 @@ func (testInlineProvider) GetBotAPI() *tgbotapi.BotAPI       { return nil }
 func (testInlineProvider) PopWebAuthToken(token string) bool { return token == "ok" }
 
 type testWebClient struct {
-	tgid     int64
-	provider webiface.InlineProvider
+	tgid      int64
+	provider  webiface.InlineProvider
+	connected bool
 }
 
 type authTestClient struct {
-	tgid     int64
-	notified chan struct{}
-	once     sync.Once
-	sendErr  error
+	tgid      int64
+	connected bool
+	notified  chan struct{}
+	once      sync.Once
+	sendErr   error
 }
 
 func (c *authTestClient) TGIDValue() int64                        { return c.tgid }
+func (c *authTestClient) Connected() bool                         { return c.connected }
 func (c *authTestClient) InlineProvider() webiface.InlineProvider { return nil }
 func (c *authTestClient) Connect() error                          { return nil }
 func (c *authTestClient) Disconnect() error                       { return nil }
@@ -90,6 +93,7 @@ func (a lifecycleAddr) Network() string { return "tcp" }
 func (a lifecycleAddr) String() string  { return string(a) }
 
 func (c testWebClient) TGIDValue() int64                          { return c.tgid }
+func (c testWebClient) Connected() bool                           { return c.connected }
 func (c testWebClient) InlineProvider() webiface.InlineProvider   { return c.provider }
 func (c testWebClient) Connect() error                            { return nil }
 func (c testWebClient) Disconnect() error                         { return nil }
@@ -1543,5 +1547,98 @@ func TestIsLoopbackBind(t *testing.T) {
 		if isLoopbackBind(host) {
 			t.Fatalf("expected %q to NOT be loopback", host)
 		}
+	}
+}
+
+// markSetupCompleted writes the durable marker SetupCompleted looks for.
+func markSetupCompleted(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, setupCompletedFileName), []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A registered account whose MTProto transport is dead is not ready. Reporting
+// ok there is what let the bot stand silently dead behind a green probe.
+func TestReadyzReportsDeadTelegramConnection(t *testing.T) {
+	dir := t.TempDir()
+	markSetupCompleted(t, dir)
+	web := NewWeb(WebConfig{DataRoot: dir})
+	if err := web.RegisterClient(RuntimeClient{ID: 42, Client: testWebClient{tgid: 42, connected: false}}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	web.ReadyzHandler(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz = %d, want 503 with no connected client", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "no telegram client connected") {
+		t.Fatalf("readyz body = %q, want the reason", rec.Body.String())
+	}
+}
+
+func TestReadyzIsOkWithAConnectedClient(t *testing.T) {
+	dir := t.TempDir()
+	markSetupCompleted(t, dir)
+	web := NewWeb(WebConfig{DataRoot: dir})
+	if err := web.RegisterClient(RuntimeClient{ID: 42, Client: testWebClient{tgid: 42, connected: true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	web.ReadyzHandler(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "ok" {
+		t.Fatalf("readyz = %d %q, want 200 ok", rec.Code, rec.Body.String())
+	}
+}
+
+// Before onboarding finishes there is no client yet, and that is valid
+// readiness — the panel has to stay reachable to complete setup.
+func TestReadyzIsOkDuringOnboarding(t *testing.T) {
+	web := NewWeb(WebConfig{DataRoot: t.TempDir()})
+
+	rec := httptest.NewRecorder()
+	web.ReadyzHandler(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "ok" {
+		t.Fatalf("readyz = %d %q during onboarding, want 200 ok", rec.Code, rec.Body.String())
+	}
+}
+
+// /healthz is liveness — "the process answers HTTP" — and stays static even
+// when Telegram is gone.
+func TestHealthzStaysOkWithDeadTelegramConnection(t *testing.T) {
+	dir := t.TempDir()
+	markSetupCompleted(t, dir)
+	web := NewWeb(WebConfig{DataRoot: dir})
+	if err := web.RegisterClient(RuntimeClient{ID: 42, Client: testWebClient{tgid: 42}}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	web.HealthzHandler(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthz = %d, want 200: liveness is about the process, not Telegram", rec.Code)
+	}
+}
+
+func TestHealthReportsConnectedClientCount(t *testing.T) {
+	dir := t.TempDir()
+	web := NewWeb(WebConfig{DataRoot: dir})
+	if err := web.RegisterClient(RuntimeClient{ID: 1, Client: testWebClient{tgid: 1, connected: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := web.RegisterClient(RuntimeClient{ID: 2, Client: testWebClient{tgid: 2}}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	web.HealthHandler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `"clients":2`) {
+		t.Fatalf("health body = %q, want clients=2", body)
+	}
+	if !strings.Contains(body, `"clients_connected":1`) {
+		t.Fatalf("health body = %q, want clients_connected=1", body)
 	}
 }

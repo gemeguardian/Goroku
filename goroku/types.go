@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"goroku/goroku/cache"
@@ -224,6 +225,11 @@ type CustomTelegramClient struct {
 	runDone chan struct{}
 	runMu   sync.Mutex
 	runErr  error
+
+	// connState is the observable transport state (see ConnectionState). It is
+	// atomic because the readiness probe reads it from an HTTP handler while
+	// the run goroutine writes it.
+	connState atomic.Int32
 }
 
 // TGIDValue returns the Telegram user ID associated with the client.
@@ -298,6 +304,7 @@ func (c *CustomTelegramClient) Close(ctx context.Context) error {
 	cancel := c.cancel
 	done := c.runDone
 	c.runMu.Unlock()
+	c.setConnectionState(ConnectionDisconnected)
 	if cancel != nil {
 		cancel()
 	}

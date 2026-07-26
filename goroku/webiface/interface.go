@@ -17,6 +17,9 @@ type SentMessage = chatref.SentMessage
 // by the web package. It is implemented by *goroku.CustomTelegramClient.
 type TelegramClient interface {
 	TGIDValue() int64
+	// Connected reports whether the MTProto transport is up. The readiness
+	// probe uses it, so a dead connection is visible from outside.
+	Connected() bool
 	Connect() error
 	Disconnect() error
 	SendCodeRequest(phone string) error

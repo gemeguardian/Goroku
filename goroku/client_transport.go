@@ -38,6 +38,7 @@ func (c *CustomTelegramClient) ConnectContext(ctx context.Context) error {
 	c.ctx, c.cancel = runCtx, runCancel
 	c.runErr = nil
 	c.runMu.Unlock()
+	c.setConnectionState(ConnectionConnecting)
 
 	connectResult := make(chan error, 1)
 	sessionPath := c.SessionPath
@@ -163,6 +164,9 @@ func (c *CustomTelegramClient) ConnectContext(ctx context.Context) error {
 
 	go func() {
 		defer close(runDone)
+		// The transport is down the moment Run returns, whatever the reason.
+		// The supervisor watches runDone and decides whether to reconnect.
+		defer c.setConnectionState(ConnectionDisconnected)
 		err := client.Run(runCtx, func(ctx context.Context) error {
 			status, err := client.Auth().Status(ctx)
 			if err != nil {
@@ -183,6 +187,7 @@ func (c *CustomTelegramClient) ConnectContext(ctx context.Context) error {
 				_ = c.CacheDialogs()
 			}
 
+			c.setConnectionState(ConnectionConnected)
 			select {
 			case connectResult <- nil:
 			default:

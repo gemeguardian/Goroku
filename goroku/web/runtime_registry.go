@@ -56,3 +56,18 @@ func (w *Web) clientCount() int {
 	defer w.mu.RUnlock()
 	return len(w.clientData)
 }
+
+// connectedClientCount counts registered clients whose MTProto transport is
+// actually up. A registered but disconnected client is exactly the state the
+// old static /readyz hid.
+func (w *Web) connectedClientCount() int {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	connected := 0
+	for _, runtime := range w.clientData {
+		if runtime.Client != nil && runtime.Client.Connected() {
+			connected++
+		}
+	}
+	return connected
+}
