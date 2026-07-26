@@ -106,6 +106,7 @@ type Modules struct {
 	pendingModules  map[string]struct{}
 	pendingCommands map[string]struct{}
 	pendingAliases  map[string]struct{}
+	pendingLoops    map[string][]*InfiniteLoop
 	teardowns       map[string]*moduleTeardown
 	watchers        []RegisteredWatcher
 	// Module has no extension-provider hook today, so there is no extension
@@ -128,6 +129,7 @@ func NewModules(client *CustomTelegramClient, db *Database) *Modules {
 		pendingModules:  make(map[string]struct{}),
 		pendingCommands: make(map[string]struct{}),
 		pendingAliases:  make(map[string]struct{}),
+		pendingLoops:    make(map[string][]*InfiniteLoop),
 		teardowns:       make(map[string]*moduleTeardown),
 		watchers:        make([]RegisteredWatcher, 0),
 		loops:           make(map[string][]*InfiniteLoop),
@@ -143,6 +145,10 @@ func (m *Modules) RegisterLoop(loop *InfiniteLoop) {
 		return
 	}
 	ownerKey := strings.ToLower(loop.ModuleName)
+	if _, pending := m.pendingModules[ownerKey]; pending {
+		m.pendingLoops[ownerKey] = append(m.pendingLoops[ownerKey], loop)
+		return
+	}
 	m.loops[ownerKey] = append(m.loops[ownerKey], loop)
 	if loop.autostart {
 		loop.Start()
@@ -166,6 +172,17 @@ func (m *Modules) StopModuleLoops(moduleName string) {
 // ClientReady runs later via SendReady. Any error before commit cleans up and keeps
 // the module invisible to the dispatcher.
 func (m *Modules) RegisterModule(mod Module) error {
+	return m.registerModule(mod, nil)
+}
+
+// RegisterModuleReady prepares a module and runs ready while its commands and
+// watchers are still invisible. The complete registration is published only
+// after ready succeeds.
+func (m *Modules) RegisterModuleReady(mod Module, ready func() error) error {
+	return m.registerModule(mod, ready)
+}
+
+func (m *Modules) registerModule(mod Module, ready func() error) error {
 	if mod == nil {
 		return fmt.Errorf("module is nil")
 	}
@@ -250,6 +267,15 @@ func (m *Modules) RegisterModule(mod Module) error {
 	m.reserveRegistrationLocked(name, prepared)
 	m.mu.Unlock()
 
+	if ready != nil {
+		if err := callModuleReadyHook(ready); err != nil {
+			if cleanupErr := m.failRegistration(name, prepared, mod); cleanupErr != nil {
+				return errors.Join(err, fmt.Errorf("failed to clean up module %s: %w", name, cleanupErr))
+			}
+			return err
+		}
+	}
+
 	// Database owner normalization may consult GetModules, so legacy binding
 	// must run while only the namespace reservation, not m.mu, is held.
 	if err := m.bindLegacyMaskOwners(prepared); err != nil {
@@ -273,6 +299,9 @@ func (m *Modules) RegisterModule(mod Module) error {
 	m.releaseReservationLocked(name, prepared)
 	m.modules[name] = mod
 	m.leases[name] = lease
+	loops := m.pendingLoops[name]
+	delete(m.pendingLoops, name)
+	m.loops[name] = append(m.loops[name], loops...)
 	for _, reg := range prepared.commands {
 		m.commands[reg.Name] = reg
 	}
@@ -280,10 +309,24 @@ func (m *Modules) RegisterModule(mod Module) error {
 		m.aliases[alias] = reg
 	}
 	m.watchers = append(m.watchers, prepared.watchers...)
+	for _, loop := range loops {
+		if loop.autostart {
+			loop.Start()
+		}
+	}
 	m.mu.Unlock()
 
 	L().Info("Successfully registered module", zap.String("module", ownerName))
 	return nil
+}
+
+func callModuleReadyHook(ready func() error) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("module readiness hook panicked: %v", recovered)
+		}
+	}()
+	return ready()
 }
 
 func (m *Modules) bindLegacyMaskOwners(prepared *preparedModuleRegistration) error {
@@ -411,12 +454,17 @@ func (m *Modules) releaseReservationLocked(name string, prepared *preparedModule
 
 func (m *Modules) failRegistration(name string, prepared *preparedModuleRegistration, mod Module) error {
 	m.mu.Lock()
-	loops := m.loops[name]
+	loops := append([]*InfiniteLoop(nil), m.loops[name]...)
+	pendingLoops := append([]*InfiniteLoop(nil), m.pendingLoops[name]...)
 	delete(m.loops, name)
+	delete(m.pendingLoops, name)
 	m.releaseReservationLocked(name, prepared)
 	m.mu.Unlock()
 	for _, loop := range loops {
 		loop.Stop()
+	}
+	for _, loop := range pendingLoops {
+		loop.cancelPending()
 	}
 	if err := mod.OnUnload(); err != nil {
 		L().Error("Error cleaning up failed module", zap.String("module", name), zap.Error(err))
@@ -426,12 +474,7 @@ func (m *Modules) failRegistration(name string, prepared *preparedModuleRegistra
 }
 
 func (m *Modules) cleanupFailedModule(name string, mod Module) error {
-	m.StopModuleLoops(name)
-	if err := mod.OnUnload(); err != nil {
-		L().Error("Error cleaning up failed module", zap.String("module", name), zap.Error(err))
-		return err
-	}
-	return nil
+	return m.failRegistration(name, nil, mod)
 }
 
 func prepareModuleRegistration(mod Module, ownerName, ownerKey string, lease *moduleLease) (*preparedModuleRegistration, error) {
@@ -1006,17 +1049,28 @@ func (m *Modules) Shutdown(ctx context.Context) error {
 	for _, name := range names {
 		name, mod, lease, teardown := name, modules[name], leases[name], teardowns[name]
 		go func() {
+			var err error
+			defer func() {
+				if r := recover(); r != nil {
+					L().Error("Panic during on_unload hook", zap.String("module", name), zap.Any("panic", r))
+					err = fmt.Errorf("panic in on_unload hook for module %s: %v", name, r)
+				}
+				// Accounting runs from the defer so it happens even when the
+				// hook panics. OnUnload is module-supplied code; leaving
+				// teardown.done unclosed would hang the collector below (and
+				// therefore shutdown) forever.
+				m.mu.Lock()
+				teardown.err = err
+				close(teardown.done)
+				m.mu.Unlock()
+			}()
 			if lease != nil {
 				<-lease.drained
 			}
-			err := mod.OnUnload()
+			err = mod.OnUnload()
 			if err != nil {
 				L().Error("Error during on_unload hook", zap.String("module", name), zap.Error(err))
 			}
-			m.mu.Lock()
-			teardown.err = err
-			close(teardown.done)
-			m.mu.Unlock()
 		}()
 	}
 	teardownNames := make([]string, 0, len(teardowns))

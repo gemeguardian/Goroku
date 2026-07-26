@@ -35,6 +35,36 @@ func (w *Web) sessionForToken(token string) *WebSession {
 	return &copy
 }
 
+// maxSessions caps the session map after expired entries are swept.
+const maxSessions = 1024
+
+// sweepSessionsLocked drops expired sessions. w.mu must be held for writing.
+// Expiry is otherwise only noticed when a specific token is looked up again, so
+// sessions that are never revisited would accumulate for the process lifetime.
+func (w *Web) sweepSessionsLocked() {
+	now := time.Now()
+	for token, sess := range w.sessions {
+		if now.After(sess.Expiry) {
+			delete(w.sessions, token)
+		}
+	}
+	if len(w.sessions) < maxSessions {
+		return
+	}
+	// Pathological case (more than maxSessions live, unexpired sessions): drop
+	// the ones closest to expiring rather than letting the map grow unbounded.
+	oldest, oldestExpiry := "", time.Time{}
+	for len(w.sessions) >= maxSessions {
+		oldest, oldestExpiry = "", time.Time{}
+		for token, sess := range w.sessions {
+			if oldest == "" || sess.Expiry.Before(oldestExpiry) {
+				oldest, oldestExpiry = token, sess.Expiry
+			}
+		}
+		delete(w.sessions, oldest)
+	}
+}
+
 func (w *Web) mintSessionTokens() (session string, csrf string, err error) {
 	token, err := randomToken(sessionTokenSize)
 	if err != nil {
@@ -53,6 +83,7 @@ func (w *Web) createSession(wr http.ResponseWriter, r *http.Request) (string, er
 		return "", err
 	}
 	w.mu.Lock()
+	w.sweepSessionsLocked()
 	w.sessions[session] = WebSession{Token: session, CSRFToken: csrf, Expiry: time.Now().Add(sessionTTL)}
 	w.mu.Unlock()
 	w.setSessionCookies(wr, r, session, csrf)
@@ -97,6 +128,7 @@ func (w *Web) exchangeSetupSession(wr http.ResponseWriter, r *http.Request) (str
 		return "", errSetupTokenRequired
 	}
 	w.setupToken = ""
+	w.sweepSessionsLocked()
 	w.sessions[session] = WebSession{Token: session, CSRFToken: csrf, Expiry: time.Now().Add(sessionTTL)}
 	w.mu.Unlock()
 
@@ -117,6 +149,7 @@ func (w *Web) rotateSession(wr http.ResponseWriter, r *http.Request, oldToken st
 	if oldToken != "" {
 		delete(w.sessions, oldToken)
 	}
+	w.sweepSessionsLocked()
 	w.sessions[session] = WebSession{Token: session, CSRFToken: csrf, Expiry: time.Now().Add(sessionTTL)}
 	w.mu.Unlock()
 	w.setSessionCookies(wr, r, session, csrf)

@@ -20,7 +20,7 @@ type testInlineUserBot struct {
 }
 
 func (m *testInlineUserBot) TGIDValue() int64 { return m.TGIDVal }
-func (m *testInlineUserBot) SendMessage(chat chatref.ChatRef, message string) (any, error) {
+func (m *testInlineUserBot) SendMessage(chat chatref.ChatRef, message string) (chatref.SentMessage, error) {
 	m.sendCalls++
 	return nil, nil
 }

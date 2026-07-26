@@ -48,28 +48,18 @@ func randomTokenFrom(reader io.Reader, size int) (string, error) {
 }
 
 func clientIP(r *http.Request) string {
-	raw := r.RemoteAddr
-	if !trustProxyHeaders() {
-		return normalizeClientIP(raw)
+	if !trustedProxyPeer(r) {
+		return normalizeClientIP(r.RemoteAddr)
 	}
-	// Cloudflare-provided client IP is the most trustworthy when present.
 	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
-		raw = cf
-		return normalizeClientIP(raw)
+		return normalizeClientIP(cf)
 	}
-	// Otherwise use the left-most entry of X-Forwarded-For. This assumes
-	// the server is behind a trusted reverse proxy; without such a proxy
-	// the header is trivially spoofable.
 	if xfwd := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xfwd != "" {
-		parts := strings.Split(xfwd, ",")
-		for _, p := range parts {
-			ip := strings.TrimSpace(p)
-			if ip != "" {
-				return normalizeClientIP(ip)
-			}
+		if ip := rightmostUntrustedHop(xfwd); ip != "" {
+			return ip
 		}
 	}
-	return normalizeClientIP(raw)
+	return normalizeClientIP(r.RemoteAddr)
 }
 
 func normalizeClientIP(ip string) string {

@@ -143,7 +143,7 @@ type failingBootstrapClient struct {
 	err error
 }
 
-func (c *failingBootstrapClient) SendMessage(chat chatref.ChatRef, message string) (any, error) {
+func (c *failingBootstrapClient) SendMessage(chat chatref.ChatRef, message string) (chatref.SentMessage, error) {
 	return nil, c.err
 }
 

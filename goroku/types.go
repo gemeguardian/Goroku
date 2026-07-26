@@ -10,6 +10,7 @@ import (
 
 	"goroku/goroku/cache"
 	"goroku/goroku/chatref"
+	"goroku/goroku/inline"
 	"goroku/goroku/inlineiface"
 	"goroku/goroku/logger"
 	"goroku/goroku/webiface"
@@ -21,11 +22,15 @@ import (
 
 var _ = logger.L
 
-// Compile-time consumer-port assertions (M7.2).
+// Compile-time consumer-port assertions (M7.2). They guarantee that
+// *CustomTelegramClient satisfies the web and inline ports and that the send
+// result wrapper implements the typed chatref.SentMessage interface.
 var (
 	_ webiface.TelegramClient  = (*CustomTelegramClient)(nil)
 	_ webiface.Database        = (*Database)(nil)
 	_ webiface.ModulesRegistry = (*Modules)(nil)
+	_ inline.InlineUserBot     = (*CustomTelegramClient)(nil)
+	_ chatref.SentMessage      = sentMessage{}
 )
 
 type Message struct {
@@ -226,6 +231,16 @@ func (c *CustomTelegramClient) TGIDValue() int64 {
 	return c.TGID
 }
 
+// API returns the live gotd Telegram API client for trusted modules.
+// Modules can use any generated MTProto method without a Goroku-side method
+// allowlist; callers remain responsible for peer resolution and permissions.
+func (c *CustomTelegramClient) API() *tg.Client {
+	if c == nil {
+		return nil
+	}
+	return c.rawAPI
+}
+
 func (c *CustomTelegramClient) InlineProvider() webiface.InlineProvider {
 	provider, ok := c.GorokuInline.(webiface.InlineProvider)
 	if !ok {
@@ -367,6 +382,10 @@ type ChatRef = chatref.ChatRef
 type EntityRef = chatref.EntityRef
 type UserRef = chatref.UserRef
 type ChannelRef = chatref.ChannelRef
+
+// SentMessage re-exports the chatref send-result interface used as the typed
+// return of CustomTelegramClient.SendMessage and the webiface/inline ports.
+type SentMessage = chatref.SentMessage
 
 // ChatRefID builds a reference from a numeric chat/user/channel ID.
 func ChatRefID(id int64) ChatRef { return chatref.ID(id) }

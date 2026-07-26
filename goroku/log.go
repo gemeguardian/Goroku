@@ -2,6 +2,7 @@ package goroku
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,12 +23,14 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
+	"goroku/goroku/inline"
 )
 
 type TelegramLogsHandler struct {
 	mu              sync.Mutex
 	flushMu         sync.Mutex
 	buf             []string
+	bufBytes        int
 	client          *CustomTelegramClient
 	logChatID       int64
 	stopCh          chan struct{}
@@ -42,6 +46,11 @@ type TelegramLogsHandler struct {
 	installedOutput *ownedLogWriter
 }
 
+const (
+	telegramLogMaxRecords = 7000
+	telegramLogMaxBytes   = 2 * 1024 * 1024
+)
+
 type ownedLogWriter struct{ io.Writer }
 
 func (h *TelegramLogsHandler) Write(p []byte) (n int, err error) {
@@ -54,7 +63,10 @@ func (h *TelegramLogsHandler) Write(p []byte) (n int, err error) {
 	}
 
 	h.buf = append(h.buf, msg)
-	if len(h.buf) > 7000 {
+	h.bufBytes += len(msg)
+	for len(h.buf) > telegramLogMaxRecords || h.bufBytes > telegramLogMaxBytes {
+		h.bufBytes -= len(h.buf[0])
+		h.buf[0] = ""
 		h.buf = h.buf[1:]
 	}
 	return len(p), nil
@@ -163,6 +175,12 @@ func (h *TelegramLogsHandler) flush() error {
 	}
 	h.mu.Lock()
 	if len(h.buf) >= len(records) {
+		for _, record := range h.buf[:len(records)] {
+			h.bufBytes -= len(record)
+		}
+		if h.bufBytes < 0 {
+			h.bufBytes = 0
+		}
 		h.buf = h.buf[len(records):]
 	}
 	h.mu.Unlock()
@@ -178,18 +196,7 @@ func (h *TelegramLogsHandler) deliverRecords(records []string) error {
 		return fmt.Errorf("Telegram log destination is not configured")
 	}
 
-	var chunks []string
-	var current strings.Builder
-	for _, r := range records {
-		if current.Len()+len(r) > 4000 {
-			chunks = append(chunks, current.String())
-			current.Reset()
-		}
-		current.WriteString(r)
-	}
-	if current.Len() > 0 {
-		chunks = append(chunks, current.String())
-	}
+	normalRecords, tracebacks := parseTelegramLogRecords(records)
 
 	peer, err := client.ResolvePeer(logChatID)
 	if err != nil {
@@ -239,12 +246,18 @@ func (h *TelegramLogsHandler) deliverRecords(records []string) error {
 
 	if botClient != nil {
 		targetBotChatID := client.ToBotAPIChatID(logChatID)
+		for _, traceback := range tracebacks {
+			if err := h.sendTraceback(botClient, client, targetBotChatID, int(topicID), traceback); err != nil {
+				return err
+			}
+		}
+		chunks := splitTelegramLogRecords(normalRecords)
 		if len(chunks) > 5 {
 			allText := strings.Join(records, "")
 			fileBytes := tgbotapi.FileBytes{Name: "goroku-logs.txt", Bytes: []byte(allText)}
 			_, err = SendDocumentWithTopic(botClient, targetBotChatID, fileBytes, "📋 Goroku Logs (too large to send as text)", int(topicID))
 			if err != nil {
-				L().Info("Failed to send logs file via bot: {0}", zap.Any("arg0", err))
+				L().Warn("Failed to send logs file via bot", zap.Error(err))
 			}
 			return err
 		}
@@ -254,7 +267,7 @@ func (h *TelegramLogsHandler) deliverRecords(records []string) error {
 			msgText := fmt.Sprintf("<code>%s</code>", html.EscapeString(chunk))
 			_, err = SendMessageWithTopic(botClient, targetBotChatID, msgText, int(topicID))
 			if err != nil {
-				L().Info("Failed to send logs message via bot: {0}", zap.Any("arg0", err))
+				L().Warn("Failed to send logs message via bot", zap.Error(err))
 				sendErrs = append(sendErrs, err)
 			}
 		}
@@ -269,6 +282,10 @@ func (h *TelegramLogsHandler) deliverRecords(records []string) error {
 		msg.SetTopMsgID(int(topicID))
 		replyTo = msg
 	}
+	for _, traceback := range tracebacks {
+		normalRecords = append(normalRecords, traceback.full)
+	}
+	chunks := splitTelegramLogRecords(normalRecords)
 
 	if len(chunks) > 5 {
 		allText := strings.Join(records, "")
@@ -292,10 +309,10 @@ func (h *TelegramLogsHandler) deliverRecords(records []string) error {
 				RandomID: rand.Int63(), //nolint:gosec
 			})
 			if err != nil {
-				L().Info("Failed to send logs file: {0}", zap.Any("arg0", err))
+				L().Warn("Failed to send logs file", zap.Error(err))
 			}
 		} else {
-			L().Info("Failed to upload logs file: {0}", zap.Any("arg0", err))
+			L().Warn("Failed to upload logs file", zap.Error(err))
 		}
 		return err
 	}
@@ -315,11 +332,165 @@ func (h *TelegramLogsHandler) deliverRecords(records []string) error {
 			RandomID: rand.Int63(), //nolint:gosec
 		})
 		if err != nil {
-			L().Info("Failed to send logs message: {0}", zap.Any("arg0", err))
+			L().Warn("Failed to send logs message", zap.Error(err))
 			sendErrs = append(sendErrs, err)
 		}
 	}
 	return errors.Join(sendErrs...)
+}
+
+type telegramTraceback struct {
+	summary string
+	full    string
+}
+
+func parseTelegramLogRecords(records []string) ([]string, []telegramTraceback) {
+	normal := make([]string, 0, len(records))
+	var tracebacks []telegramTraceback
+	for _, record := range records {
+		var entry struct {
+			Timestamp  string `json:"timestamp"`
+			Level      string `json:"level"`
+			Caller     string `json:"caller"`
+			Message    string `json:"msg"`
+			Error      string `json:"error"`
+			Stacktrace string `json:"stacktrace"`
+		}
+		if json.Unmarshal([]byte(record), &entry) != nil {
+			normal = append(normal, record)
+			continue
+		}
+		if entry.Stacktrace == "" {
+			normal = append(normal, fmt.Sprintf("%s %s %s: %s\n", entry.Timestamp, entry.Level, entry.Caller, entry.Message))
+			continue
+		}
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal([]byte(record), &fields)
+		errText := entry.Error
+		if errText == "" {
+			errText = entry.Message
+		}
+		summary := fmt.Sprintf("%s <b>%s</b> <code>%s</code>\n\n<b>🎯 Source:</b> <code>%s</code>\n<b>❓ Error:</b> <pre>%s</pre>", logLevelIcon(entry.Level), html.EscapeString(entry.Level), html.EscapeString(entry.Timestamp), html.EscapeString(entry.Caller), html.EscapeString(errText))
+		if entry.Message != "" && entry.Message != errText {
+			summary += fmt.Sprintf("\n<b>💭 Message:</b> <code>%s</code>", html.EscapeString(entry.Message))
+		}
+		if context := telegramLogContext(fields); context != "" {
+			summary += "\n<b>📎 Context:</b> " + context
+		}
+		full := summary + "\n\n<b>🪐 Full traceback:</b>\n" + formatGoTraceback(entry.Stacktrace)
+		tracebacks = append(tracebacks, telegramTraceback{summary: summary, full: full})
+	}
+	return normal, tracebacks
+}
+
+func logLevelIcon(level string) string {
+	switch strings.ToUpper(level) {
+	case "ERROR", "FATAL", "PANIC":
+		return "🔴"
+	case "WARN", "WARNING":
+		return "🟡"
+	default:
+		return "🔵"
+	}
+}
+
+func telegramLogContext(fields map[string]json.RawMessage) string {
+	standard := map[string]bool{"timestamp": true, "level": true, "caller": true, "msg": true, "error": true, "stacktrace": true}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		if !standard[key] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) > 3 {
+		keys = keys[:3]
+	}
+	values := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := strings.Trim(string(fields[key]), `"`)
+		if len(value) > 240 {
+			value = value[:237] + "..."
+		}
+		values = append(values, fmt.Sprintf("<code>%s=%s</code>", html.EscapeString(key), html.EscapeString(value)))
+	}
+	return strings.Join(values, " ")
+}
+
+var goTracebackFileLine = regexp.MustCompile(`^\s*(.+?\.go:\d+)(?: \+0x[0-9a-f]+)?$`)
+
+func formatGoTraceback(traceback string) string {
+	lines := strings.Split(strings.TrimSpace(traceback), "\n")
+	frames := make([]string, 0, len(lines))
+	var details []string
+	for i := 0; i < len(lines); i++ {
+		if i+1 < len(lines) {
+			if source := goTracebackFileLine.FindStringSubmatch(lines[i+1]); len(source) == 2 && !strings.HasPrefix(strings.TrimSpace(lines[i]), "goroutine ") {
+				frames = append(frames, fmt.Sprintf("👉 %s in %s", html.EscapeString(source[1]), html.EscapeString(strings.TrimSpace(lines[i]))))
+				i++
+				continue
+			}
+		}
+		if strings.TrimSpace(lines[i]) != "" {
+			details = append(details, "<code>"+html.EscapeString(lines[i])+"</code>")
+		}
+	}
+	if len(frames) == 0 {
+		return strings.Join(details, "\n")
+	}
+	result := "<pre>" + strings.Join(frames, "\n") + "</pre>"
+	if len(details) > 0 {
+		result += "\n" + strings.Join(details, "\n")
+	}
+	return result
+}
+
+func splitTelegramLogRecords(records []string) []string {
+	var chunks []string
+	var current strings.Builder
+	for _, record := range records {
+		if current.Len()+len(record) > 4000 && current.Len() > 0 {
+			chunks = append(chunks, current.String())
+			current.Reset()
+		}
+		current.WriteString(record)
+	}
+	if current.Len() > 0 {
+		chunks = append(chunks, current.String())
+	}
+	return chunks
+}
+
+func (h *TelegramLogsHandler) sendTraceback(bot *tgbotapi.BotAPI, client *CustomTelegramClient, chatID int64, topicID int, traceback telegramTraceback) error {
+	if client.GorokuInline == nil || !client.GorokuInline.IsComplete() {
+		_, err := SendMessageWithTopic(bot, chatID, traceback.full, topicID)
+		return err
+	}
+	manager := client.GorokuInline
+	unit := tracebackUnit(client, traceback)
+	manager.StoreUnit(fmt.Sprintf("logtrace-%d", rand.Int63()), unit)
+	markup := manager.GenerateMarkup(unit.Buttons)
+	_, err := SendMessageWithTopicMarkup(bot, chatID, traceback.summary, topicID, &markup)
+	return err
+}
+
+func tracebackUnit(client *CustomTelegramClient, traceback telegramTraceback) *inline.Unit {
+	return &inline.Unit{
+		// StoreUnit assigns the caller when Module is empty. Loader is always
+		// registered before Telegram logging, so callbacks remain available.
+		Module:          "Loader",
+		DisableSecurity: true,
+		TTL:             time.Now().Add(24 * time.Hour),
+		Buttons: [][]inline.Button{{{
+			Text: "🪐 Full Traceback",
+			Handler: func(call inline.CallbackQuery) error {
+				if call.FromID != client.TGID {
+					return call.Answer("This traceback belongs to the account owner.", true)
+				}
+				return call.Edit(traceback.full, tgbotapi.InlineKeyboardMarkup{})
+			},
+		}}},
+	}
 }
 
 func (h *TelegramLogsHandler) Dump() []string {
@@ -334,6 +505,7 @@ func (h *TelegramLogsHandler) Clear() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.buf = nil
+	h.bufBytes = 0
 }
 
 func OverrideText(err error) string {
@@ -426,6 +598,7 @@ func InitLogging() *TelegramLogsHandler {
 	}
 
 	handler := &TelegramLogsHandler{buf: make([]string, 0)}
+	SetZapLogOutput(handler)
 
 	coloredStdout := &ColoredStdoutWriter{w: os.Stdout}
 	loggingMu.Lock()
@@ -444,8 +617,10 @@ func releaseLogging(handler *TelegramLogsHandler) {
 	if handler == nil {
 		return
 	}
+	released := false
 	loggingMu.Lock()
 	if TGLogHandler == handler {
+		released = true
 		TGLogHandler = nil
 		if log.Writer() == handler.installedOutput {
 			if handler.previousOwned {
@@ -458,6 +633,9 @@ func releaseLogging(handler *TelegramLogsHandler) {
 		}
 	}
 	loggingMu.Unlock()
+	if released {
+		SetZapLogOutput(nil)
+	}
 }
 
 var cleanLogRegex = regexp.MustCompile(`(?i)(Failed to fetch updates|Sleep)`)

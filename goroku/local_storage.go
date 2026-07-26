@@ -68,22 +68,22 @@ func (ls *LocalStorage) getPath(repo, moduleName string) string {
 func (ls *LocalStorage) Save(repo, moduleName, moduleCode string) {
 	size := int64(len(moduleCode))
 	if size > MaxFilesize {
-		L().Info("Module {0} from {1} is too large ({2} bytes) to save to local cache.", zap.Any("arg0", moduleName), zap.Any("arg1", repo), zap.Any("arg2", size))
+		L().Warn("Module from is too large ( bytes) to save to local cache.", zap.Any("module", moduleName), zap.Any("repo", repo), zap.Any("size", size))
 		return
 	}
 
 	if ls.totalSize()+size > MaxTotalsize {
-		L().Info("Local storage is full, cannot save module {0} from {1}.", zap.Any("arg0", moduleName), zap.Any("arg1", repo))
+		L().Warn("Local storage is full, cannot save module from.", zap.Any("module", moduleName), zap.Any("repo", repo))
 		return
 	}
 
 	filePath := ls.getPath(repo, moduleName)
 	err := os.WriteFile(filePath, []byte(moduleCode), 0600)
 	if err != nil {
-		L().Info("Failed to write to local storage cache: {0}", zap.Any("arg0", err))
+		L().Warn("Failed to write to local storage cache", zap.Error(err))
 		return
 	}
-	L().Info("Saved module {0} from {1} to local cache.", zap.Any("arg0", moduleName), zap.Any("arg1", repo))
+	L().Info("Saved module from to local cache.", zap.Any("module", moduleName), zap.Any("repo", repo))
 }
 
 func (ls *LocalStorage) Fetch(repo, moduleName string) (string, error) {
@@ -175,7 +175,7 @@ func (rs *RemoteStorage) Fetch(url, auth string) (string, error) {
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		L().Info("Can't load module from remote storage. Trying local storage: {0}", zap.Any("arg0", err))
+		L().Warn("Can't load module from remote storage. Trying local storage", zap.Error(err))
 		if localCode, fetchErr := rs.localStorage.Fetch(repo, moduleName); fetchErr == nil {
 			log.Println("Module source loaded from local storage.")
 			return localCode, nil
@@ -185,7 +185,7 @@ func (rs *RemoteStorage) Fetch(url, auth string) (string, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		L().Info("Can't load module from remote storage. Trying local storage: {0}", zap.String("status", resp.Status))
+		L().Warn("cannot load module from remote storage; trying local storage", zap.String("status", resp.Status))
 		if localCode, fetchErr := rs.localStorage.Fetch(repo, moduleName); fetchErr == nil {
 			log.Println("Module source loaded from local storage.")
 			return localCode, nil

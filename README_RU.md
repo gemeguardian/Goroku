@@ -48,11 +48,11 @@
 > Хотя Goroku реализует расширенные меры безопасности, установка модулей от ненадежных разработчиков всё же может нанести вред вашему серверу/аккаунту.
 > 
 > **Рекомендации:**
-> - ✅ Скачивайте модули исключительно из официальных репозиториев или от доверенных разработчиков
+> - ✅ Скачивайте модули только из источников, код которых вы проверили
 > - ❌ НЕ устанавливайте модули, если не уверены в их безопасности
 > - ⚠️ Соблюдайте осторожность с неизвестными командами (`.terminal`, `.eval`, `.ecpp` и т. д.)
 > - Go-команда `.eval` доступна только владельцу и всегда включена. Она выполняется **в отдельном worker-процессе через Yaegi**; timeout/cancel **убивает process group worker-а**. Общей памяти с ботом нет (`msg`/`client`/`db` — снимки; `Loader` недоступен). Одновременно допускается только один worker eval.
-> - Нативные Go-плагины (`.dlmod` / `.loadmod` / presets) требуют владельца. Неподписанная/недоверенная установка — только с явным `-confirm` (или доверенным SHA-256 содержимого). Плагины **нельзя полностью выгрузить из памяти процесса** после load — unregister снимает только handlers.
+> - Нативные Go-плагины (`.dlmod` / `.loadmod` / presets) требуют владельца и выполняются как произвольный код внутри процесса. Плагины **нельзя полностью выгрузить из памяти процесса** после load — unregister снимает только handlers. Перед установкой проверяйте исходный код.
 > - Удалённые загрузки модулей — только HTTPS; private/loopback/link-local/CGNAT адреса блокируются.
 
 ---
@@ -133,6 +133,8 @@ root передавайте через `--data-root /var/lib/goroku`. Загру
 | `--root` | Разрешить запуск от root (проверяется в `main`) |
 | `--proxy-host` / `--proxy-port` / `--proxy-secret` | MTProto proxy (нужны все три; secret — hex) |
 | `--proxy-pass` | **Устаревший alias** для `--proxy-secret` — **не** SSH tunnel |
+| `--doctor` | Диагностика (config, data root, Redis, runtime, web bind, trust) и выход; не запускает bot/web |
+| `--config-validate` | Разобрать и валидировать `config.json`, затем выйти (сокращение для секции config из `--doctor`) |
 
 Веб по умолчанию слушает `127.0.0.1` (`GOROKU_IP` / Docker могут переопределить).
 
@@ -150,18 +152,16 @@ curl -fsS "http://127.0.0.1:${PORT:-8080}/healthz"  # ok
 curl -fsS "http://127.0.0.1:${PORT:-8080}/readyz"   # ok
 ```
 
-Полный operations dashboard (trust UI модулей, sanitized logs, update UI) **пока не** поставляется.
+Офлайн pre-flight (без запуска bot/web): `goroku --doctor` проверяет config,
+data-root, Redis, runtime, web-bind и trust-конфиг и завершается кодом 0/1;
+`goroku --config-validate` выполняет только разбор+валидацию config.
 
-### Документация
+Operations веб-дашборда **нет**, и он не планируется для stable. Ops — это CLI
+(`--doctor`) + HTTP health-endpoints + owner-команды в боте; это постоянная
+(на данный момент) поверхность (заморозка scope R8.1).
 
-| Документ | Содержание |
-|----------|------------|
-| [docs/QUICKSTART.md](docs/QUICKSTART.md) | Сборка, первый запуск, production layout |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Карта кода |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Запуск, health, backup, restart, Docker |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Флаги, env, data-root |
-| [docs/RELEASE.md](docs/RELEASE.md) | ldflags, manual / GoReleaser |
-| [SECURITY.md](SECURITY.md) | Threat model + ротация секретов (M0.1, BotFather checklist) |
+Политика безопасности, threat model и инструкции по ротации секретов находятся
+в [SECURITY.md](SECURITY.md).
 
 ### Другое
 <details>
@@ -214,7 +214,7 @@ curl -fsS "http://127.0.0.1:${PORT:-8080}/readyz"   # ok
 
 Goroku — **Go** userbot. Он **не** загружает Python-модули Hikka / FTG / GeekTG.
 
-- **Нативные Go-плагины**: установка/загрузка через owner-команды; неподписанные — с `-confirm` или доверенным SHA-256.
+- **Нативные Go-плагины**: установка/загрузка только через owner-команды; они выполняются как произвольный код внутри процесса, поэтому перед установкой проверяйте исходный код.
 - **Yaegi `.eval`**: только owner, out-of-process worker; timeout убивает worker; только snapshots (без shared memory с ботом).
 - **Семантическое сходство**: стиль команд вдохновлён Heroku/Hikka; это **не** бинарная и не Python import-совместимость.
 
@@ -222,7 +222,7 @@ Goroku — **Go** userbot. Он **не** загружает Python-модули 
 
 ## 📋 Требования
 
-- **Go 1.24.4+** (см. `go.mod`)
+- **Go 1.25.0+** (см. `go.mod`)
 - **API Credentials** с сайта [Telegram Apps](https://my.telegram.org/apps)
 
 ---

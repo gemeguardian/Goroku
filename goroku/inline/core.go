@@ -412,7 +412,7 @@ func (im *InlineManager) RegisterManager(afterBreak bool, ignoreTokenChecks bool
 		im.BotID = self.ID
 		im.mu.Unlock()
 		failed = false
-		L().Info("InlineManager started: @{0}", zap.Any("arg0", self.UserName))
+		L().Info("InlineManager started: @", zap.Any("user_name", self.UserName))
 		return nil
 	}
 }
@@ -440,7 +440,7 @@ func (im *InlineManager) resetBootstrapForBot(botID int64) error {
 		return nil
 	}
 
-	L().Info("[Inline] Inline bot ID changed from {0} to {1} (or first run). Resetting bootstrap flags.", zap.Any("arg0", lastBotID), zap.Any("arg1", botID))
+	L().Info("[Inline] Inline bot ID changed from to (or first run). Resetting bootstrap flags.", zap.Any("last_bot_id", lastBotID), zap.Any("bot_id", botID))
 	if err := im.db.Set("goroku.inline", "folder_created", false); err != nil {
 		return err
 	}
@@ -503,7 +503,7 @@ func sleepContext(ctx context.Context, duration time.Duration) error {
 }
 
 type userBotInlineBootstrap interface {
-	SendMessage(chat chatref.ChatRef, message string) (any, error)
+	SendMessage(chat chatref.ChatRef, message string) (chatref.SentMessage, error)
 	CreateGorokuFolder(botID int64) error
 	InviteBotToChannel(channelPeer tg.InputPeerClass) error
 	PromoteBotToAdmin(channelPeer tg.InputPeerClass) error
@@ -584,15 +584,15 @@ func (im *InlineManager) bootstrapUserBotSideFor(ctx context.Context, afterBreak
 					return false, dbErr
 				}
 				im.setToken("")
-				L().Info("[Inline] Failed to start inline bot, token reset: {0}", zap.Any("arg0", err))
+				L().Info("[Inline] Failed to start inline bot, token reset", zap.Error(err))
 				return true, nil
 			}
 			return false, fmt.Errorf("failed to start inline bot @%s: %w", botUsername, err)
 		}
-		L().Info("[Inline] Inline bot @{0} initialized via userbot side: {1}", zap.Any("arg0", botUsername), zap.Any("arg1", msg))
+		L().Info("[Inline] Inline bot @ initialized via userbot side", zap.Any("bot_username", botUsername), zap.Any("msg", msg))
 
 		if err := client.CreateGorokuFolder(botID); err != nil {
-			L().Info("[Inline] Failed to add inline bot to Goroku folder: {0}", zap.Any("arg0", err))
+			L().Info("[Inline] Failed to add inline bot to Goroku folder", zap.Error(err))
 		} else {
 			if db != nil {
 				if err := db.Set("goroku.inline", "folder_created", true); err != nil {
@@ -606,7 +606,7 @@ func (im *InlineManager) bootstrapUserBotSideFor(ctx context.Context, afterBreak
 		if bootstrappedChannel != 0 && bootstrappedChannel != bootstrappedGroup {
 			channelPeer := &tg.InputPeerChannel{ChannelID: bootstrappedChannel}
 			if err := client.InviteBotToChannel(channelPeer); err != nil {
-				L().Info("[Inline] Failed to invite inline bot to log group: {0}", zap.Any("arg0", err))
+				L().Info("[Inline] Failed to invite inline bot to log group", zap.Error(err))
 			} else {
 				L().Info("Successfully invited inline bot to log group")
 			}

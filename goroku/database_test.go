@@ -176,7 +176,7 @@ func (f *databaseAssetFake) wait() {
 	<-f.release
 }
 
-func (f *databaseAssetFake) StoreAsset(any, int64, int) (int, error) {
+func (f *databaseAssetFake) StoreAsset(AssetInput, int64, int) (int, error) {
 	f.wait()
 	return 42, nil
 }
@@ -189,7 +189,7 @@ func (f *databaseAssetFake) FetchAsset(int64, int) (*Message, error) {
 func TestDatabaseAssetOperationsDoNotHoldDatabaseLockDuringIO(t *testing.T) {
 	operations := map[string]func(*Database) error{
 		"store": func(db *Database) error {
-			_, err := db.StoreAsset("asset")
+			_, err := db.StoreAsset(AssetText{Text: "asset"})
 			return err
 		},
 		"fetch": func(db *Database) error {
@@ -472,16 +472,6 @@ func TestDatabaseUpdateFailureIsAtomic(t *testing.T) {
 		t.Fatalf("invalid batch partially committed: got %#v, want %#v", got, before)
 	}
 
-	protected := map[string]map[string]any{
-		"owner":                {"valid": "must-not-commit"},
-		"GorokuPluginSecurity": {"blocked": true},
-	}
-	if err := db.Update(protected); err == nil {
-		t.Fatal("Update accepted a protected-owner write")
-	}
-	if got := db.Dump(); !reflect.DeepEqual(got, before) {
-		t.Fatalf("protected batch partially committed: got %#v, want %#v", got, before)
-	}
 }
 
 func TestDatabaseSnapshotsRevisionsAndRollbackAreIsolated(t *testing.T) {
@@ -1251,9 +1241,6 @@ func TestDatabaseErrorSentinelsAndContext(t *testing.T) {
 		t.Fatalf("unexpected diagnostic: %#v", diagnostic)
 	}
 
-	if err := db.Set("GorokuPluginSecurity", "key", true); !errors.Is(err, ErrDatabaseWriteProtected) {
-		t.Fatalf("protected Set error = %v", err)
-	}
 	if err := db.Rollback(); !errors.Is(err, ErrDatabaseNoRevision) {
 		t.Fatalf("empty Rollback error = %v", err)
 	}
@@ -1288,8 +1275,7 @@ func TestDatabaseRejectedAndLocalPersistenceFailuresAreAtomic(t *testing.T) {
 	}
 
 	for name, write := range map[string]func() error{
-		"invalid":   func() error { return db.Set("owner", "key", make(chan int)) },
-		"protected": func() error { return db.Set("GorokuPluginSecurity", "key", true) },
+		"invalid": func() error { return db.Set("owner", "key", make(chan int)) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := write(); err == nil {
@@ -1760,6 +1746,27 @@ func TestDatabaseRevisionCapKeepsLatestMutations(t *testing.T) {
 	}
 	if err := db.Rollback(); !errors.Is(err, ErrDatabaseNoRevision) {
 		t.Fatalf("Rollback beyond cap error = %v", err)
+	}
+}
+
+func TestDatabaseUpdateSkipsUnchangedRevision(t *testing.T) {
+	db := NewDatabase(987654)
+	db.dbFile = filepath.Join(t.TempDir(), "database.json")
+	db.initialized = true
+	update := map[string]map[string]any{"module": {"value": "same"}}
+	if err := db.Update(update); err != nil {
+		t.Fatal(err)
+	}
+	revisions := len(db.revisions)
+	generation := db.generation
+	if err := db.Update(update); err != nil {
+		t.Fatal(err)
+	}
+	if len(db.revisions) != revisions {
+		t.Fatalf("unchanged update created a revision: %d -> %d", revisions, len(db.revisions))
+	}
+	if db.generation != generation {
+		t.Fatalf("unchanged update advanced generation: %d -> %d", generation, db.generation)
 	}
 }
 

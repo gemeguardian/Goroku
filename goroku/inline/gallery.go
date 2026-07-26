@@ -236,7 +236,7 @@ func (im *InlineManager) runSlideshow(ctx context.Context, unitID string, c Call
 
 		err := im.updateGalleryPage(unitID, nextPage, c, caption)
 		if err != nil {
-			L().Info("[Gallery] slideshow error: {0}", zap.Any("arg0", err))
+			L().Info("[Gallery] slideshow error", zap.Error(err))
 			return
 		}
 	}

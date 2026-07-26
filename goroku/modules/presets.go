@@ -8,8 +8,10 @@ import (
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
+	"html"
 	"math/rand"
-	"regexp"
+	"net/url"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -127,6 +129,11 @@ func (m *Presets) ClientReady() error {
 	im := m.client.GorokuInline
 	if im != nil {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					goroku.L().Error("panic in presets menu goroutine", zap.Any("panic", r))
+				}
+			}()
 			for i := 0; i < 20; i++ {
 				if im.IsComplete() {
 					break
@@ -273,27 +280,18 @@ func presetKeys() []string {
 }
 
 func moduleFileAndName(link string) (string, string) {
-	urlParts := strings.Split(link, "/")
-	fileName := urlParts[len(urlParts)-1]
+	fileName := path.Base(link)
+	if parsed, err := url.Parse(link); err == nil && parsed.Path != "" {
+		fileName = path.Base(parsed.Path)
+	}
 	return fileName, strings.TrimSuffix(fileName, ".go")
 }
 
 func extractStructName(source []byte, fallback string) string {
-	goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
-	if loc := goReg.FindStringSubmatch(string(source)); len(loc) == 2 {
-		return loc[1]
+	if names, err := moduleStructNames(source); err == nil && len(names) > 0 {
+		return names[0]
 	}
 	return fallback
-}
-
-func sentMessageID(sent any) int64 {
-	if hasID, ok := sent.(interface{ GetID() int64 }); ok {
-		return hasID.GetID()
-	}
-	if hasID, ok := sent.(interface{ GetID() int }); ok {
-		return int64(hasID.GetID())
-	}
-	return 0
 }
 
 func (m *Presets) _isInstalled(link string) bool {
@@ -317,17 +315,13 @@ func downloadPresetModuleURL(link string) ([]byte, error) {
 	return downloadModuleURL(client, link, maxModuleSourceBytes)
 }
 
-func (m *Presets) installDownloadedModule(msg *goroku.Message, modName, link string, body []byte) error {
-	return m.installDownloadedModuleConfirmed(msg, modName, link, body, false)
-}
-
-func (m *Presets) installDownloadedModuleConfirmed(msg *goroku.Message, modName, link string, body []byte, confirmed bool) error {
+func (m *Presets) installDownloadedModule(msg *goroku.Message, modName, link string, body []byte) (goroku.Module, error) {
 	destPath, err := runtimeModuleSourcePath(modName)
 	if err == nil {
 		err = ensureRuntimeModuleSourceDir()
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	loader := &LoaderModule{
@@ -336,7 +330,7 @@ func (m *Presets) installDownloadedModuleConfirmed(msg *goroku.Message, modName,
 		installHotModuleApply: m.installHotModuleApply,
 		setLoadedModulesApply: m.setLoadedModulesApply,
 	}
-	return loader.installPersistedHotModuleConfirmed(msg, modName, destPath, link, body, confirmed)
+	return loader.installPersistedHotModule(msg, modName, destPath, link, body)
 }
 
 func (m *Presets) getCustomPresets() map[string][]string {
@@ -488,14 +482,13 @@ func (m *Presets) InstallSingleModule(call inline.CallbackQuery, preset string, 
 	}
 	_ = closeForm(call)
 
-	// Send message to notify installation start
-	progressMsgText := fmt.Sprintf(m.getTrans("installing_module", "⏳ <b>Installing preset %s... Installing module %s...</b>"), preset, link)
+	progressMsgText := getTrans(m.translator, "Loader", "loading_module_via_file", "<tg-emoji emoji-id=5873204392429096339>🔄</tg-emoji> Loading the module...")
 	progressMsg, err := m.client.SendMessage(goroku.ChatRefID(m.client.TGID), progressMsgText)
 	if err != nil {
 		return err
 	}
 
-	progressMsgID := sentMessageID(progressMsg)
+	progressMsgID := progressMsg.SentMessageID()
 	msgObj := &goroku.Message{
 		ID:     progressMsgID,
 		ChatID: m.client.TGID,
@@ -504,16 +497,22 @@ func (m *Presets) InstallSingleModule(call inline.CallbackQuery, preset string, 
 
 	_, modName := moduleFileAndName(link)
 
-	// Interactive install button is explicit owner confirmation for this module.
 	bodyBytes, err := downloadPresetModuleURL(link)
 	if err != nil {
-		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, fmt.Sprintf("❌ Failed to download module %s", modName))
+		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, formatModuleInstallError(fmt.Errorf("download %s: %w", modName, err)))
 		return nil
 	}
 
-	err = m.installDownloadedModuleConfirmed(msgObj, modName, link, bodyBytes, true)
-	if err != nil {
+	installed, err := m.installDownloadedModule(msgObj, modName, link, bodyBytes)
+	if err != nil && !errors.Is(err, goroku.ErrDatabaseCommitUncertain) {
 		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, moduleTransactionReport("Preset module install", err))
+		return nil
+	}
+	if installed != nil {
+		card := formatModuleInstalledCard(installed, moduleCommandPrefix(m.db, m.client.TGID), sanitizedModuleSource(moduleSourceRepository, link), err, getTrans(m.translator, "Loader", "loaded", defaultLoadedTemplate), defaultCommandEmoji, getTrans(m.translator, "Loader", "undoc", "No docs"))
+		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, card)
+	} else {
+		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, formatModuleInstallError(errors.New("installed module is missing from the runtime registry")))
 	}
 	return nil
 }
@@ -530,7 +529,7 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 		return err
 	}
 
-	progressMsgID := sentMessageID(progressMsg)
+	progressMsgID := progressMsg.SentMessageID()
 	msgObj := &goroku.Message{
 		ID:     progressMsgID,
 		ChatID: m.client.TGID,
@@ -538,20 +537,22 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 	}
 
 	installed := 0
+	failed := 0
 	var durabilityWarnings []error
 	for i, link := range links {
 		_, modName := moduleFileAndName(link)
 
-		updateText := fmt.Sprintf(m.getTrans("installing_module", "⏳ <b>Installing preset %s (%d/%d modules)... Installing module %s...</b>"), preset, i+1, len(links), modName)
+		updateText := fmt.Sprintf(m.getTrans("installing_module", "⏳ <b>Installing preset %s (%d/%d modules)... Installing module %s...</b>"), html.EscapeString(preset), i+1, len(links), html.EscapeString(modName))
 		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, updateText)
-		// Interactive bulk install button is explicit owner confirmation.
 		bodyBytes, err := downloadPresetModuleURL(link)
 		if err != nil {
+			failed++
 			continue
 		}
 
-		if err = m.installDownloadedModuleConfirmed(msgObj, modName, link, bodyBytes, true); err != nil {
+		if _, err = m.installDownloadedModule(msgObj, modName, link, bodyBytes); err != nil {
 			if !errors.Is(err, goroku.ErrDatabaseCommitUncertain) {
+				failed++
 				continue
 			}
 			durabilityWarnings = append(durabilityWarnings, err)
@@ -560,11 +561,14 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 		time.Sleep(500 * time.Millisecond)
 	}
 
+	summary := fmt.Sprintf("✅ <b>Preset installation complete</b>\n<blockquote><b>Preset:</b> %s\n<b>Installed:</b> %d\n<b>Failed:</b> %d</blockquote>", html.EscapeString(preset), installed, failed)
 	if len(durabilityWarnings) > 0 {
-		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, moduleTransactionReport("Preset install", errors.Join(durabilityWarnings...)))
-	} else if installed == 0 {
-		_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, "❌ No modules were loaded.")
+		summary += fmt.Sprintf("\n⚠️ <i>%d module(s) are active with manifest durability warnings.</i>", len(durabilityWarnings))
 	}
+	if installed == 0 {
+		summary = fmt.Sprintf("❌ <b>No preset modules were installed</b>\n<blockquote><b>Preset:</b> %s\n<b>Failed:</b> %d</blockquote>", html.EscapeString(preset), failed)
+	}
+	_, _ = m.client.EditMessage(goroku.ChatRefID(m.client.TGID), progressMsgID, summary)
 
 	return nil
 }
@@ -611,18 +615,20 @@ func (m *Presets) PresetCmd(msg *goroku.Message) error {
 		_ = msg.Answer(msg.Text)
 
 		installed := 0
+		failed := 0
 		var durabilityWarnings []error
-		// Text install requires -confirm (or pre-trusted content digest).
 		for _, url := range modules {
 			_, modName := moduleFileAndName(url)
 
 			bodyBytes, err := downloadPresetModuleURL(url)
 			if err != nil {
+				failed++
 				continue
 			}
 
-			if err := m.installDownloadedModule(msg, modName, url, bodyBytes); err != nil {
+			if _, err := m.installDownloadedModule(msg, modName, url, bodyBytes); err != nil {
 				if !errors.Is(err, goroku.ErrDatabaseCommitUncertain) {
+					failed++
 					continue
 				}
 				durabilityWarnings = append(durabilityWarnings, err)
@@ -630,12 +636,14 @@ func (m *Presets) PresetCmd(msg *goroku.Message) error {
 			installed++
 		}
 
+		summary := fmt.Sprintf("✅ <b>Preset installation complete</b>\n<blockquote><b>Preset:</b> %s\n<b>Installed:</b> %d\n<b>Failed:</b> %d</blockquote>", html.EscapeString(presetName), installed, failed)
 		if len(durabilityWarnings) > 0 {
-			_ = msg.Answer(moduleTransactionReport("Preset install", errors.Join(durabilityWarnings...)))
-		} else if installed == 0 {
-			_ = msg.Answer("❌ <b>No modules were installed.</b>")
+			summary += fmt.Sprintf("\n⚠️ <i>%d module(s) are active with manifest durability warnings.</i>", len(durabilityWarnings))
 		}
-		return nil
+		if installed == 0 {
+			summary = fmt.Sprintf("❌ <b>No preset modules were installed</b>\n<blockquote><b>Preset:</b> %s\n<b>Failed:</b> %d</blockquote>", html.EscapeString(presetName), failed)
+		}
+		return msg.Answer(summary)
 	}
 
 	var text strings.Builder
@@ -764,7 +772,7 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 
 	im := m.client.GorokuInline
 	if im != nil && im.IsComplete() {
-		// Use inline form for interactive confirmation & details
+		// Use an inline form for details and owner-authorized install actions.
 		var modTextLines []string
 		var toInstall []string
 		var modBtns []inline.Button
@@ -819,6 +827,7 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 	// Text fallback installation
 	_ = msg.Answer(fmt.Sprintf("⏳ <b>Installing preset %s...</b>", presetData.Name))
 	installed := 0
+	failed := 0
 	var durabilityWarnings []error
 
 	for _, url := range presetData.Modules {
@@ -830,11 +839,13 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 
 		bodyBytes, err := downloadPresetModuleURL(url)
 		if err != nil {
+			failed++
 			continue
 		}
 
-		if err := m.installDownloadedModule(msg, modName, url, bodyBytes); err != nil {
+		if _, err := m.installDownloadedModule(msg, modName, url, bodyBytes); err != nil {
 			if !errors.Is(err, goroku.ErrDatabaseCommitUncertain) {
+				failed++
 				continue
 			}
 			durabilityWarnings = append(durabilityWarnings, err)
@@ -842,14 +853,16 @@ func (m *Presets) LoadPresetCmd(msg *goroku.Message) error {
 		installed++
 	}
 
+	summary := fmt.Sprintf("✅ <b>Preset installation complete</b>\n<blockquote><b>Preset:</b> %s\n<b>Installed:</b> %d\n<b>Failed:</b> %d</blockquote>", html.EscapeString(presetData.Name), installed, failed)
 	if len(durabilityWarnings) > 0 {
-		return msg.Answer(moduleTransactionReport("Preset install", errors.Join(durabilityWarnings...)))
+		summary += fmt.Sprintf("\n⚠️ <i>%d module(s) are active with manifest durability warnings.</i>", len(durabilityWarnings))
 	}
-	if installed > 0 {
-		return nil
+	if installed == 0 && failed == 0 {
+		summary = "✅ <b>All modules in this preset are already installed.</b>"
+	} else if installed == 0 {
+		summary = fmt.Sprintf("❌ <b>No preset modules were installed</b>\n<blockquote><b>Preset:</b> %s\n<b>Failed:</b> %d</blockquote>", html.EscapeString(presetData.Name), failed)
 	}
-	_ = msg.Answer("✅ <b>All modules in this preset are already installed!</b>")
-	return nil
+	return msg.Answer(summary)
 }
 
 func (m *Presets) AddToFolderCmd(msg *goroku.Message) error {

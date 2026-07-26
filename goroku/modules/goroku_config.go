@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
 )
 
@@ -28,6 +29,7 @@ type GorokuConfig struct {
 	validationErrorEmoji string
 	detectiveEmoji       string
 	infoEmoji            string
+	premium              bool
 }
 
 var _ goroku.ModuleWithConfigSchema = (*GorokuConfig)(nil)
@@ -111,20 +113,35 @@ func (m *GorokuConfig) getConfigString(key string, cached *string, fallback stri
 }
 
 func (m *GorokuConfig) getValidationErrorEmoji() string {
-	return m.getConfigString("validation_error_emoji", &m.validationErrorEmoji, m.validationErrorEmoji)
+	return m.displayEmoji(m.getConfigString("validation_error_emoji", &m.validationErrorEmoji, m.validationErrorEmoji))
 }
 
 func (m *GorokuConfig) getDetectiveEmoji() string {
-	return m.getConfigString("detective_emoji", &m.detectiveEmoji, m.detectiveEmoji)
+	return m.displayEmoji(m.getConfigString("detective_emoji", &m.detectiveEmoji, m.detectiveEmoji))
 }
 
 func (m *GorokuConfig) getInfoEmoji() string {
-	return m.getConfigString("info_emoji", &m.infoEmoji, m.infoEmoji)
+	return m.displayEmoji(m.getConfigString("info_emoji", &m.infoEmoji, m.infoEmoji))
 }
 
-func (m *GorokuConfig) ClientReady() error { return nil }
-func (m *GorokuConfig) OnUnload() error    { return nil }
-func (m *GorokuConfig) OnDlmod() error     { return nil }
+func (m *GorokuConfig) displayEmoji(value string) string {
+	if !m.premium {
+		return tgEmojiTagRe.ReplaceAllString(value, "")
+	}
+	return value
+}
+
+func (m *GorokuConfig) ClientReady() error {
+	me, err := m.client.GetMe()
+	if err == nil {
+		if user, ok := me.(*tg.User); ok {
+			m.premium = user.Premium
+		}
+	}
+	return nil
+}
+func (m *GorokuConfig) OnUnload() error { return nil }
+func (m *GorokuConfig) OnDlmod() error  { return nil }
 
 func (m *GorokuConfig) Commands() map[string]goroku.CommandHandler {
 	return map[string]goroku.CommandHandler{
@@ -155,15 +172,15 @@ func (m *GorokuConfig) Watchers() []goroku.WatcherHandler {
 func (m *GorokuConfig) getTrans(key, def string) string {
 	val := getTrans(m.translator, m.Name(), key, def)
 	// Apply custom emoji replacement
-	emoji := m.getConfigString("cfg_emoji", &m.cfgEmoji, "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>")
+	emoji := m.displayEmoji(m.getConfigString("cfg_emoji", &m.cfgEmoji, "<tg-emoji emoji-id=5350628475914971096>🍃</tg-emoji>"))
 	val = configEmojiRe.ReplaceAllString(val, emoji)
 	val = strings.ReplaceAll(val, "⚙️", emoji)
 	val = strings.ReplaceAll(val, "🪐", emoji)
-	return val
+	return m.displayEmoji(val)
 }
 
 func (m *GorokuConfig) getListEmoji() string {
-	return m.getConfigString("list_emoji", &m.listEmoji, "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>")
+	return m.displayEmoji(m.getConfigString("list_emoji", &m.listEmoji, "<tg-emoji emoji-id=5278497648389691517>▫️</tg-emoji>"))
 }
 
 func (m *GorokuConfig) getStartText() string {
@@ -649,7 +666,6 @@ var builtInModules = map[string]bool{
 	"inlinestuff":          true,
 	"loader":               true,
 	"presets":              true,
-	"quickstart":           true,
 	"settings":             true,
 	"tester":               true,
 	"terminal":             true,
@@ -850,6 +866,9 @@ func (m *GorokuConfig) ConfigureModule(msg any, modName string, fromFolder strin
 	for _, owner := range []string{targetModule.Name(), strings.ToLower(targetModule.Name())} {
 		if innerMap, exists := dbData[owner]; exists {
 			for k := range innerMap {
+				if isInternalConfigKey(targetModule.Name(), k) {
+					continue
+				}
 				if _, exists := optionsSet[strings.ToLower(k)]; !exists {
 					optionsSet[strings.ToLower(k)] = k
 				}
@@ -1846,7 +1865,6 @@ var schemas = map[string]map[string]goroku.Validator{
 	"loader": {
 		"modules_repo":     &goroku.StringValidator{},
 		"additional_repos": &goroku.SeriesValidator{},
-		"share_link":       &goroku.BooleanValidator{},
 		"basic_auth":       &goroku.HiddenValidator{Inner: &goroku.RegExpValidator{Pattern: regexp.MustCompile(`^.*:.*$`)}},
 		"command_emoji":    &goroku.StringValidator{},
 	},
@@ -1872,6 +1890,7 @@ var schemas = map[string]map[string]goroku.Validator{
 	},
 	"terminal": {
 		"flood_wait_protect": &goroku.IntegerValidator{},
+		"shell":              &goroku.StringValidator{MaxLen: 4096},
 	},
 	"settings": {
 		"allow_nonstandart_prefixes": &goroku.BooleanValidator{},
@@ -1894,6 +1913,22 @@ var schemas = map[string]map[string]goroku.Validator{
 		"disable_notifications": &goroku.BooleanValidator{},
 		"autoupdate":            &goroku.BooleanValidator{},
 	},
+}
+
+var internalConfigKeys = map[string]map[string]struct{}{
+	"loader": {
+		"loaded_modules": {},
+		"module_digests": {},
+	},
+}
+
+func isInternalConfigKey(moduleName, key string) bool {
+	keys, ok := internalConfigKeys[strings.ToLower(moduleName)]
+	if !ok {
+		return false
+	}
+	_, ok = keys[strings.ToLower(key)]
+	return ok
 }
 
 func (m *GorokuConfig) getValidator(modName, option string) goroku.Validator {

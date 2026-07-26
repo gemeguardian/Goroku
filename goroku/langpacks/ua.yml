@@ -90,6 +90,9 @@ goroku_security:
   _cmd_doc_newsgroup: "<ім'я> - Створити нову групу безпеки"
   _cmd_doc_sgroupadd: "<ім'я> [користувач або відповідь] - Додати користувача до групи безпеки"
   _cmd_doc_sgroupdel: "<ім'я> [користувач або відповідь] - Видалити користувача з групи безпеки"
+  _cmd_doc_sudolist: "Показати список користувачів у групі `sudo`"
+  _cmd_doc_sudoadd: "<користувач або відповідь> - Додати користувача до групи `sudo`"
+  _cmd_doc_sudorm: "<користувач або відповідь> - Видалити користувача з групи `sudo`"
 
 goroku_settings:
   watchers: "<tg-emoji emoji-id=5424885441100782420>👀</tg-emoji> <b>Наглядачі:</b>\n\n<blockquote expandable><b>{}</b></blockquote>"
@@ -150,6 +153,10 @@ goroku_settings:
   core_protection_e_btn: "🔓 Встановити захист ядра"
   core_protection_removed: "🔓 <b>Захист ядра успішно видалений</b>"
   core_protection_enabled: "🔓 <b>Захист ядра успішно встановлено</b>"
+  _cmd_doc_watchercmd: "<модуль> [-c] [-p] [-o] [-i] - Увімкнути, вимкнути або налаштувати фільтри наглядача"
+  _cmd_doc_nonickcmdcmd: "<команда> - Увімкнути або вимкнути NoNick для команди"
+  _cmd_doc_remove_core_protection: "Вимкнути захист вбудованих модулів і команд"
+  _cmd_doc_enable_core_protection: "Увімкнути захист вбудованих модулів і команд"
 
 terminal:
   fw_protect: "Затримка між редагуваннями"
@@ -205,6 +212,10 @@ goroku_web:
   request_code: "🔃 Запрос запитувати код знову"
   code_expired: "Термін дії коду закінчився."
   _cmd_doc_webpanel: "Відкрити тунель до веб-інтерфейсу Goroku"
+  _cmd_doc_webrestart: "Перезапустити вебсервер Goroku"
+  _cmd_doc_webstop: "Зупинити вебсервер Goroku"
+  _cmd_doc_approve_web: "<токен> - Підтвердити авторизацію у вебінтерфейсі"
+  _cmd_doc_addacc: "<користувач або відповідь> [force_insecure] - Додати акаунт через інтерактивний вхід"
 
 goroku_backup:
   period: "⌚️ <b>Пристрій «ALPHA»</b> створює регулярні резервні копії. Ці налаштування можна змінити пізніше.\n\nБудь ласка, виберіть частоту резервного копіювання\n\n<b>🚫 Таким чином неможливо відновити модулі, завантажені з файлів за допомогою команди .lm! Будьте обережні та виконайте .backupmods перед відновленням.</b>"
@@ -218,6 +229,9 @@ goroku_backup:
   all_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>Вашу повну резервну копію відновлено, перезапуск....</b>"
   all_restored_bot: "🔄 Вашу повну резервну копію відновлено, перезапуск..."
   reply_to_file: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Відповісти за допомогою файлу .json або .zip</b>"
+  restore_db_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Помилка відновлення бази:</b> <code>{}</code>"
+  restore_modules_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Помилка відновлення модулів:</b> <code>{}</code>"
+  restore_all_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Помилка відновлення повного бекапу:</b> <code>{}</code>"
   db_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>База даних оновлена, перезапуск...</b>"
   modules_backup: "<tg-emoji emoji-id=5431736674147114227>🗂</tg-emoji> <b>Резервна копія модулів ({})</b>\n\n<b>Ви можете відновити її за допомогою:</b>\n<pre><code class=\"language-goroku\">{}restoremods</code></pre>"
   mods_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>Модулі відновлено, перезапуск</b>"
@@ -265,6 +279,17 @@ presets:
   removed_from_folder: "<tg-emoji emoji-id=5436040291507247633>🎉</tg-emoji> <b>Модуль {} видалено з папки</b> <code>{}</code>"
   module_not_in_folder: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Модуль {} не знаходиться в папці {}</b>"
   _cls_doc: "Пропонує новим користувачам Goroku пакети модулів для завантаження"
+  _cmd_doc_preset: "[набір] [install] - Показати список наборів, відкрити або встановити набір"
+  _cmd_doc_presets: "Відкрити меню наборів модулів"
+  _cmd_doc_addpreset: "<набір> <посилання на модуль> - Додати модуль до користувацького набору"
+  _cmd_doc_delpreset: "<набір> [посилання на модуль] - Видалити модуль або весь користувацький набір"
+  _cmd_doc_listpresets: "Показати доступні набори модулів"
+  _cmd_doc_loadpreset: "<відповідь на JSON-файл> - Завантажити та встановити набір із файлу"
+  _cmd_doc_addtofolder: "<папка> <модуль> - Додати встановлений модуль до папки"
+  _cmd_doc_folderload: "<папка> - Експортувати папку модулів у файл набору"
+  _cmd_doc_removefromfolder: "<папка> <модуль> - Видалити модуль із папки"
+  _cmd_doc_loadaliases: "<відповідь на JSON-файл> - Імпортувати аліаси з файлу"
+  _cmd_doc_aliasload: "Експортувати аліаси в JSON-файл"
 
 settings:
   choose_installation: "<tg-emoji emoji-id=5363805650327450240>🪐</tg-emoji> <b>Виберіть варіант установки Goroku:</b>"
@@ -319,6 +344,10 @@ settings:
   _cmd_doc_setprefix: "<префікс> [власник] - Встановити префікс команд"
   _cmd_doc_unblacklist: "[чат] - Увімкнути бота де-небудь"
   _cmd_doc_unblacklistuser: "[користувач] - Дозволити користувачу виконувати команди"
+  _cmd_doc_togglecmd: "<модуль> <команда> - Увімкнути або вимкнути команду модуля"
+  _cmd_doc_togglemod: "<модуль> - Увімкнути або вимкнути модуль"
+  _cmd_doc_clearmodule: "<модуль> - Очистити дані та скинути стан модуля"
+  _cmd_doc_installation: "[-vds|-wsl|-ul] - Показати інструкцію зі встановлення Goroku"
 
 goroku_config:
   choose_core: "<tg-emoji emoji-id=5341715473882955310>⚙️</tg-emoji> <b>Обери категорію</b>"
@@ -358,6 +387,7 @@ goroku_config:
   libraries: "📦 Бібліотеки"
   _cmd_doc_config: "Налаштувати модулі"
   _cmd_doc_fconfig: "<модуль> <налаштування> <значення> - встановити значення конфігу для модуля"
+  _cmd_doc_dconfig: "<модуль> <налаштування[, ...]> - скинути значення конфігу модуля"
 
 inline_stuff:
   bot_username_invalid: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Неправильний нік бота. Він має закінчитися на</b> <code>bot</code> <b>і бути не коротше ніж 5 символів</b>"
@@ -370,6 +400,8 @@ inline_stuff:
   restart: "🔄 Ваша Goroku перезапускається..."
   prefix_reset: "🔀 Префікс скинутий!"
   _cmd_doc_ch_goroku_bot: "<юзернейм> - Змінити юзернейм інлайн бота"
+  _cmd_doc_ch_bot_token: "<токен> - Встановити токен інлайн-бота"
+  _cmd_doc_inlineinfo: "Показати налаштування інлайн-бота"
 
 test:
   set_loglevel: "<tg-emoji emoji-id=5355133243773435190>🚫</tg-emoji> <b>Вкажи рівень логів числом або рядком</b>"
@@ -432,6 +464,9 @@ updater:
   _cmd_doc_source: "Показати посилання на вихідний код проекту"
   _cmd_doc_update: "Завантажує оновлення юзербота"
   _cmd_doc_rollback: "Відкочує оновлення юзербота"
+  _cmd_doc_changelog: "Показати список змін останньої версії"
+  _cmd_doc_autoupdate: "Увімкнути або вимкнути автоматичні оновлення"
+  _cmd_doc_ubstop: "Зупинити юзербота"
   update_required: "<tg-emoji emoji-id=5361979468887893611>🆕</tg-emoji> <b>Доступне оновлення Goroku!</b>\n\nОпубліковано нову версію Goroku.\n🔮 <b>Goroku <s>{}</s> -> {}</b>\n\n{}"
   more: "\n<i><b>🎥 І ще {}...</b></i>"
   _cfg_doc_disable_notifications: "Вимкнути сповіщення про оновлення"
@@ -591,6 +626,7 @@ translations:
   rpc_error: "<tg-emoji emoji-id=5877477244938489129>🚫</tg-emoji> <b>Команда</b> <code>{}</code> <b>не вдалася через помилку RPC:</b> <code>{}</code>"
   _cmd_doc_dllangpack: "[посилання на пк | без аргументів щоб видалити] - Змінити зовнішній пак"
   _cmd_doc_setlang: "[мови] - Змінити стандартну мову"
+  _cmd_doc_listlangs: "Показати список доступних мов"
 
 eval:
   eval: "<tg-emoji emoji-id={}>💻</tg-emoji><b> Код:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5197688912457245639>✅</tg-emoji><b> Результат:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"

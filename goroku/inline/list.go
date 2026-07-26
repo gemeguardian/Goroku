@@ -29,6 +29,7 @@ func (im *InlineManager) List(
 	unit := &Unit{
 		ID:          unitID,
 		Type:        "list",
+		Text:        stringsList[0],
 		Pages:       stringsList,
 		CurrentPage: 0,
 		TotalPages:  len(stringsList),

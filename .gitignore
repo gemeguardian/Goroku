@@ -9,6 +9,7 @@ config.json
 config-*.json
 database-*.json
 *.json.last-valid
+*.restore-id
 goroku-setup-url.txt
 goroku-setup-completed
 execution_audit.log
@@ -184,6 +185,12 @@ config.json
 *.mp3
 *.avi
 
+# R4.1: vendored web onboarding assets are embedded via //go:embed and must be
+# tracked even though they are *.png, otherwise a fresh checkout breaks the
+# goroku/web build (embed has no matching files).
+!goroku/web/assets/static/*.png
+!web-resources/static/*.png
+
 # Heroku-specific rules
 .heroku/
 .apt/
@@ -221,6 +228,18 @@ coverage.out
 .goroku_go/
 /modules/
 .kimchi/
+# GOPATH created when building with GOPATH=$PWD/go; sits in the package tree
+# (no leading dot), so `go list ./...` walks into it unless ignored.
+/go/
+
+# Go build/tooling caches written into the repo by local build scripts.
+/.go/
+/.tmp/
+/.config/
+
+# Coverage profiles produced by `go test -coverprofile`.
+/cover.out
+/coverage.out
 
 # User-downloaded module sources (outside package tree; not tracked)
 /user_modules/

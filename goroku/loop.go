@@ -64,7 +64,7 @@ func (l *InfiniteLoop) Start() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				L().Info("InfiniteLoop panic in module {0}: {1}", zap.Any("arg0", l.ModuleName), zap.Any("arg1", r))
+				L().Error("InfiniteLoop panic in module", zap.Any("module", l.ModuleName), zap.Any("panic", r))
 			}
 			l.mu.Lock()
 			l.running = false
@@ -77,7 +77,7 @@ func (l *InfiniteLoop) Start() {
 				return
 			case <-time.After(l.interval):
 				if err := l.fn(); err != nil {
-					L().Info("InfiniteLoop error in module {0}: {1}", zap.Any("arg0", l.ModuleName), zap.Any("arg1", err))
+					L().Error("InfiniteLoop error in module", zap.Any("module", l.ModuleName), zap.Error(err))
 				}
 			}
 		}
@@ -91,6 +91,22 @@ func (l *InfiniteLoop) Stop() {
 		return
 	}
 	l.stopOnce.Do(func() { close(l.stopCh) })
+}
+
+// cancelPending marks a loop that was registered during staged module setup as
+// stopped without ever running its callback.
+func (l *InfiniteLoop) cancelPending() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.running {
+		l.stopOnce.Do(func() { close(l.stopCh) })
+		return
+	}
+	select {
+	case <-l.stoppedCh:
+	default:
+		close(l.stoppedCh)
+	}
 }
 
 func (l *InfiniteLoop) IsRunning() bool {

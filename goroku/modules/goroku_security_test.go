@@ -135,29 +135,6 @@ func TestSecurityMaskWriteFailureReturnsError(t *testing.T) {
 	}
 }
 
-func TestPluginTrustWriteFailureDoesNotReportSuccess(t *testing.T) {
-	client, db := newFailingModuleTest(t)
-	target := &persistenceTestModule{name: "RuntimeTarget"}
-	if err := client.Loader.RegisterModule(target); err != nil {
-		t.Fatal(err)
-	}
-	m := &GorokuPluginSecurity{}
-	if err := m.Init(client, db); err != nil {
-		t.Fatal(err)
-	}
-	err := m.TrustmodCmd(&goroku.Message{Text: ".trustmod RuntimeTarget", Client: client})
-	if !errors.Is(err, goroku.ErrDatabasePersistence) {
-		t.Fatalf("trust command error = %v, want persistence failure", err)
-	}
-	got, err := m.pluginStringSlice("internalized")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("failed trust write published state: %v", got)
-	}
-}
-
 func TestAPIProtectionWriteFailureDoesNotChangeState(t *testing.T) {
 	client, db := newFailingModuleTest(t)
 	m := &APIProtection{}
@@ -196,26 +173,6 @@ func TestAPIProtectionMissingKeysUseDefaults(t *testing.T) {
 	}
 	if len(m.forbiddenTypeIDs) != 2 || len(client.ForbiddenConstructors) != 2 {
 		t.Fatalf("default forbidden methods not applied: module=%v client=%v", m.forbiddenTypeIDs, client.ForbiddenConstructors)
-	}
-}
-
-func TestPluginSecurityReadFailurePropagatesThroughCommand(t *testing.T) {
-	db := newSecurityModuleTestDatabase(t)
-	client := goroku.NewCustomTelegramClient(2004)
-	client.Loader = goroku.NewModules(client, db)
-	if err := client.Loader.RegisterModule(&persistenceTestModule{name: "RuntimeTarget"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	m := &GorokuPluginSecurity{client: client, db: db}
-	err := m.TrustmodCmd(&goroku.Message{Text: ".trustmod RuntimeTarget", Client: client})
-	if !errors.Is(err, goroku.ErrDatabaseClosed) {
-		t.Fatalf("TrustmodCmd() error = %v, want ErrDatabaseClosed", err)
-	}
-	if got := db.GetValue("GorokuPluginSecurity", "internalized", nil); got != nil {
-		t.Fatalf("failed read derived a write: internalized = %v", got)
 	}
 }
 

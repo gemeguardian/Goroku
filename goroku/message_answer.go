@@ -3,9 +3,12 @@ package goroku
 import (
 	stdhtml "html"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/gotd/td/tg"
 )
 
 const telegramMessageLimit = 4096
@@ -57,7 +60,7 @@ func splitPlainTextForTelegram(text string, limit int) []string {
 
 		splitAt := cut
 		for _, sep := range []string{"\n", " "} {
-			if idx := strings.LastIndex(remaining[:cut], sep); idx > 0 {
+			if idx := strings.LastIndex(remaining[:cut], sep); idx >= cut/2 {
 				splitAt = idx
 				break
 			}
@@ -74,17 +77,42 @@ func splitPlainTextForTelegram(text string, limit int) []string {
 	return chunks
 }
 
+func sliceAnswerEntities(entities []tg.MessageEntityClass, start, length int) []tg.MessageEntityClass {
+	end := start + length
+	var sliced []tg.MessageEntityClass
+	for _, entity := range entities {
+		from := max(entity.GetOffset(), start)
+		to := min(entity.GetOffset()+entity.GetLength(), end)
+		if from >= to {
+			continue
+		}
+		clone := reflect.New(reflect.TypeOf(entity).Elem())
+		clone.Elem().Set(reflect.ValueOf(entity).Elem())
+		clone.Elem().FieldByName("Offset").SetInt(int64(from - start))
+		clone.Elem().FieldByName("Length").SetInt(int64(to - from))
+		sliced = append(sliced, clone.Interface().(tg.MessageEntityClass))
+	}
+	return sliced
+}
+
 func planLongAnswer(rawText string, canUseInline bool) answerPlan {
-	plainText, _ := parseHTML(rawText)
+	plainText, entities := parseHTML(rawText)
 	if telegramTextLen(plainText) < telegramMessageLimit {
 		return answerPlan{mode: answerModeDirect}
 	}
 
 	plainPages := splitPlainTextForTelegram(plainText, telegramMessageLimit)
-	if canUseInline && len(plainPages) <= 10 {
+	if canUseInline {
 		pages := make([]string, len(plainPages))
+		byteOffset := 0
+		utf16Offset := 0
 		for i, page := range plainPages {
-			pages[i] = stdhtml.EscapeString(page)
+			skipped := strings.Index(plainText[byteOffset:], page)
+			utf16Offset += telegramTextLen(plainText[byteOffset : byteOffset+skipped])
+			pageLen := telegramTextLen(page)
+			pages[i] = EntitiesToHTML(page, sliceAnswerEntities(entities, utf16Offset, pageLen))
+			byteOffset += skipped + len(page)
+			utf16Offset += pageLen
 		}
 		return answerPlan{mode: answerModeInlineList, pages: pages}
 	}
@@ -186,9 +214,6 @@ func (m *Message) Answer(text string, opts ...MsgOption) error {
 		if fileText == "" {
 			fileText = plainText
 		}
-		if m.Out {
-			_, _ = m.Client.EditMessageContext(ctx, ChatRefID(m.ChatID), m.ID, "💾 <i>Output is too long. Sending as file...</i>")
-		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -197,11 +222,21 @@ func (m *Message) Answer(text string, opts ...MsgOption) error {
 			defer func() { _ = os.Remove(tmpFile.Name()) }()
 			_, _ = tmpFile.WriteString(fileText)
 			_ = tmpFile.Close()
-			_, err = m.Client.SendFileContext(ctx, ChatRefID(m.ChatID), tmpFile.Name(), "💾 Output too long")
+			if m.Out {
+				_, err = m.Client.EditMessageFileContext(ctx, ChatRefID(m.ChatID), m.ID, tmpFile.Name(), "💾 Output too long")
+			} else {
+				_, err = m.Client.SendFileContext(ctx, ChatRefID(m.ChatID), tmpFile.Name(), "💾 Output too long")
+			}
+		} else {
+			_, err = m.Client.SendFileContext(ctx, ChatRefID(m.ChatID), []byte(fileText), "💾 Output too long")
+		}
+		if err != nil || !m.Out {
 			return err
 		}
-		_, err = m.Client.SendFileContext(ctx, ChatRefID(m.ChatID), []byte(fileText), "💾 Output too long")
-		return err
+		if tmpFile != nil {
+			return nil
+		}
+		return m.Client.DeleteMessageContext(ctx, ChatRefID(m.ChatID), m.ID)
 	}
 	if m.Out {
 		_, err := m.Client.EditMessageContext(ctx, ChatRefID(m.ChatID), m.ID, text, opts...)

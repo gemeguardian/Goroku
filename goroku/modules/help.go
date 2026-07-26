@@ -21,7 +21,6 @@ type Help struct {
 	// Configs
 	coreEmoji    string
 	plainEmoji   string
-	emptyEmoji   string
 	descIcon     string
 	commandEmoji string
 	bannerUrl    string
@@ -40,7 +39,6 @@ func (m *Help) Strings() map[string]string {
 		"name":               "Help",
 		"_cfg_core_emoji":    "Bullet emoji/tag for core modules",
 		"_cfg_plain_emoji":   "Bullet emoji/tag for plain modules",
-		"_cfg_empty_emoji":   "Bullet emoji/tag for empty modules",
 		"_cfg_desc_icon":     "Emoji/tag for module description icon",
 		"_cfg_command_emoji": "Emoji/tag for command bullet",
 		"_cfg_banner_url":    "Banner image URL shown in help menu",
@@ -66,7 +64,6 @@ func (m *Help) ConfigSchema() []goroku.ConfigField {
 	return []goroku.ConfigField{
 		{Key: "core_emoji", Type: "string", Default: "<tg-emoji emoji-id=4974681956907221809>▪️</tg-emoji>", Validator: &goroku.StringValidator{}},
 		{Key: "plain_emoji", Type: "string", Default: "<tg-emoji emoji-id=4974508259839836856>▪️</tg-emoji>", Validator: &goroku.StringValidator{}},
-		{Key: "empty_emoji", Type: "string", Default: "<tg-emoji emoji-id=5100652175172830068>🟠</tg-emoji>", Validator: &goroku.StringValidator{}},
 		{Key: "desc_icon", Type: "string", Default: "<tg-emoji emoji-id=5188377234380954537>🪐</tg-emoji>", Validator: &goroku.StringValidator{}},
 		{Key: "command_emoji", Type: "string", Default: "<tg-emoji emoji-id=5197195523794157505>▫️</tg-emoji>", Validator: &goroku.StringValidator{}},
 		{Key: "banner_url", Type: "string", Default: "", Validator: &goroku.StringValidator{}},
@@ -81,9 +78,6 @@ func (m *Help) ConfigReady(config map[string]any) error {
 	}
 	if val, ok := config["plain_emoji"].(string); ok {
 		m.plainEmoji = val
-	}
-	if val, ok := config["empty_emoji"].(string); ok {
-		m.emptyEmoji = val
 	}
 	if val, ok := config["desc_icon"].(string); ok {
 		m.descIcon = val
@@ -149,27 +143,25 @@ func formatPositional(format string, args ...any) string {
 // isCoreModule determines if a module is considered built-in core
 func isCoreModule(name string) bool {
 	coreMods := map[string]bool{
-		"Help":                 true,
-		"Settings":             true,
-		"Translations":         true,
-		"Security":             true,
-		"Loader":               true,
-		"APILimiter":           true,
-		"Updater":              true,
-		"GorokuPluginSecurity": true,
-		"GorokuSecurity":       true,
-		"GorokuSettings":       true,
-		"GorokuConfig":         true,
-		"GorokuInfo":           true,
-		"GorokuWeb":            true,
-		"Eval":                 true,
-		"GorokuBackup":         true,
-		"InlineStuff":          true,
-		"Presets":              true,
-		"Quickstart":           true,
-		"Terminal":             true,
-		"Tester":               true,
-		"Translate":            true,
+		"Help":           true,
+		"Settings":       true,
+		"Translations":   true,
+		"Security":       true,
+		"Loader":         true,
+		"APILimiter":     true,
+		"Updater":        true,
+		"GorokuSecurity": true,
+		"GorokuSettings": true,
+		"GorokuConfig":   true,
+		"GorokuInfo":     true,
+		"GorokuWeb":      true,
+		"Eval":           true,
+		"GorokuBackup":   true,
+		"InlineStuff":    true,
+		"Presets":        true,
+		"Terminal":       true,
+		"Tester":         true,
+		"Translate":      true,
 	}
 	return coreMods[name] || strings.HasPrefix(strings.ToLower(name), "core")
 }
@@ -313,10 +305,6 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 	if plainEmoji == "" {
 		plainEmoji = "<tg-emoji emoji-id=4974508259839836856>▪️</tg-emoji>"
 	}
-	emptyEmoji := m.emptyEmoji
-	if emptyEmoji == "" {
-		emptyEmoji = "<tg-emoji emoji-id=5100652175172830068>🟠</tg-emoji>"
-	}
 	descIcon := m.descIcon
 	if descIcon == "" {
 		descIcon = "<tg-emoji emoji-id=5188377234380954537>🪐</tg-emoji>"
@@ -347,7 +335,6 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 		argsRaw = strings.ReplaceAll(argsRaw, " -l", "")
 		argsRaw = strings.ReplaceAll(argsRaw, "-l", "")
 		onlyLoaded = true
-		force = true
 	}
 
 	args := strings.TrimSpace(argsRaw)
@@ -391,7 +378,6 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 
 		var coreList []string
 		var plainList []string
-		var noCmdsList []string
 
 		for _, name := range modNames {
 			mod := modulesList[name]
@@ -412,7 +398,11 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 			hasCommands := len(cmds) > 0
 
 			if !hasCommands {
-				noCmdsList = append(noCmdsList, fmt.Sprintf("\n%s <code>%s</code>", emptyEmoji, modName))
+				if isCoreModule(modName) {
+					coreList = append(coreList, fmt.Sprintf("%s <code>%s</code>", coreEmoji, modName))
+				} else {
+					plainList = append(plainList, fmt.Sprintf("%s <code>%s</code>", plainEmoji, modName))
+				}
 				continue
 			}
 
@@ -422,7 +412,7 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 				bullet = coreEmoji
 			}
 
-			tmp := fmt.Sprintf("\n%s <code>%s</code>", bullet, modName)
+			tmp := fmt.Sprintf("%s <code>%s</code>", bullet, modName)
 
 			var allowedCmds []string
 			var modCmdNames []string
@@ -455,22 +445,23 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 
 		sort.Strings(coreList)
 		sort.Strings(plainList)
-		sort.Strings(noCmdsList)
 
 		var contentBuilder strings.Builder
-		contentBuilder.WriteString(descIcon + " " + replyHeader + "\n")
+		contentBuilder.WriteString(descIcon + " " + replyHeader + "\n\n")
 
-		noCmdsStr := ""
-		if force {
-			noCmdsStr = strings.Join(noCmdsList, "")
-		}
+		plainEntries := append([]string(nil), plainList...)
 
 		if onlyCore {
-			contentBuilder.WriteString(fmt.Sprintf(" <blockquote expandable>%s</blockquote>", strings.Join(coreList, "")))
+			contentBuilder.WriteString(formatHelpQuote(coreList))
 		} else if onlyLoaded {
-			contentBuilder.WriteString(fmt.Sprintf(" <blockquote expandable>%s</blockquote>", strings.Join(plainList, "")+noCmdsStr))
+			contentBuilder.WriteString(formatHelpQuote(plainEntries))
 		} else {
-			contentBuilder.WriteString(fmt.Sprintf(" <blockquote expandable>%s</blockquote><blockquote expandable>%s</blockquote>", strings.Join(coreList, ""), strings.Join(plainList, "")+noCmdsStr))
+			contentBuilder.WriteString(formatHelpQuote(coreList))
+			contentBuilder.WriteByte('\n')
+			contentBuilder.WriteString(formatHelpQuote(plainEntries))
+		}
+		if loaderModule, ok := loader.LookupByName("Loader").(*LoaderModule); ok && !loaderModule.FullyLoaded() {
+			contentBuilder.WriteString("\n\n" + getTrans(m.translator, m.Name(), "partial_load", "<tg-emoji emoji-id=5355133243773435190>☝️</tg-emoji> <b>Userbot is not fully loaded, so not all modules are shown</b>"))
 		}
 
 		responseText = contentBuilder.String()
@@ -589,6 +580,10 @@ func (m *Help) HelpCmd(msg *goroku.Message) error {
 	}
 
 	return msg.Answer(responseText, opts...)
+}
+
+func formatHelpQuote(lines []string) string {
+	return "<blockquote expandable>" + strings.Join(lines, "\n") + "</blockquote>"
 }
 
 var allowedTags = regexp.MustCompile(`(?i)</?(b|i|u|s|code|pre|tg-emoji|blockquote|a|tg-spoiler)(?:\s+[^>]*)?>`)

@@ -220,7 +220,7 @@ func (s *SSHTunnel) runSSHTunnel(ctx context.Context) {
 	s.mu.Lock()
 	s.allCommandsFailed = true
 	if s.tunnelURL == "" {
-		L().Info("All SSH tunnel providers failed")
+		L().Warn("All SSH tunnel providers failed")
 		s.markURLAvailable()
 	}
 	s.mu.Unlock()

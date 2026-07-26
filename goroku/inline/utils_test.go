@@ -30,7 +30,7 @@ type mockDeletableClient struct {
 }
 
 func (m *mockDeletableClient) TGIDValue() int64 { return 0 }
-func (m *mockDeletableClient) SendMessage(chat chatref.ChatRef, message string) (any, error) {
+func (m *mockDeletableClient) SendMessage(chat chatref.ChatRef, message string) (chatref.SentMessage, error) {
 	return nil, nil
 }
 func (m *mockDeletableClient) CreateGorokuFolder(botID int64) error                   { return nil }
@@ -82,9 +82,9 @@ func TestStoreAndGetUnit(t *testing.T) {
 		t.Error("Expected TTL to be initialized")
 	}
 
-	// Module should be detected (since called from test, it should have detected something)
-	if stored.Module == "" {
-		t.Error("Expected Module to be detected and set")
+	// Non-module callers must not be tied to a nonexistent registry owner.
+	if stored.Module != "" {
+		t.Errorf("Expected no module owner, got %q", stored.Module)
 	}
 
 	// Verify button custom maps
@@ -114,6 +114,30 @@ func TestStoreAndGetUnit(t *testing.T) {
 	}
 	if generatedData == "" {
 		t.Error("Expected random Data generated for btn3")
+	}
+}
+
+func TestStoreUnitPreservesExplicitModule(t *testing.T) {
+	im := &InlineManager{
+		units:       make(map[string]*Unit),
+		customMap:   make(map[string]Button),
+		buttonUnits: make(map[string]string),
+	}
+	unit := &Unit{Module: "ExplicitOwner"}
+
+	im.StoreUnit("explicit", unit)
+
+	if unit.Module != "ExplicitOwner" {
+		t.Fatalf("expected explicit owner to be preserved, got %q", unit.Module)
+	}
+}
+
+func TestWithModule(t *testing.T) {
+	unit := &Unit{}
+	WithModule("Translations")(unit)
+
+	if unit.Module != "Translations" {
+		t.Fatalf("expected explicit module name, got %q", unit.Module)
 	}
 }
 

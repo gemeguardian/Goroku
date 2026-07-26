@@ -22,10 +22,8 @@ const externalOutputLimit = 256 * 1024
 const censoredOutputUnavailable = "[output suppressed: database unavailable]"
 
 var (
-	// Yaegi runs out-of-process (M4.2); one concurrent worker eval.
-	// Timeout kills the worker process group via ProcessExecutor.
 	yaegiSlots     = make(chan struct{}, 1)
-	errEvalTimeout = errors.New("eval timeout; worker process killed")
+	errEvalTimeout = errors.New("eval timeout")
 )
 
 type boundedBuffer struct {
@@ -174,7 +172,7 @@ func (m *Eval) getTrans(key, def string) string {
 }
 
 func (m *Eval) censor(text string) string {
-	return censorExecutionOutput(text, m.client, m.db)
+	return text
 }
 
 func censorExecutionOutput(text string, client *goroku.CustomTelegramClient, db *goroku.Database) string {
@@ -706,15 +704,7 @@ func (m *Eval) runYaegiEval(msg *goroku.Message, code string) (string, string, s
 	}
 	defer func() { <-yaegiSlots }()
 
-	req := m.buildYaegiRequest(msg, code)
-	res, err := runYaegiWorkerProcess(ctx, req)
-	if err != nil {
-		return res.Result, res.Stdout, res.Stderr, err
-	}
-	if res.Error != "" {
-		return res.Result, res.Stdout, res.Stderr, errors.New(res.Error)
-	}
-	return res.Result, res.Stdout, res.Stderr, nil
+	return runLiveYaegiEval(ctx, msg, m.client, m.db, code)
 }
 
 func formatEvalResult(v any) string {

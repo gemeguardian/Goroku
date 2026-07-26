@@ -70,6 +70,59 @@ func TestRestoreAllFromZipValidBackup(t *testing.T) {
 	}
 }
 
+func TestRestoreComponentPayloadsFromFullBackup(t *testing.T) {
+	dbJSON := []byte(`{"goroku.main":{"command_prefix":"!"}}`)
+	modsZIP := makeZip(t, map[string][]byte{"db_mods.json": []byte(`{}`)})
+	backup := makeZip(t, map[string][]byte{
+		"db.json":  dbJSON,
+		"mods.zip": modsZIP,
+	})
+
+	gotDB, err := restoreDatabasePayload(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotDB, dbJSON) {
+		t.Fatalf("database payload = %q, want %q", gotDB, dbJSON)
+	}
+
+	gotMods, err := restoreModulesPayload(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotMods, modsZIP) {
+		t.Fatal("module payload does not match nested mods.zip")
+	}
+}
+
+func TestRestoreComponentPayloadsAcceptStandaloneBackups(t *testing.T) {
+	dbJSON := []byte(`{"goroku.main":{"command_prefix":"!"}}`)
+	gotDB, err := restoreDatabasePayload(dbJSON)
+	if err != nil || !bytes.Equal(gotDB, dbJSON) {
+		t.Fatalf("standalone database payload = %q, %v", gotDB, err)
+	}
+
+	modsZIP := makeZip(t, map[string][]byte{"db_mods.json": []byte(`{}`)})
+	gotMods, err := restoreModulesPayload(modsZIP)
+	if err != nil || !bytes.Equal(gotMods, modsZIP) {
+		t.Fatalf("standalone module payload changed: %v", err)
+	}
+}
+
+func TestRestoreDatabasePayloadRejectsModulesArchive(t *testing.T) {
+	modsZIP := makeZip(t, map[string][]byte{"db_mods.json": []byte(`{}`)})
+	if _, err := restoreDatabasePayload(modsZIP); err == nil || !strings.Contains(err.Error(), "db.json") {
+		t.Fatalf("restoreDatabasePayload() error = %v, want missing db.json", err)
+	}
+}
+
+func TestRestoreModulesPayloadIdentifiesDatabaseBackup(t *testing.T) {
+	dbJSON := []byte(`{"Help":{"banner_url":""},"Loader":{"loaded_modules":{}}}`)
+	if _, err := restoreModulesPayload(dbJSON); err == nil || !strings.Contains(err.Error(), ".restoredb") {
+		t.Fatalf("restoreModulesPayload() error = %v, want database-only guidance", err)
+	}
+}
+
 func TestBackupAndRestoreModulesUseRuntimeDataRoot(t *testing.T) {
 	dataRoot, sourceRoot := setModuleTestRoots(t)
 	legacyDir := filepath.Join(sourceRoot, "goroku", "modules")

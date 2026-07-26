@@ -1,0 +1,109 @@
+# Goroku — hardened systemd unit
+#
+# Runs goroku as a non-root service account under /var/lib/goroku with the
+# binary at /opt/goroku/bin/goroku (see docs/QUICKSTART.md "Recommended
+# production layout"). `--no-git` disables destructive git helpers in
+# production per the residuals roadmap rule (R6 / SECURITY.md residual).
+#
+# Web panel binds to 127.0.0.1:8080 by default. This unit does NOT expose the
+# panel publicly. To serve behind a reverse proxy on another interface, set
+# GOROKU_WEB_BIND (or GOROKU_IP) to the bind address AND set
+# GOROKU_TRUSTED_PROXIES to the proxy CIDR(s) so forwarding headers are
+# honored fail-closed (see docs/CONFIGURATION.md, SECURITY.md). Without
+# GOROKU_TRUSTED_PROXIES, X-Forwarded-For / CF-Connecting-IP are ignored.
+#
+# Type=simple is used because goroku does not implement sd_notify(3)
+# (no core/sd_notify linkage in tree). Do not switch to Type=notify without
+# adding libsystemd notify support to the binary.
+#
+# Sandboxing rationale:
+#   - ProtectSystem=strict + ReadWritePaths=/var/lib/goroku: the binary tree
+#     (/opt) and /usr are read-only; only the data root is writable.
+#   - CapabilityBoundingSet= / AmbientCapabilities= empty: goroku runs as
+#     non-root and binds the web panel to a high port (8080). No Linux
+#     capabilities are required. Do not add CAP_NET_BIND_SERVICE unless you
+#     bind to a port < 1024 (prefer a reverse proxy instead).
+#   - PrivateDevices, ProtectKernel*, ProtectClock, ProtectControlGroups,
+#     ProtectHostname, RestrictNamespaces, RestrictRealtime, RestrictSUIDSGID,
+#     LockPersonality, RestrictAddressFamilies, SystemCallFilter: standard
+#     hardening for a networked Go service with no special kernel needs.
+#   - MemoryDenyWriteExecute is intentionally OFF: goroku compiles native Go
+#     plugins via `go build` (a child process in this unit's cgroup) and may
+#     load them with plugin.Open; some build/link paths and Yaegi eval child
+#     processes are safer without the W^X restriction. Re-enable per host if
+#     you do not use plugins or Yaegi eval.
+#   - Native plugin compilation needs the Go toolchain on PATH and a writable
+#     build cache. If you use .dlmod/.loadmod, set GOCACHE (and optionally
+#     GOMODCACHE) to a path under /var/lib/goroku and ensure `go` is readable
+#     under /usr (ProtectSystem=strict keeps /usr readable). Pure binary
+#     installs without plugins do not need the toolchain.
+#
+# Health check integration: goroku exposes /healthz (liveness) and /readyz
+# (readiness) once the web panel is up. A commented ExecStartPost probe is
+# included below; enable it only after confirming the app binds within the
+# probe window, otherwise it can flap the unit into a restart loop. For
+# production, prefer an external monitor hitting /healthz + /readyz.
+
+[Unit]
+Description=Goroku Telegram userbot (non-root, hardened)
+Documentation=https://github.com/gemeguardian/Goroku
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=goroku
+Group=goroku
+
+ExecStart=/opt/goroku/bin/goroku --data-root /var/lib/goroku --no-git
+WorkingDirectory=/var/lib/goroku
+
+# Uncomment to load /etc/goroku/goroku.env (GOROKU_WEB_BIND,
+# GOROKU_TRUSTED_PROXIES, GOROKU_SETUP_TOKEN, GOROKU_DEBUG, ...). Example
+# file contents:
+#   GOROKU_WEB_BIND=0.0.0.0
+#   GOROKU_TRUSTED_PROXIES=10.0.0.0/8,fd00::/8
+#   GOROKU_DEBUG=0
+# Keep the file mode 0600 and readable only by the goroku user/group.
+#EnvironmentFile=/etc/goroku/goroku.env
+
+# Optional: liveness probe once the web panel is bound. Enable only if the
+# app binds before the timeout to avoid restart loops.
+#ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5; do curl -fsS http://127.0.0.1:8080/healthz && exit 0; sleep 1; done; exit 1'
+
+Restart=on-failure
+RestartSec=5
+
+# Filesystem hardening
+ProtectSystem=strict
+ReadWritePaths=/var/lib/goroku
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+
+# No capabilities needed (non-root, high-port bind)
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Syscall / namespace / personality hardening
+NoNewPrivileges=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+# Resource limits (tune per host; left conservative)
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

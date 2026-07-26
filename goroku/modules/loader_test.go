@@ -4,12 +4,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"goroku/goroku"
-	"goroku/goroku/utils"
 )
 
 func TestValidateRemoteURLPolicy(t *testing.T) {
@@ -50,103 +48,63 @@ func TestPresetsDownloadUsesModuleURLPolicy(t *testing.T) {
 	}
 }
 
-func TestUnsafeInstallRequiresConfirmOrTrustedDigest(t *testing.T) {
+func TestOwnerAuthorizedInstallNeedsNoConfirmation(t *testing.T) {
 	db := newSecurityModuleTestDatabase(t)
-	body := []byte("package modules\n\ntype Demo struct{}\n")
-	msg := &goroku.Message{RawText: ".dlmod https://example.com/x.go", Text: ".dlmod https://example.com/x.go"}
-	if err := ensureUnsafeInstallAllowed(msg, db, body, false); err == nil {
-		t.Fatal("expected untrusted install without confirm to fail")
-	}
-	msg.RawText = ".dlmod https://example.com/x.go -confirm"
-	if err := ensureUnsafeInstallAllowed(msg, db, body, false); err != nil {
-		t.Fatalf("confirm token should allow install: %v", err)
-	}
-	if err := ensureUnsafeInstallAllowed(&goroku.Message{RawText: ".dlmod x"}, db, body, true); err != nil {
-		t.Fatalf("interactive confirmed=true should allow install: %v", err)
-	}
-	digest := contentSHA256(body)
-	if err := trustContentDigest(db, digest); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureUnsafeInstallAllowed(&goroku.Message{RawText: ".dlmod x"}, db, body, false); err != nil {
-		t.Fatalf("trusted digest should allow install: %v", err)
-	}
-}
-
-func TestParseInstallArgsStripsConfirmWithoutPoisoningPayload(t *testing.T) {
-	payload, confirmed := parseInstallArgs("https://example.com/mod.go -confirm")
-	if !confirmed || payload != "https://example.com/mod.go" {
-		t.Fatalf("url path: payload=%q confirmed=%v", payload, confirmed)
-	}
-	payload, confirmed = parseInstallArgs("-confirm MyModule")
-	if !confirmed || payload != "MyModule" {
-		t.Fatalf("name path: payload=%q confirmed=%v", payload, confirmed)
-	}
-	src := "package modules\n\ntype Demo struct{}\n"
-	payload, confirmed = parseInstallArgs(src + "\n-confirm")
-	if !confirmed {
-		t.Fatal("expected confirm flag after multiline body")
-	}
-	if payload != strings.TrimSpace(src) && !strings.Contains(payload, "type Demo struct{}") {
-		t.Fatalf("multiline body poisoned: %q", payload)
-	}
-	// Bare confirm must not strip from multi-line source containing the word.
-	bodyWithWord := "package modules\n// confirm this works\ntype Demo struct{}\n"
-	payload, confirmed = parseInstallArgs(bodyWithWord)
-	if confirmed {
-		t.Fatal("bare confirm inside multiline source must not be treated as flag")
-	}
-	if !strings.Contains(payload, "confirm this works") {
-		t.Fatalf("source body altered: %q", payload)
-	}
-}
-
-func TestDlmodConfirmPathDoesNotPoisonURL(t *testing.T) {
-	db := newSecurityModuleTestDatabase(t)
-	dataRoot := t.TempDir()
 	oldBaseDir := goroku.BaseDir
-	goroku.BaseDir = dataRoot
+	goroku.BaseDir = t.TempDir()
 	t.Cleanup(func() { goroku.BaseDir = oldBaseDir })
 
 	client := goroku.NewCustomTelegramClient(42)
 	client.Loader = goroku.NewModules(client, db)
 	loader := &LoaderModule{client: client, db: db}
-
-	goodBody := []byte("package modules\n\ntype ConfirmMod struct{}\nfunc (m *ConfirmMod) Name() string { return \"ConfirmMod\" }\n")
-	var capturedBody []byte
-	loader.installHotModuleApply = func(_ *goroku.Message, _, dest string, body []byte) error {
-		capturedBody = append([]byte(nil), body...)
-		return os.WriteFile(dest, body, 0600)
-	}
-	msg := &goroku.Message{
-		RawText:  ".dlmod https://example.com/ConfirmMod.go -confirm",
-		Text:     ".dlmod https://example.com/ConfirmMod.go -confirm",
-		Client:   client,
-		SenderID: 42,
-	}
-	urlPayload, confirmed := parseInstallArgs(utils.GetArgsRaw(msg.RawText))
-	if !confirmed || strings.Contains(urlPayload, "confirm") || !strings.HasPrefix(urlPayload, "https://") {
-		t.Fatalf("confirm not stripped from URL payload: %q confirmed=%v", urlPayload, confirmed)
-	}
-	dest, err := runtimeModuleSourcePath("ConfirmMod")
-	if err != nil {
-		t.Fatal(err)
+	body := []byte("package modules\n\ntype DirectInstall struct{}\n")
+	loader.installHotModuleApply = func(_ *goroku.Message, _, dest string, source []byte) error {
+		return os.WriteFile(dest, source, 0600)
 	}
 	if err := ensureRuntimeModuleSourceDir(); err != nil {
 		t.Fatal(err)
 	}
-	if err := loader.installPersistedHotModuleConfirmed(msg, "ConfirmMod", dest, urlPayload, goodBody, confirmed); err != nil {
-		t.Fatalf("confirmed install failed: %v", err)
+	dest, err := runtimeModuleSourcePath("DirectInstall")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if string(capturedBody) != string(goodBody) {
-		t.Fatalf("body mismatch")
+	msg := &goroku.Message{RawText: ".loadmod package modules", SenderID: 42, Client: client}
+	if _, err := loader.installPersistedHotModule(msg, "DirectInstall", dest, "https://example.com/DirectInstall.go", body); err != nil {
+		t.Fatalf("install without confirmation failed: %v", err)
 	}
-	if got := moduleContentDigests(db)["ConfirmMod"]; got != contentSHA256(goodBody) {
-		t.Fatalf("expected pinned digest, got %q", got)
+	if got := moduleContentDigests(db)["DirectInstall"]; got != contentSHA256(body) {
+		t.Fatalf("persisted digest = %q", got)
 	}
-	// Real ensure path rejects unconfirmed untrusted install without compiling.
-	if err := ensureUnsafeInstallAllowed(&goroku.Message{RawText: ".dlmod https://example.com/Other.go"}, db, goodBody, false); err == nil {
-		t.Fatal("expected unconfirmed install to fail")
+}
+
+func TestInstallReturnsActualRuntimeModuleWhenSourceNameDiffers(t *testing.T) {
+	db := newSecurityModuleTestDatabase(t)
+	oldBaseDir := goroku.BaseDir
+	goroku.BaseDir = t.TempDir()
+	t.Cleanup(func() { goroku.BaseDir = oldBaseDir })
+
+	client := goroku.NewCustomTelegramClient(42)
+	client.Loader = goroku.NewModules(client, db)
+	loader := &LoaderModule{client: client, db: db}
+	loader.installHotModuleApply = func(_ *goroku.Message, _, dest string, source []byte) error {
+		if err := os.WriteFile(dest, source, 0600); err != nil {
+			return err
+		}
+		return client.Loader.RegisterModule(&displayNameModule{name: "RuntimeName"})
+	}
+	if err := ensureRuntimeModuleSourceDir(); err != nil {
+		t.Fatal(err)
+	}
+	dest, err := runtimeModuleSourcePath("StructKey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := loader.installPersistedHotModule(nil, "StructKey", dest, "local", []byte("package modules\n\ntype StructKey struct{}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed == nil || installed.Name() != "RuntimeName" {
+		t.Fatalf("installed module = %#v, want runtime name RuntimeName", installed)
 	}
 }
 
@@ -164,45 +122,21 @@ func TestBootRestoreRefusesDigestMismatch(t *testing.T) {
 	}
 	loader := &LoaderModule{db: db}
 	// Simulate restoreLoadedModule body verification without network.
-	if err := verifyPinnedOrTrustedContent(db, "Pinned", swapped, true); err == nil {
-		t.Fatal("expected swapped content to be rejected against pin")
+	if err := verifyModuleContentDigest(db, "Pinned", swapped, true); err == nil {
+		t.Fatal("expected swapped content to be rejected against recorded digest")
 	}
-	if err := verifyPinnedOrTrustedContent(db, "Pinned", pinned, true); err != nil {
-		t.Fatalf("pinned content should verify: %v", err)
+	if err := verifyModuleContentDigest(db, "Pinned", pinned, true); err != nil {
+		t.Fatalf("recorded content should verify: %v", err)
 	}
-	// No pin: re-download requires trust.
-	if err := verifyPinnedOrTrustedContent(db, "Unpinned", swapped, true); err == nil {
-		t.Fatal("unpinned re-download without trust must fail")
+	// No digest: remote re-download must fail without an allowlist fallback.
+	if err := verifyModuleContentDigest(db, "Unpinned", swapped, true); err == nil {
+		t.Fatal("re-download without a recorded digest must fail")
 	}
-	if err := trustContentDigest(db, contentSHA256(swapped)); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyPinnedOrTrustedContent(db, "Unpinned", swapped, true); err != nil {
-		t.Fatalf("trusted content should pass: %v", err)
-	}
-	// Local load with pin mismatch refuses.
-	if err := verifyPinnedOrTrustedContent(db, "Pinned", swapped, false); err == nil {
-		t.Fatal("local pin mismatch must refuse")
+	// Persisted local source with a digest mismatch refuses.
+	if err := verifyModuleContentDigest(db, "Pinned", swapped, false); err == nil {
+		t.Fatal("local digest mismatch must refuse")
 	}
 	_ = loader
-}
-
-func TestUntrustRemovesContentDigest(t *testing.T) {
-	db := newSecurityModuleTestDatabase(t)
-	body := []byte("package modules\n\ntype T struct{}\n")
-	digest := contentSHA256(body)
-	if err := trustContentDigest(db, digest); err != nil {
-		t.Fatal(err)
-	}
-	if !isContentDigestTrusted(db, digest) {
-		t.Fatal("expected trusted")
-	}
-	if err := untrustContentDigest(db, digest); err != nil {
-		t.Fatal(err)
-	}
-	if isContentDigestTrusted(db, digest) {
-		t.Fatal("digest remained trusted after untrust")
-	}
 }
 
 func TestCallbackOwnerRecheck(t *testing.T) {
@@ -251,11 +185,6 @@ func TestDangerousCommandMetasAreOwnerOnly(t *testing.T) {
 	for name, meta := range (&Presets{}).CommandMetas() {
 		if !meta.OnlyOwner {
 			t.Fatalf("presets %s missing OnlyOwner", name)
-		}
-	}
-	for name, meta := range (&GorokuPluginSecurity{}).CommandMetas() {
-		if !meta.OnlyOwner {
-			t.Fatalf("plugin security %s missing OnlyOwner", name)
 		}
 	}
 }
@@ -330,5 +259,61 @@ func TestInstalledModuleSourceDoesNotAutomaticallyUseLegacySource(t *testing.T) 
 	}
 	if _, err := os.Stat(filepath.Join(dataRoot, "modules")); !os.IsNotExist(err) {
 		t.Fatalf("legacy lookup created runtime storage: %v", err)
+	}
+}
+
+type displayNameModule struct{ name string }
+
+func (m *displayNameModule) Name() string                                            { return m.name }
+func (*displayNameModule) Strings() map[string]string                                { return nil }
+func (*displayNameModule) Init(*goroku.CustomTelegramClient, *goroku.Database) error { return nil }
+func (*displayNameModule) ClientReady() error                                        { return nil }
+func (*displayNameModule) OnUnload() error                                           { return nil }
+func (*displayNameModule) OnDlmod() error                                            { return nil }
+func (*displayNameModule) Commands() map[string]goroku.CommandHandler                { return nil }
+func (*displayNameModule) Watchers() []goroku.WatcherHandler                         { return nil }
+
+func TestRegisteredModuleSourceUsesStructNameRatherThanDisplayName(t *testing.T) {
+	dataRoot := t.TempDir()
+	oldBaseDir := goroku.BaseDir
+	goroku.BaseDir = dataRoot
+	t.Cleanup(func() { goroku.BaseDir = oldBaseDir })
+
+	if err := ensureRuntimeModuleSourceDir(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(runtimeModuleSourceDir(), "UtilsModule.go")
+	if err := os.WriteFile(path, []byte("package modules\n\ntype displayNameModule struct{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	found, err := findRegisteredModuleSource(&displayNameModule{name: "Utils"})
+	if err != nil || found != path {
+		t.Fatalf("registered module source = %q, %v; want %q", found, err, path)
+	}
+}
+
+func TestModuleSourceForExportFindsBuiltinWithoutMakingItUnloadable(t *testing.T) {
+	dataRoot := t.TempDir()
+	sourceRoot := t.TempDir()
+	builtinDir := filepath.Join(sourceRoot, "goroku", "modules")
+	if err := os.MkdirAll(builtinDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(builtinDir, "display.go")
+	if err := os.WriteFile(path, []byte("package modules\n\ntype displayNameModule struct{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldBaseDir, oldBasePath := goroku.BaseDir, goroku.BasePath
+	goroku.BaseDir, goroku.BasePath = dataRoot, sourceRoot
+	t.Cleanup(func() { goroku.BaseDir, goroku.BasePath = oldBaseDir, oldBasePath })
+
+	module := &displayNameModule{name: "Display"}
+	found, err := findModuleSourceForExport(module)
+	if err != nil || found != path {
+		t.Fatalf("export source = %q, %v; want %q", found, err, path)
+	}
+	if _, err := findRegisteredModuleSource(module); err == nil {
+		t.Fatal("built-in source was classified as an unloadable runtime module")
 	}
 }

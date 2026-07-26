@@ -272,7 +272,14 @@ func (sm *SecurityManager) reloadRightsLocked(owner []int64, userRules, chatRule
 		"all_users": allUsersList,
 	}
 	if persistGroups {
-		securityUpdates["sgroups"] = groups
+		persistedGroups := make(map[string]any, len(groups))
+		for name, group := range groups {
+			persistedGroups[name] = map[string]any{
+				"users":       group.Users,
+				"permissions": group.Permissions,
+			}
+		}
+		securityUpdates["sgroups"] = persistedGroups
 	}
 	err := sm.db.Update(map[string]map[string]any{
 		"goroku.security": securityUpdates,
@@ -324,7 +331,13 @@ func (sm *SecurityManager) checkRegistration(msg *Message, reg *commandRegistrat
 }
 
 func (sm *SecurityManager) checkCommand(msg *Message, command string, reg *commandRegistration) bool {
-	L().Info("[Security] Check: SenderID={0}, Out={1}, client.TGID={2}, command={3}", zap.Any("arg0", msg.SenderID), zap.Any("arg1", msg.Out), zap.Any("arg2", sm.client.TGID), zap.Any("arg3", command))
+	// Debug, not Info: this fires for every command from every sender, so at
+	// Info it drowns the log in routine permission checks.
+	L().Debug("security check",
+		zap.Int64("sender_id", msg.SenderID),
+		zap.Bool("out", msg.Out),
+		zap.Int64("client_tgid", sm.client.TGID),
+		zap.String("command", command))
 	// First, if owner/client, bypass security check
 	if msg.SenderID == sm.client.TGID || msg.Out {
 		return true
@@ -438,8 +451,7 @@ func (sm *SecurityManager) checkCommand(msg *Message, command string, reg *comma
 }
 
 func (sm *SecurityManager) checkTelegramGroupAdminRights(msg *Message, config int) bool {
-	// Cache key: chatID/userID (mirrors Python's self._cache[f"{chat_id}/{user_id}"])
-	cacheKey := fmt.Sprintf("%d/%d", msg.ChatID, msg.SenderID)
+	cacheKey := adminCacheKey(msg.ChatID, msg.SenderID, config)
 	sm.mu.RLock()
 	if entry, ok := sm.adminCache[cacheKey]; ok && entry.exp >= time.Now().Unix() {
 		result := entry.result
@@ -481,18 +493,25 @@ func (sm *SecurityManager) checkTelegramGroupAdminRights(msg *Message, config in
 			}
 		}
 
+		// Decisions below are cached like the channel path is. Without this the
+		// cache is read but never written for basic groups, so every command in
+		// one costs a full MessagesGetFullChat plus a participant scan.
 		if participant == nil {
+			sm.setAdminCache(cacheKey, false)
 			return false
 		}
 
 		switch participant.(type) {
 		case *tg.ChatParticipantCreator:
+			sm.setAdminCache(cacheKey, true)
 			return true
 		case *tg.ChatParticipantAdmin:
 			if sm.anyAdmin || (config&GROUP_ADMIN) != 0 || (config&(GROUP_ADMIN_ADD_ADMINS|GROUP_ADMIN_CHANGE_INFO|GROUP_ADMIN_BAN_USERS|GROUP_ADMIN_DEL_MSGS|GROUP_ADMIN_PIN_MSGS|GROUP_ADMIN_INVITE)) != 0 {
+				sm.setAdminCache(cacheKey, true)
 				return true
 			}
 		}
+		sm.setAdminCache(cacheKey, false)
 		return false
 	}
 
@@ -558,11 +577,49 @@ func (sm *SecurityManager) checkTelegramGroupAdminRights(msg *Message, config in
 	return false
 }
 
-// setAdminCache stores a result with 5-minute TTL.
+// adminCacheKey identifies a cached admin-rights decision. The permission mask
+// is part of the key because the cached value answers "does this user satisfy
+// *this* mask", not "is this user an admin". Keyed on chatID/userID alone (as
+// the Python original was), a `true` cached for a command needing only
+// GROUP_ADMIN_PIN_MSGS was replayed for one needing GROUP_ADMIN_BAN_USERS,
+// granting rights the user does not hold; a cached `false` symmetrically denied
+// commands they do.
+func adminCacheKey(chatID, senderID int64, config int) string {
+	return fmt.Sprintf("%d/%d/%d", chatID, senderID, config)
+}
+
+// adminCacheTTL and adminCacheMaxEntries bound the admin-rights cache. Entries
+// carry an expiry but nothing reads them again once the chat goes quiet, so the
+// map is swept on write; without that it grows for the process lifetime, one
+// entry per distinct chat/user pair ever seen.
+const (
+	adminCacheTTL        = 300 * time.Second
+	adminCacheMaxEntries = 4096
+)
+
+// setAdminCache stores a result with adminCacheTTL and keeps the cache bounded.
 func (sm *SecurityManager) setAdminCache(key string, result bool) {
 	sm.mu.Lock()
-	sm.adminCache[key] = adminCacheEntry{result: result, exp: time.Now().Unix() + 300}
-	sm.mu.Unlock()
+	defer sm.mu.Unlock()
+	now := time.Now().Unix()
+	if len(sm.adminCache) >= adminCacheMaxEntries {
+		sm.sweepAdminCacheLocked(now)
+		// Still saturated after dropping expired entries: reset rather than grow
+		// without bound. Losing warm entries only costs a re-fetch.
+		if len(sm.adminCache) >= adminCacheMaxEntries {
+			sm.adminCache = make(map[string]adminCacheEntry, adminCacheMaxEntries)
+		}
+	}
+	sm.adminCache[key] = adminCacheEntry{result: result, exp: now + int64(adminCacheTTL.Seconds())}
+}
+
+// sweepAdminCacheLocked drops expired entries. sm.mu must be held for writing.
+func (sm *SecurityManager) sweepAdminCacheLocked(now int64) {
+	for key, entry := range sm.adminCache {
+		if entry.exp < now {
+			delete(sm.adminCache, key)
+		}
+	}
 }
 
 func (sm *SecurityManager) getFlagsForCommand(command string) int {

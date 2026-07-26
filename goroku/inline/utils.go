@@ -3,6 +3,7 @@ package inline
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -12,6 +13,9 @@ import (
 )
 
 func (im *InlineManager) StoreUnit(unitID string, unit *Unit) {
+	if unit.Module == "" {
+		unit.Module = im.detectCallingModule()
+	}
 	im.mu.Lock()
 	defer im.mu.Unlock()
 	if im.closed {
@@ -19,9 +23,6 @@ func (im *InlineManager) StoreUnit(unitID string, unit *Unit) {
 	}
 	if unit.TTL.IsZero() {
 		unit.TTL = time.Now().Add(im.markupTTL)
-	}
-	if unit.Module == "" {
-		unit.Module = im.detectCallingModule()
 	}
 	for rowIdx := range unit.Buttons {
 		for btnIdx := range unit.Buttons[rowIdx] {
@@ -235,8 +236,23 @@ func (im *InlineManager) runUnitUnload(unload func()) {
 	}
 }
 
+type moduleReceiver struct {
+	pkgPath  string
+	typeName string
+}
+
+type moduleOwner struct {
+	name      string
+	ambiguous bool
+}
+
 func (im *InlineManager) detectCallingModule() string {
-	pcs := make([]uintptr, 15)
+	owners := im.registeredModuleOwners()
+	if len(owners) == 0 {
+		return ""
+	}
+
+	pcs := make([]uintptr, 32)
 	n := runtime.Callers(2, pcs) // start from caller of the current function
 	if n == 0 {
 		return ""
@@ -252,29 +268,68 @@ func (im *InlineManager) detectCallingModule() string {
 			continue
 		}
 
-		// This is the first frame outside "goroku/inline"!
-		funcName := frame.Function
-
-		// Parse the struct/receiver name
-		if idx := strings.LastIndex(funcName, "/"); idx != -1 {
-			funcName = funcName[idx+1:]
-		}
-		if idx := strings.Index(funcName, "."); idx != -1 {
-			rest := funcName[idx+1:] // "(*GorokuBackup).SomeMethod" or "SomeFunction"
-			rest = strings.TrimPrefix(rest, "*")
-			rest = strings.TrimPrefix(rest, "(")
-			rest = strings.TrimPrefix(rest, "*")
-			if closeIdx := strings.Index(rest, ")"); closeIdx != -1 {
-				return rest[:closeIdx]
+		receiver, ok := receiverFromFunction(frame.Function)
+		if ok {
+			if owner, exists := owners[receiver]; exists && !owner.ambiguous {
+				return owner.name
 			}
-			if dotIdx := strings.Index(rest, "."); dotIdx != -1 {
-				return rest[:dotIdx]
-			}
-			return rest
 		}
 		if !more {
 			break
 		}
 	}
 	return ""
+}
+
+func (im *InlineManager) registeredModuleOwners() map[moduleReceiver]moduleOwner {
+	owners := make(map[moduleReceiver]moduleOwner)
+	if im.allModules == nil {
+		return owners
+	}
+	for _, registryName := range im.allModules.ModuleNames() {
+		im.allModules.WithModule(registryName, func(module any) {
+			t := reflect.TypeOf(module)
+			for t != nil && t.Kind() == reflect.Pointer {
+				t = t.Elem()
+			}
+			if t == nil || t.Name() == "" || t.PkgPath() == "" {
+				return
+			}
+			name := registryName
+			if named, ok := module.(interface{ Name() string }); ok && named.Name() != "" {
+				name = named.Name()
+			}
+			key := moduleReceiver{pkgPath: t.PkgPath(), typeName: t.Name()}
+			if existing, ok := owners[key]; ok && existing.name != name {
+				owners[key] = moduleOwner{ambiguous: true}
+				return
+			}
+			owners[key] = moduleOwner{name: name}
+		})
+	}
+	return owners
+}
+
+func receiverFromFunction(function string) (moduleReceiver, bool) {
+	if marker := strings.Index(function, ".("); marker >= 0 {
+		rest := strings.TrimPrefix(function[marker+2:], "*")
+		closeIdx := strings.Index(rest, ")")
+		if closeIdx <= 0 {
+			return moduleReceiver{}, false
+		}
+		return moduleReceiver{pkgPath: function[:marker], typeName: rest[:closeIdx]}, true
+	}
+
+	lastSlash := strings.LastIndex(function, "/")
+	dotOffset := strings.Index(function[lastSlash+1:], ".")
+	if dotOffset < 0 {
+		return moduleReceiver{}, false
+	}
+	marker := lastSlash + 1 + dotOffset
+	rest := function[marker+1:]
+	dotIdx := strings.Index(rest, ".")
+	if dotIdx <= 0 {
+		return moduleReceiver{}, false
+	}
+	return moduleReceiver{pkgPath: function[:marker], typeName: rest[:dotIdx]}, true
 }

@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -285,25 +284,34 @@ func (wc *WebCore) runStart(ctx context.Context, done chan struct{}, generation 
 	mux := http.NewServeMux()
 	wc.SetupRoutes(mux)
 
-	// Add favicon and static resources
+	// R4.1: favicon is vendored locally (assets/static/favicon.jpeg) instead of
+	// redirecting to a raw.githubusercontent.com URL, so the panel is offline.
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/IRAiWBo.jpeg", http.StatusMovedPermanently)
+		http.Redirect(w, r, "/static/favicon.jpeg", http.StatusMovedPermanently)
 	})
 
-	// Setup static files handler
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(filepath.Join(webResourceDir(wc.dataRoot), "static")))))
+	// Static resources: disk override first, embedded assets as offline fallback.
+	mux.Handle("/static/", wc.staticHandler())
 
 	secureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setSecurityHeaders(w)
 		mux.ServeHTTP(w, r)
 	})
 
-	bindHost := strings.TrimSpace(os.Getenv("GOROKU_IP"))
+	bindHost := strings.TrimSpace(os.Getenv("GOROKU_WEB_BIND"))
+	if bindHost == "" {
+		bindHost = strings.TrimSpace(os.Getenv("GOROKU_IP"))
+	}
 	if bindHost == "" {
 		bindHost = "127.0.0.1"
 		if os.Getenv("DOCKER") != "" {
 			bindHost = "0.0.0.0"
 		}
+	}
+	if !isLoopbackBind(bindHost) {
+		L().Warn("web UI is binding to a non-loopback address and will be reachable from other hosts; configure GOROKU_TRUSTED_PROXIES with the CIDRs of your reverse proxy before trusting forwarding headers",
+			zap.String("bind", bindHost),
+			zap.String("addr", net.JoinHostPort(bindHost, strconv.Itoa(runningPort))))
 	}
 	server := newHTTPServer(net.JoinHostPort(bindHost, strconv.Itoa(runningPort)), secureHandler)
 	var proxypasser *TunnelManager
@@ -325,7 +333,7 @@ func (wc *WebCore) runStart(ctx context.Context, done chan struct{}, generation 
 			_ = listener.Close()
 		}
 		if err != nil && ctx.Err() == nil {
-			L().Info("Web server error: {0}", zap.Any("arg0", err))
+			L().Error("Web server error", zap.Error(err))
 		}
 
 		wc.serverMu.Lock()
@@ -364,12 +372,12 @@ func (wc *WebCore) runStart(ctx context.Context, done chan struct{}, generation 
 	close(generation.done)
 	wc.serverMu.Unlock()
 
-	L().Info("Goroku Userbot Web Interface running on {0}", zap.Any("arg0", runningPort))
+	L().Info("Goroku Userbot Web Interface running on", zap.Any("running_port", runningPort))
 	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 		wc.serverMu.Lock()
 		wc.lifecycleErr = fmt.Errorf("serve: %w", err)
 		wc.serverMu.Unlock()
-		L().Info("Web server error: {0}", zap.Any("arg0", err))
+		L().Error("Web server error", zap.Error(err))
 	}
 	wc.finishStart(done)
 }
@@ -424,18 +432,31 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	}
 }
 
+func isLoopbackBind(host string) bool {
+	h := strings.Trim(strings.TrimSpace(host), "[]")
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.EqualFold(h, "localhost")
+}
+
 func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	// R4.1: CSP is offline-only. All frontend assets are vendored and embedded
+	// (goroku/web/assets via //go:embed), so every origin except 'self' is
+	// disallowed. 'unsafe-inline' is retained for script/style because the
+	// onboarding markup embeds a small inline bootstrap script and inline
+	// styles; data: is allowed for images/fonts used by the panel.
 	w.Header().Set("Content-Security-Policy", strings.Join([]string{
 		"default-src 'self'",
-		"script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com",
-		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://css.gg",
-		"font-src 'self' data: https://fonts.gstatic.com https://css.gg",
-		"img-src 'self' data: https:",
-		"connect-src 'self' https://*.lottiefiles.com https://static.dan.tatar",
-		"media-src 'self' https:",
+		"script-src 'self' 'unsafe-inline'",
+		"style-src 'self' 'unsafe-inline'",
+		"font-src 'self' data:",
+		"img-src 'self' data:",
+		"connect-src 'self'",
+		"media-src 'self'",
 		"object-src 'none'",
 		"base-uri 'self'",
 		"frame-ancestors 'none'",

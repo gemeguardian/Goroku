@@ -1,12 +1,12 @@
 package modules
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tg"
@@ -18,37 +18,28 @@ import (
 	"goroku/goroku/utils"
 )
 
-type Quickstart struct {
+type quickstart struct {
 	client     *goroku.CustomTelegramClient
 	db         *goroku.Database
 	translator *goroku.Translator
 }
 
-func (m *Quickstart) Name() string {
-	return "Quickstart"
-}
-
-func (m *Quickstart) Strings() map[string]string {
-	return map[string]string{
-		"name": "Quickstart",
+func StartQuickstart(ctx context.Context, client *goroku.CustomTelegramClient, db *goroku.Database) error {
+	m := &quickstart{
+		client:     client,
+		db:         db,
+		translator: goroku.NewTranslator(client, db),
 	}
-}
-
-func (m *Quickstart) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
-	m.client = client
-	m.db = db
-	m.translator = goroku.NewTranslator(client, db)
 	m.translator.Init()
-	return nil
-}
-
-func (m *Quickstart) ClientReady() error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				L().Info("Quickstart ClientReady panic recovered: {0}", zap.Any("arg0", r))
+				L().Error("Quickstart ClientReady panic recovered", zap.Any("panic", r))
 			}
 		}()
+		if err := ctx.Err(); err != nil {
+			return
+		}
 
 		var contentChannel any
 		var finalCid int64
@@ -140,7 +131,7 @@ func (m *Quickstart) ClientReady() error {
 				false,
 			)
 			if err != nil {
-				L().Info("Quickstart: failed to create forum topic {0}: {1}", zap.Any("arg0", topic.Title), zap.Any("arg1", err))
+				L().Warn("Quickstart: failed to create forum topic", zap.Any("topic", topic.Title), zap.Error(err))
 			}
 		}
 
@@ -149,20 +140,12 @@ func (m *Quickstart) ClientReady() error {
 		// Welcome message with language selector
 		if !m.db.GetBool("Quickstart", "no_msg", false) {
 			im := m.client.GorokuInline
-			if im != nil {
-				for i := 0; i < 20; i++ {
-					if im.IsComplete() {
-						break
-					}
-					time.Sleep(500 * time.Millisecond)
+			if im != nil && im.IsComplete() {
+				if err := m.sendMenu(m.client.TGID); err != nil {
+					return
 				}
-				if im.IsComplete() {
-					if err := m.sendMenu(m.client.TGID); err != nil {
-						return
-					}
-					if err := m.db.SetBool("Quickstart", "no_msg", true); err != nil {
-						L().Error("background database write failed", zap.String("operation", "set"), zap.String("owner", "Quickstart"), zap.String("key", "no_msg"), zap.Error(err))
-					}
+				if err := m.db.SetBool("Quickstart", "no_msg", true); err != nil {
+					L().Error("background database write failed", zap.String("operation", "set"), zap.String("owner", "Quickstart"), zap.String("key", "no_msg"), zap.Error(err))
 				}
 			}
 		}
@@ -171,60 +154,7 @@ func (m *Quickstart) ClientReady() error {
 	return nil
 }
 
-func (m *Quickstart) OnUnload() error { return nil }
-func (m *Quickstart) OnDlmod() error  { return nil }
-
-func (m *Quickstart) Commands() map[string]goroku.CommandHandler {
-	return map[string]goroku.CommandHandler{
-		"quickstart": m.QuickstartCmd,
-	}
-}
-
-func (m *Quickstart) CommandMetas() map[string]goroku.CommandMeta {
-	return map[string]goroku.CommandMeta{
-		"quickstart": {
-			Aliases: []string{"start"},
-		},
-	}
-}
-
-func (m *Quickstart) Watchers() []goroku.WatcherHandler {
-	return []goroku.WatcherHandler{}
-}
-
-func (m *Quickstart) StartCmd(msg *goroku.Message) error {
-	return m.showQuickstart(msg)
-}
-
-func (m *Quickstart) QuickstartCmd(msg *goroku.Message) error {
-	return m.showQuickstart(msg)
-}
-
-func (m *Quickstart) showQuickstart(msg *goroku.Message) error {
-	im := m.client.GorokuInline
-	if im != nil && im.IsComplete() {
-		_ = msg.Delete()
-		return m.sendMenu(msg.ChatID)
-	}
-
-	msg.Text = m.getWelcomeText()
-	if msg.Client != nil {
-		_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-	}
-	return nil
-}
-
-func (m *Quickstart) HandleBotPM(msg *tgbotapi.Message) {
-	if msg == nil {
-		return
-	}
-
-	if msg.Text == "/start" && msg.From != nil && msg.From.ID == m.client.TGID {
-		_ = m.sendMenu(msg.Chat.ID)
-	}
-}
-
-func (m *Quickstart) sendMenu(chatID int64) error {
+func (m *quickstart) sendMenu(chatID int64) error {
 	im := m.client.GorokuInline
 	if im == nil {
 		return fmt.Errorf("inline manager not ready")
@@ -242,7 +172,7 @@ func (m *Quickstart) sendMenu(chatID int64) error {
 	return err
 }
 
-func (m *Quickstart) editMenu(c inline.CallbackQuery) error {
+func (m *quickstart) editMenu(c inline.CallbackQuery) error {
 	im := m.client.GorokuInline
 	if im == nil {
 		return fmt.Errorf("inline manager not ready")
@@ -254,7 +184,7 @@ func (m *Quickstart) editMenu(c inline.CallbackQuery) error {
 	return c.Edit(text, markup)
 }
 
-func (m *Quickstart) getWelcomeText() string {
+func (m *quickstart) getWelcomeText() string {
 	platform := "Goroku"
 	me, err := m.client.GetMe()
 	if err == nil {
@@ -275,7 +205,7 @@ func (m *Quickstart) getWelcomeText() string {
 	return text
 }
 
-func (m *Quickstart) generateWelcomeMarkup(im inlineiface.InlineManager) tgbotapi.InlineKeyboardMarkup {
+func (m *quickstart) generateWelcomeMarkup(im inlineiface.InlineManager) tgbotapi.InlineKeyboardMarkup {
 	var buttons [][]inline.Button
 
 	buttons = append(buttons, []inline.Button{
@@ -328,6 +258,6 @@ func (m *Quickstart) generateWelcomeMarkup(im inlineiface.InlineManager) tgbotap
 	return im.GenerateMarkup(buttons)
 }
 
-func (m *Quickstart) getTrans(key, def string) string {
-	return getTrans(m.translator, m.Name(), key, def)
+func (m *quickstart) getTrans(key, def string) string {
+	return getTrans(m.translator, "Quickstart", key, def)
 }

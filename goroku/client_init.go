@@ -100,6 +100,11 @@ func (h *Goroku) initClientContext(ctx context.Context, tgID int64, sessionPath 
 	}
 
 	loader.SendReady()
+	if h.clientReadyHook != nil {
+		if err := h.clientReadyHook(ctx, client, db); err != nil {
+			L().Error("Client ready hook failed", zap.Error(err))
+		}
+	}
 
 	h.sendBadge(client, db)
 

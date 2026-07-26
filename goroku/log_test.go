@@ -3,6 +3,7 @@ package goroku
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +62,31 @@ func TestTranslatorInitCheckedReportsDatabaseLifecycle(t *testing.T) {
 	translator.db = db
 	if _, err := translator.InitChecked(); !errors.Is(err, ErrDatabaseClosed) {
 		t.Fatalf("closed translator error = %v", err)
+	}
+}
+
+func TestTracebackUnitUsesRegisteredLoaderModule(t *testing.T) {
+	unit := tracebackUnit(&CustomTelegramClient{TGID: 42}, telegramTraceback{})
+	if unit.Module != "Loader" {
+		t.Fatalf("traceback callback module = %q, want Loader", unit.Module)
+	}
+	if !unit.DisableSecurity || len(unit.Buttons) != 1 || len(unit.Buttons[0]) != 1 {
+		t.Fatalf("unexpected traceback callback unit: %#v", unit)
+	}
+}
+
+func TestParseTelegramLogRecordsFormatsErrorCard(t *testing.T) {
+	record := `{"timestamp":"2026-07-17 12:00:00","level":"ERROR","caller":"goroku/example.go:42","msg":"bridge request failed","error":"access blocked","stacktrace":"goroutine 1 [running]:\ngoroku/example.run()\n\t/root/eblan/Goroku/goroku/example.go:42 +0x1","module":"Bridge"}`
+	normal, tracebacks := parseTelegramLogRecords([]string{record})
+	if len(normal) != 0 || len(tracebacks) != 1 {
+		t.Fatalf("parsed normal=%#v tracebacks=%#v", normal, tracebacks)
+	}
+	for _, expected := range []string{"🔴", "🎯 Source:", "❓ Error:", "💭 Message:", "module=Bridge"} {
+		if !strings.Contains(tracebacks[0].summary, expected) {
+			t.Errorf("summary %q does not contain %q", tracebacks[0].summary, expected)
+		}
+	}
+	if !strings.Contains(tracebacks[0].full, "<pre>👉 /root/eblan/Goroku/goroku/example.go:42 in goroku/example.run()</pre>") {
+		t.Errorf("full traceback is not frame-formatted: %q", tracebacks[0].full)
 	}
 }

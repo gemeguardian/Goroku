@@ -58,6 +58,10 @@ func WithOnUnload(fn func()) FormOpt {
 	return func(u *Unit) { u.OnUnload = fn }
 }
 
+func WithModule(name string) FormOpt {
+	return func(u *Unit) { u.Module = name }
+}
+
 func WithStartText(text string) FormOpt {
 	return func(u *Unit) { u.StartText = text }
 }

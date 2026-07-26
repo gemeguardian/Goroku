@@ -251,7 +251,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 	if gitStatus != "Clean" && gitStatus != "Git disabled" && gitStatus != "Not a Git repo" && gitStatus != "Unknown" {
 		gitURL += " (modified)"
 	}
-	htlVer := "gotd v0.120.0"
+	htlVer := "gotd v0.161.0"
 
 	hostname, _ := os.Hostname()
 	if hostname == "" {

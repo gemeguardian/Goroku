@@ -53,25 +53,27 @@ func init() {
 }
 
 type Goroku struct {
-	OmitLog     bool
-	APIID       int64
-	APIHash     string
-	Port        int
-	DisableWeb  bool
-	NoGit       bool
-	QRLogin     bool
-	NoAuth      bool
-	Sandbox     bool
-	SSHTunnel   bool
-	ProxyHost   string
-	ProxyPort   int
-	ProxySecret string
-	ProxyPass   string
-	Clients     []*CustomTelegramClient
-	DBs         []*Database
-	Loaders     []*Modules
-	Web         *web.WebCore
-	TGLogs      *TelegramLogsHandler
+	OmitLog        bool
+	APIID          int64
+	APIHash        string
+	Port           int
+	DisableWeb     bool
+	NoGit          bool
+	QRLogin        bool
+	NoAuth         bool
+	Sandbox        bool
+	SSHTunnel      bool
+	ProxyHost      string
+	ProxyPort      int
+	ProxySecret    string
+	ProxyPass      string
+	Doctor         bool
+	ConfigValidate bool
+	Clients        []*CustomTelegramClient
+	DBs            []*Database
+	Loaders        []*Modules
+	Web            *web.WebCore
+	TGLogs         *TelegramLogsHandler
 
 	// ShutdownTimeout bounds how long Run waits for the shared teardown worker.
 	// The worker continues safely if external code ignores cancellation.
@@ -93,6 +95,7 @@ type Goroku struct {
 	startupActive    bool
 	startupDone      chan struct{}
 	connectClient    func(context.Context, *CustomTelegramClient) error
+	clientReadyHook  func(context.Context, *CustomTelegramClient, *Database) error
 	ownsGlobal       bool
 	lifecycleOps     int
 	lifecycleOpsDone chan struct{}
@@ -134,6 +137,12 @@ func NewApp(factories []ModuleFactory) *Goroku {
 	h := NewGoroku()
 	h.start = func(ctx context.Context) error { return h.startup(ctx, factories) }
 	return h
+}
+
+// SetClientReadyHook configures non-module per-client startup work.
+// It must be called before Run.
+func (h *Goroku) SetClientReadyHook(hook func(context.Context, *CustomTelegramClient, *Database) error) {
+	h.clientReadyHook = hook
 }
 
 // Run starts the application, waits for cancellation or a lifecycle request,
@@ -649,6 +658,9 @@ func (h *Goroku) ParseArguments() {
 	proxyPortFlag := flag.Int("proxy-port", 0, "MTProto proxy port")
 	proxySecretFlag := flag.String("proxy-secret", "", "MTProto proxy secret (hex)")
 	proxyPassFlag := flag.String("proxy-pass", "", "Deprecated alias for --proxy-secret (not SSH tunnel)")
+	webBindFlag := flag.String("web-bind", "", "Explicit web panel bind address (overrides GOROKU_IP/Docker; warns on non-loopback)")
+	doctorFlag := flag.Bool("doctor", false, "Run diagnostics (config, data root, Redis, runtime, web bind, trust) and exit; does not start the bot/web")
+	configValidateFlag := flag.Bool("config-validate", false, "Parse and validate config.json, then exit (shorthand for the config section of --doctor)")
 	flag.Parse()
 
 	h.Port = *portFlag
@@ -662,6 +674,8 @@ func (h *Goroku) ParseArguments() {
 	h.ProxyPort = *proxyPortFlag
 	h.ProxySecret = NormalizeProxySecret(*proxySecretFlag, *proxyPassFlag)
 	h.ProxyPass = strings.TrimSpace(*proxyPassFlag)
+	h.Doctor = *doctorFlag
+	h.ConfigValidate = *configValidateFlag
 
 	if *dataRootFlag != "" {
 		BaseDir = *dataRootFlag
@@ -670,6 +684,9 @@ func (h *Goroku) ParseArguments() {
 
 	if h.NoGit {
 		_ = os.Setenv("GOROKU_NO_GIT", "1")
+	}
+	if webBind := strings.TrimSpace(*webBindFlag); webBind != "" {
+		_ = os.Setenv("GOROKU_WEB_BIND", webBind)
 	}
 }
 

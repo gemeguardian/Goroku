@@ -13,9 +13,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
+	"go.uber.org/zap"
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
@@ -107,9 +109,12 @@ type LoaderModule struct {
 	translator      *goroku.Translator
 	modulesRepo     string
 	additionalRepos []string
-	shareLink       bool
 	basicAuth       string
 	commandEmoji    string
+	readyMu         sync.RWMutex
+	fullyLoaded     bool
+	restoreComplete bool
+	restoreDone     chan struct{}
 
 	// Narrow seam used by module transaction tests.
 	installHotModuleApply func(*goroku.Message, string, string, []byte) error
@@ -123,9 +128,10 @@ func (m *LoaderModule) Name() string {
 func (m *LoaderModule) Strings() map[string]string {
 	return map[string]string{
 		"name":                  "Loader",
+		"_cmd_doc_loadmod":      "Install native Go source from a replied file or command body. Native modules execute arbitrary code in this process; use only trusted source.",
+		"_cmd_doc_dlmod":        "Download and install a native Go module. Native modules execute arbitrary code in this process; use only trusted repositories and URLs.",
 		"_cfg_MODULES_REPO":     "Main repository URL for downloading modules",
 		"_cfg_ADDITIONAL_REPOS": "Additional repository URLs for downloading modules",
-		"_cfg_share_link":       "Share module link when sending .session files",
 		"_cfg_basic_auth":       "Basic auth credentials for remote updates (format user:password)",
 		"_cfg_command_emoji":    "Bullet emoji/tag for loading commands in help",
 	}
@@ -134,6 +140,22 @@ func (m *LoaderModule) Strings() map[string]string {
 func (m *LoaderModule) Init(client *goroku.CustomTelegramClient, db *goroku.Database) error {
 	m.client = client
 	m.db = db
+	loadedMods := db.GetStringMap(m.Name(), "loaded_modules", nil)
+	for name, source := range loadedMods {
+		if source == "local" {
+			delete(loadedMods, name)
+		}
+	}
+	if err := db.SetStringMap(m.Name(), "loaded_modules", loadedMods); err != nil {
+		return fmt.Errorf("migrate local module manifest: %w", err)
+	}
+	if value, err := db.Get(m.Name(), "share_link", nil); err != nil {
+		return fmt.Errorf("read obsolete Loader.share_link setting: %w", err)
+	} else if value != nil {
+		if err := db.Delete(m.Name(), "share_link"); err != nil {
+			return fmt.Errorf("remove obsolete Loader.share_link setting: %w", err)
+		}
+	}
 	m.translator = goroku.NewTranslator(client, db)
 	m.translator.Init()
 	return nil
@@ -146,7 +168,6 @@ func (m *LoaderModule) ConfigSchema() []goroku.ConfigField {
 	return []goroku.ConfigField{
 		{Key: "MODULES_REPO", Type: "string", Default: "https://raw.githubusercontent.com/coddrago/modules/main", Validator: &goroku.StringValidator{}},
 		{Key: "ADDITIONAL_REPOS", Type: "series", Default: []any{}, Validator: &goroku.SeriesValidator{}},
-		{Key: "share_link", Type: "bool", Default: false, Validator: &goroku.BooleanValidator{}},
 		{Key: "basic_auth", Type: "hidden", Default: "", Secret: true, Validator: &goroku.UnionValidator{Validators: []goroku.Validator{
 			&goroku.NoneTypeValidator{},
 			&goroku.RegExpValidator{Pattern: regexp.MustCompile(`^$`)},
@@ -159,9 +180,6 @@ func (m *LoaderModule) ConfigSchema() []goroku.ConfigField {
 func (m *LoaderModule) ConfigReady(config map[string]any) error {
 	if val, ok := config["MODULES_REPO"].(string); ok {
 		m.modulesRepo = val
-	}
-	if val, ok := config["share_link"].(bool); ok {
-		m.shareLink = val
 	}
 	if val, ok := config["basic_auth"].(string); ok {
 		m.basicAuth = val
@@ -184,20 +202,68 @@ func (m *LoaderModule) ConfigReady(config map[string]any) error {
 }
 
 func (m *LoaderModule) ClientReady() error {
-	loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
-	if len(loadedMods) == 0 {
+	m.beginModuleRestore()
+	if m.db.GetBool("Loader", "secure_boot", false) {
+		if err := m.db.SetBool("Loader", "secure_boot", false); err != nil {
+			goroku.L().Error("clear secure boot flag", zap.Error(err))
+		}
+		go m.finishModuleRestore(true)
 		return nil
+	}
+	go func() {
+		// Restoring user modules runs their init/register code. A panic there
+		// would otherwise take down the process and leave restoreDone unclosed,
+		// blocking every WaitForRestore caller.
+		fullyLoaded := false
+		defer func() {
+			if r := recover(); r != nil {
+				goroku.L().Error("panic while restoring user modules", zap.Any("panic", r))
+			}
+			m.finishModuleRestore(fullyLoaded)
+		}()
+		loaded, err := m.restoreLoadedModules()
+		if err != nil {
+			goroku.L().Error("failed to restore user modules", zap.Error(err))
+		}
+		fullyLoaded = loaded
+	}()
+	return nil
+}
+
+func (m *LoaderModule) restoreLoadedModules() (bool, error) {
+	var fullyLoaded bool
+	err := withModuleTransaction(func() error {
+		var restoreErr error
+		fullyLoaded, restoreErr = m.restoreLoadedModulesLocked()
+		return restoreErr
+	})
+	return fullyLoaded, err
+}
+
+func (m *LoaderModule) restoreLoadedModulesLocked() (bool, error) {
+	loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
+	localMods := localRuntimeModules()
+	for modName, path := range localMods {
+		if _, tracked := loadedMods[modName]; !tracked {
+			loadedMods[modName] = path
+		}
+	}
+	if len(loadedMods) == 0 {
+		return true, nil
 	}
 
 	loader := m.client.Loader
 	if loader == nil {
-		return nil
+		return false, nil
 	}
 
 	var structNames []string
-	goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
 	for modName, source := range loadedMods {
 		path, pathErr := findInstalledModuleSource(modName)
+		sourcePath, local := localMods[modName]
+		if local {
+			path, pathErr = sourcePath, nil
+		}
 		if pathErr != nil {
 			path, pathErr = runtimeModuleSourcePath(modName)
 			if pathErr != nil {
@@ -210,7 +276,7 @@ func (m *LoaderModule) ClientReady() error {
 				if err := ensureRuntimeModuleSourceDir(); err != nil {
 					continue
 				}
-				// Re-download must match pinned digest or trusted content; never silently load swapped remote.
+				// Re-download must exactly match the digest recorded at installation.
 				bodyBytes, err = m.restoreLoadedModule(modName, source, path)
 				if err != nil {
 					continue
@@ -218,21 +284,79 @@ func (m *LoaderModule) ClientReady() error {
 			} else {
 				continue
 			}
-		} else if err := verifyPinnedOrTrustedContent(m.db, modName, bodyBytes, false); err != nil {
-			// Local file present but does not match pin: refuse silent load of swapped content.
+		} else if err := verifyModuleContentDigest(m.db, modName, bodyBytes, !local); err != nil {
+			// Persisted source does not match its recorded digest.
 			continue
 		}
-		structName := modName
-		if loc := goReg.FindStringSubmatch(string(bodyBytes)); len(loc) == 2 {
-			structName = loc[1]
-		}
+		structName := extractStructName(bodyBytes, modName)
 		structNames = append(structNames, structName)
 	}
 
 	if len(structNames) == 0 {
+		return false, nil
+	}
+	err := HotLoadStructs(loader, structNames)
+	return err == nil, err
+}
+
+// localRuntimeModules derives local modules from their source files, so their
+// installation state does not need to be duplicated in the database.
+func localRuntimeModules() map[string]string {
+	paths, err := filepath.Glob(filepath.Join(runtimeModuleSourceDir(), "*.go"))
+	if err != nil {
 		return nil
 	}
-	return HotLoadStructs(loader, structNames)
+	modules := make(map[string]string, len(paths))
+	for _, path := range paths {
+		body, err := os.ReadFile(path) //nolint:gosec
+		if err != nil {
+			continue
+		}
+		if names, parseErr := moduleStructNames(body); parseErr == nil && len(names) > 0 {
+			modules[names[0]] = path
+		}
+	}
+	return modules
+}
+
+func (m *LoaderModule) beginModuleRestore() {
+	m.readyMu.Lock()
+	m.fullyLoaded = false
+	m.restoreComplete = false
+	m.restoreDone = make(chan struct{})
+	m.readyMu.Unlock()
+}
+
+func (m *LoaderModule) finishModuleRestore(fullyLoaded bool) {
+	m.readyMu.Lock()
+	m.fullyLoaded = fullyLoaded
+	m.restoreComplete = true
+	close(m.restoreDone)
+	m.readyMu.Unlock()
+}
+
+func (m *LoaderModule) FullyLoaded() bool {
+	m.readyMu.RLock()
+	defer m.readyMu.RUnlock()
+	return m.fullyLoaded
+}
+
+func (m *LoaderModule) RestoreComplete() bool {
+	m.readyMu.RLock()
+	defer m.readyMu.RUnlock()
+	return m.restoreComplete
+}
+
+func (m *LoaderModule) WaitForRestore() <-chan struct{} {
+	m.readyMu.RLock()
+	done := m.restoreDone
+	m.readyMu.RUnlock()
+	if done != nil {
+		return done
+	}
+	completed := make(chan struct{})
+	close(completed)
+	return completed
 }
 
 func (m *LoaderModule) restoreLoadedModule(modName, url, path string) ([]byte, error) {
@@ -255,16 +379,12 @@ func (m *LoaderModule) restoreLoadedModule(modName, url, path string) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	// Boot re-download requires pin match or trusted digest; refuse silent swapped content.
-	if err := verifyPinnedOrTrustedContent(m.db, modName, body, true); err != nil {
+	// Boot re-download must exactly match the digest recorded at installation.
+	if err := verifyModuleContentDigest(m.db, modName, body, true); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(path, body, 0600); err != nil {
 		return nil, err
-	}
-	// Persist pin if restore was allowed via trusted_digests only.
-	if moduleContentDigests(m.db)[modName] == "" {
-		_ = setModuleContentDigest(m.db, modName, contentSHA256(body))
 	}
 	return body, nil
 }
@@ -414,8 +534,7 @@ func (m *LoaderModule) findLink(moduleName string) (string, error) {
 }
 
 func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
-	rawArgs, confirmed := parseInstallArgs(utils.GetArgsRaw(msg.RawText))
-	rawArgs = strings.TrimSpace(rawArgs)
+	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
 	if rawArgs == "" {
 		im := m.client.GorokuInline
 		if im != nil {
@@ -451,52 +570,45 @@ func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 		}
 
 		msg.Text = m.getTrans("args", "🚫 <b>You must specify arguments</b>")
-		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-		}
-		return nil
+		return msg.Answer(msg.Text)
 	}
 
 	url := rawArgs
 	var modName string
+	sourceKind := moduleSourceURL
 
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		msg.Text = m.getTrans("finding_module_in_repos", "🔄 Looking for modules in repositories.")
-		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
+		sourceKind = moduleSourceRepository
+		msg.Text = m.getTrans("finding_module_in_repos", "<tg-emoji emoji-id=5873204392429096339>🔄</tg-emoji> Looking for modules in repositories...")
+		if err := msg.Answer(msg.Text); err != nil {
+			return err
 		}
 
 		foundURL, err := m.findLink(url)
 		if err != nil {
-			msg.Text = m.getTrans("no_module", "🚫 <b>Module not available in repo.</b>")
-			if msg.Client != nil {
-				_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-			}
-			return nil
+			msg.Text = formatModuleInstallError(fmt.Errorf("module %q was not found in configured repositories: %w", rawArgs, err))
+			return msg.Answer(msg.Text)
 		}
 		url = foundURL
 		modName = rawArgs
 	} else {
-		parts := strings.Split(url, "/")
-		fileName := parts[len(parts)-1]
-		if strings.HasSuffix(fileName, ".py") {
-			msg.Text = "❌ <b>Python modules (.py) cannot be loaded in the Go userbot port. Please provide a Go (.go) module instead.</b>"
-			if msg.Client != nil {
-				_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-			}
-			return nil
+		msg.Text = m.getTrans("loading_module_via_file", "<tg-emoji emoji-id=5873204392429096339>🔄</tg-emoji> Loading the module...")
+		if err := msg.Answer(msg.Text); err != nil {
+			return err
 		}
-		modName = strings.TrimSuffix(fileName, ".go")
+		fileName, parsedName := moduleFileAndName(url)
+		if strings.HasSuffix(fileName, ".py") {
+			msg.Text = formatModuleInstallError(errors.New("Python modules (.py) cannot be loaded; provide a native Go (.go) module"))
+			return msg.Answer(msg.Text)
+		}
+		modName = parsedName
 	}
 
 	client := newModuleHTTPClient(5 * time.Second)
 	bodyBytes, err := downloadModuleURL(client, url, maxModuleSourceBytes)
 	if err != nil {
-		msg.Text = m.getTrans("no_module", "🚫 <b>Module not available in repo.</b>")
-		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-		}
-		return nil
+		msg.Text = formatModuleInstallError(fmt.Errorf("download failed: %w", err))
+		return msg.Answer(msg.Text)
 	}
 
 	destPath, err := runtimeModuleSourcePath(modName)
@@ -504,27 +616,25 @@ func (m *LoaderModule) DlmodCmd(msg *goroku.Message) error {
 		err = ensureRuntimeModuleSourceDir()
 	}
 	if err != nil {
-		msg.Text = fmt.Sprintf("❌ Failed to prepare module storage: %v", err)
-		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-		}
-		return nil
+		msg.Text = formatModuleInstallError(fmt.Errorf("prepare module storage: %w", err))
+		return msg.Answer(msg.Text)
 	}
-	err = m.installPersistedHotModuleConfirmed(msg, modName, destPath, url, bodyBytes, confirmed)
-	if err != nil {
-		msg.Text = moduleTransactionReport("Module install", err)
-		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-		}
-		return nil
+	installed, err := m.installPersistedHotModule(msg, modName, destPath, url, bodyBytes)
+	if err != nil && !errors.Is(err, goroku.ErrDatabaseCommitUncertain) {
+		msg.Text = formatModuleInstallError(err)
+		return msg.Answer(msg.Text)
 	}
-
-	return nil
+	if installed == nil {
+		msg.Text = formatModuleInstallError(errors.New("module was installed but could not be resolved in the runtime registry"))
+		return msg.Answer(msg.Text)
+	}
+	source := sanitizedModuleSource(sourceKind, url)
+	msg.Text = formatModuleInstalledCard(installed, moduleCommandPrefix(m.db, msg.SenderID), source, err, m.getTrans("loaded", defaultLoadedTemplate), m.commandEmoji, m.getTrans("undoc", "No docs"))
+	return msg.Answer(msg.Text)
 }
 
 func (m *LoaderModule) LoadmodCmd(msg *goroku.Message) error {
-	// Confirm tokens live on the command line; body may come from reply media.
-	rawArgs, confirmed := parseInstallArgs(utils.GetArgsRaw(msg.RawText))
+	rawArgs := strings.TrimSpace(utils.GetArgsRaw(msg.RawText))
 	if rawArgs == "" {
 		if msg.ReplyToMsgID != 0 {
 			replyMsg, err := msg.GetReplyMessage()
@@ -532,7 +642,6 @@ func (m *LoaderModule) LoadmodCmd(msg *goroku.Message) error {
 				var buf bytes.Buffer
 				err = m.client.DownloadMedia(replyMsg.Media, &buf)
 				if err == nil {
-					// Media body is source only; confirm comes from the command line.
 					rawArgs = buf.String()
 				}
 			}
@@ -541,20 +650,21 @@ func (m *LoaderModule) LoadmodCmd(msg *goroku.Message) error {
 
 	if rawArgs == "" {
 		msg.Text = m.getTrans("provide_module", "⚠️ <b>Provide a module to load</b>")
-		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-		}
-		return nil
+		return msg.Answer(msg.Text)
+	}
+
+	msg.Text = m.getTrans("loading_module_via_file", "<tg-emoji emoji-id=5873204392429096339>🔄</tg-emoji> Loading the module...")
+	if err := msg.Answer(msg.Text); err != nil {
+		return err
 	}
 
 	modName := "custom_module"
 	isGo := true
 
-	goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
 	pyReg := regexp.MustCompile(`class\s+(\w+)\(loader\.Module\):`)
 
-	if loc := goReg.FindStringSubmatch(rawArgs); len(loc) == 2 {
-		modName = loc[1]
+	if names, parseErr := moduleStructNames([]byte(rawArgs)); parseErr == nil && len(names) > 0 {
+		modName = names[0]
 		isGo = true
 	} else if loc := pyReg.FindStringSubmatch(rawArgs); len(loc) == 2 {
 		modName = loc[1]
@@ -562,29 +672,28 @@ func (m *LoaderModule) LoadmodCmd(msg *goroku.Message) error {
 	}
 
 	if !isGo {
-		msg.Text = "❌ <b>Python modules (.py) cannot be loaded in the Go userbot port. Please provide a Go (.go) module instead.</b>"
-		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-		}
-		return nil
+		msg.Text = formatModuleInstallError(errors.New("Python modules (.py) cannot be loaded; provide a native Go (.go) module"))
+		return msg.Answer(msg.Text)
 	}
 
 	destPath, err := runtimeModuleSourcePath(modName)
 	if err == nil {
 		err = ensureRuntimeModuleSourceDir()
 	}
+	var installed goroku.Module
 	if err == nil {
-		err = m.installPersistedHotModuleConfirmed(msg, modName, destPath, "local", []byte(rawArgs), confirmed)
+		installed, err = m.installPersistedHotModule(msg, modName, destPath, "local", []byte(rawArgs))
 	}
-	if err != nil {
-		msg.Text = moduleTransactionReport("Module install", err)
-		if msg.Client != nil {
-			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
-		}
-		return nil
+	if err != nil && !errors.Is(err, goroku.ErrDatabaseCommitUncertain) {
+		msg.Text = formatModuleInstallError(err)
+		return msg.Answer(msg.Text)
 	}
-
-	return nil
+	if installed == nil {
+		msg.Text = formatModuleInstallError(errors.New("module was installed but could not be resolved in the runtime registry"))
+		return msg.Answer(msg.Text)
+	}
+	msg.Text = formatModuleInstalledCard(installed, moduleCommandPrefix(m.db, msg.SenderID), string(moduleSourceLocal), err, m.getTrans("loaded", defaultLoadedTemplate), m.commandEmoji, m.getTrans("undoc", "No docs"))
+	return msg.Answer(msg.Text)
 }
 
 func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
@@ -635,6 +744,12 @@ func (m *LoaderModule) UnloadmodCmd(msg *goroku.Message) error {
 			_, _ = msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, msg.Text)
 		}
 		return nil
+	}
+	if module := loader.LookupByName(foundName); module != nil {
+		if _, err := findRegisteredModuleSource(module); err == nil {
+			isSystem = false
+			matchedKey = foundName
+		}
 	}
 
 	if isSystem {
@@ -690,6 +805,9 @@ func (m *LoaderModule) ClearmodulesCmd(msg *goroku.Message) error {
 							_ = os.Remove(path)
 						}
 					}
+					for _, path := range localRuntimeModules() {
+						_ = os.Remove(path)
+					}
 
 					if err := m.db.Update(map[string]map[string]any{
 						"Loader": {
@@ -731,6 +849,9 @@ func (m *LoaderModule) executeClearModules(msg *goroku.Message) error {
 		if path, pathErr := runtimeModuleSourcePath(modName); pathErr == nil {
 			_ = os.Remove(path)
 		}
+	}
+	for _, path := range localRuntimeModules() {
+		_ = os.Remove(path)
 	}
 
 	if err := m.db.Update(map[string]map[string]any{
@@ -870,7 +991,7 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 	var class_name string
 
 	for name, mod := range modulesList {
-		if strings.EqualFold(name, rawArgs) || strings.EqualFold(mod.Name(), rawArgs) {
+		if strings.EqualFold(name, rawArgs) || strings.EqualFold(mod.Name(), rawArgs) || strings.EqualFold(registeredModuleStructName(mod), rawArgs) {
 			foundMod = mod
 			class_name = name
 			break
@@ -879,7 +1000,8 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 
 	if foundMod == nil {
 		for name, mod := range modulesList {
-			if strings.Contains(strings.ToLower(name), strings.ToLower(rawArgs)) || strings.Contains(strings.ToLower(mod.Name()), strings.ToLower(rawArgs)) {
+			structName := registeredModuleStructName(mod)
+			if strings.Contains(strings.ToLower(name), strings.ToLower(rawArgs)) || strings.Contains(strings.ToLower(mod.Name()), strings.ToLower(rawArgs)) || strings.Contains(strings.ToLower(structName), strings.ToLower(rawArgs)) {
 				foundMod = mod
 				class_name = name
 				break
@@ -895,7 +1017,10 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	path, err := findModuleSource(class_name)
+	path, err := findModuleSourceForExport(foundMod)
+	if err != nil {
+		path, err = findModuleSource(class_name)
+	}
 	if err != nil {
 		path, err = findModuleSource(foundMod.Name())
 	}
@@ -958,18 +1083,8 @@ func (m *LoaderModule) ModloadCmd(msg *goroku.Message) error {
 }
 
 func (m *LoaderModule) installHotModule(msg *goroku.Message, fallbackName, destPath string, body []byte) error {
-	return m.installHotModuleConfirmed(msg, fallbackName, destPath, body, false)
-}
-
-func (m *LoaderModule) installHotModuleConfirmed(msg *goroku.Message, fallbackName, destPath string, body []byte, confirmed bool) error {
 	if m.client == nil || m.client.Loader == nil {
 		return fmt.Errorf("modules registry not found")
-	}
-	if err := ensureUnsafeInstallAllowed(msg, m.db, body, confirmed); err != nil {
-		if msg != nil && msg.Client != nil {
-			_ = msg.Answer("⚠️ <b>Security:</b> " + escapeHTML(err.Error()))
-		}
-		return err
 	}
 	dir := filepath.Dir(destPath)
 	tmp, err := os.CreateTemp(dir, ".module-*.go")
@@ -990,11 +1105,7 @@ func (m *LoaderModule) installHotModuleConfirmed(msg *goroku.Message, fallbackNa
 		return err
 	}
 
-	structName := fallbackName
-	goReg := regexp.MustCompile(`type\s+(\w+)\s+struct`)
-	if loc := goReg.FindStringSubmatch(string(body)); len(loc) == 2 {
-		structName = loc[1]
-	}
+	structName := extractStructName(body, fallbackName)
 	started := time.Now()
 	digest := contentSHA256(body)
 	// Native Go plugins cannot be fully unloaded from process memory after plugin.Open.
@@ -1040,16 +1151,13 @@ func (m *LoaderModule) installHotModuleConfirmed(msg *goroku.Message, fallbackNa
 	return nil
 }
 
-func (m *LoaderModule) installPersistedHotModule(msg *goroku.Message, modName, destPath, provenance string, body []byte) error {
-	return m.installPersistedHotModuleConfirmed(msg, modName, destPath, provenance, body, false)
-}
-
-func (m *LoaderModule) installPersistedHotModuleConfirmed(msg *goroku.Message, modName, destPath, provenance string, body []byte, confirmed bool) error {
+func (m *LoaderModule) installPersistedHotModule(msg *goroku.Message, modName, destPath, provenance string, body []byte) (goroku.Module, error) {
 	installedName := extractStructName(body, modName)
 	if err := rejectSelfModuleTransaction(msg, m.client.Loader, installedName, "replace"); err != nil {
-		return err
+		return nil, err
 	}
-	return withModuleTransaction(func() error {
+	var installedModule goroku.Module
+	err := withModuleTransaction(func() error {
 		oldBody, readErr := os.ReadFile(destPath) //nolint:gosec
 		hadOldSource := readErr == nil
 		if readErr != nil && !os.IsNotExist(readErr) {
@@ -1061,7 +1169,7 @@ func (m *LoaderModule) installPersistedHotModuleConfirmed(msg *goroku.Message, m
 			if err := m.installHotModuleApply(msg, modName, destPath, body); err != nil {
 				return err
 			}
-		} else if err := m.installHotModuleConfirmed(msg, modName, destPath, body, confirmed); err != nil {
+		} else if err := m.installHotModule(msg, modName, destPath, body); err != nil {
 			return err
 		}
 		oldModule := oldModules[strings.ToLower(installedName)]
@@ -1074,8 +1182,13 @@ func (m *LoaderModule) installPersistedHotModuleConfirmed(msg *goroku.Message, m
 				}
 			}
 		}
+		installedModule = m.client.Loader.LookupByName(installedName)
 		loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
-		loadedMods[modName] = provenance
+		if provenance == "local" {
+			delete(loadedMods, modName)
+		} else {
+			loadedMods[modName] = provenance
+		}
 		digest := contentSHA256(body)
 		digests := moduleContentDigests(m.db)
 		digests[modName] = digest
@@ -1118,7 +1231,7 @@ func (m *LoaderModule) installPersistedHotModuleConfirmed(msg *goroku.Message, m
 			}
 		}
 		if oldModule != nil {
-			if err := m.client.Loader.RegisterModule(oldModule); err != nil {
+			if err := registerRestoredModule(m.client.Loader, oldModule); err != nil {
 				rollbackErr = errors.Join(rollbackErr, err)
 			}
 		}
@@ -1127,6 +1240,7 @@ func (m *LoaderModule) installPersistedHotModuleConfirmed(msg *goroku.Message, m
 		}
 		return fmt.Errorf("database update failed: %w", dbErr)
 	})
+	return installedModule, err
 }
 
 func (m *LoaderModule) uninstallPersistedHotModule(msg *goroku.Message, modName, registeredName string) error {
@@ -1135,17 +1249,16 @@ func (m *LoaderModule) uninstallPersistedHotModule(msg *goroku.Message, modName,
 	}
 	return withModuleTransaction(func() error {
 		loadedMods := m.db.GetStringMap("Loader", "loaded_modules", nil)
-		_, ok := loadedMods[modName]
-		if !ok {
-			return fmt.Errorf("module %s is no longer installed", modName)
-		}
 		oldModule := m.client.Loader.LookupByName(registeredName)
 		if oldModule == nil {
 			return fmt.Errorf("module %s not found", registeredName)
 		}
-		destPath, err := runtimeModuleSourcePath(modName)
+		destPath, err := findRegisteredModuleSource(oldModule)
 		if err != nil {
-			return err
+			destPath, err = runtimeModuleSourcePath(modName)
+			if err != nil {
+				return err
+			}
 		}
 		oldBody, readErr := os.ReadFile(destPath) //nolint:gosec
 		hadSource := readErr == nil
@@ -1199,7 +1312,7 @@ func (m *LoaderModule) uninstallPersistedHotModule(msg *goroku.Message, modName,
 		if hadSource {
 			rollbackErr = atomicWriteFile(destPath, oldBody)
 		}
-		if err := m.client.Loader.RegisterModule(oldModule); err != nil {
+		if err := registerRestoredModule(m.client.Loader, oldModule); err != nil {
 			rollbackErr = errors.Join(rollbackErr, err)
 		}
 		if rollbackErr != nil {

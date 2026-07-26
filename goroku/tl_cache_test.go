@@ -59,11 +59,30 @@ func TestAnswerPlanUsesInlinePaginationUpToTenPages(t *testing.T) {
 	}
 }
 
-func TestAnswerPlanFallsBackToFileOverTenPages(t *testing.T) {
+func TestAnswerPlanKeepsPagesFullAndFormatted(t *testing.T) {
+	raw := "<b>Result:</b>\n<pre>" + strings.Repeat("word ", telegramMessageLimit) + "</pre>"
+	plan := planLongAnswer(raw, true)
+	if telegramTextLen(mustParseHTML(t, plan.pages[0])) < telegramMessageLimit/2 {
+		t.Fatalf("first page is nearly empty: %d UTF-16 units", telegramTextLen(mustParseHTML(t, plan.pages[0])))
+	}
+	for i, page := range plan.pages {
+		if !strings.Contains(page, "<pre>") {
+			t.Fatalf("page %d lost pre formatting: %q", i, page)
+		}
+	}
+}
+
+func mustParseHTML(t *testing.T, text string) string {
+	t.Helper()
+	plain, _ := parseHTML(text)
+	return plain
+}
+
+func TestAnswerPlanUsesInlinePaginationOverTenPages(t *testing.T) {
 	text := strings.Repeat("a", telegramMessageLimit*10+1)
 	plan := planLongAnswer(text, true)
-	if plan.mode != answerModeFile {
-		t.Fatalf("expected file fallback for more than ten pages, got %v", plan.mode)
+	if plan.mode != answerModeInlineList {
+		t.Fatalf("expected inline list for more than ten pages, got %v", plan.mode)
 	}
 }
 

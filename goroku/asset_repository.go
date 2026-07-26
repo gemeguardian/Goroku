@@ -8,10 +8,39 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+// AssetInput is a typed input to StoreAsset. Construct it with AssetMessage,
+// AssetText, or AssetFile. It replaces the previous untyped message parameter
+// so the asset transport surface no longer accepts arbitrary any values.
+type AssetInput interface {
+	assetInput()
+}
+
+// AssetMessage stores the text of an existing Message to the assets channel.
+type AssetMessage struct {
+	Msg *Message
+}
+
+// AssetText stores a plain text string. If Text is an existing file path, the
+// file is uploaded as a document instead of being sent as text.
+type AssetText struct {
+	Text string
+}
+
+// AssetFile stores a file payload as a Telegram document. File mirrors the
+// payload types accepted by CustomTelegramClient.SendFile (string path, []byte,
+// or io.Reader); that payload typing is a separate residual outside R7.1.
+type AssetFile struct {
+	File any
+}
+
+func (AssetMessage) assetInput() {}
+func (AssetText) assetInput()    {}
+func (AssetFile) assetInput()    {}
+
 // AssetTransport performs Telegram RPC for asset store/fetch.
 // Callers must not hold DocumentStore locks while invoking these methods.
 type AssetTransport interface {
-	StoreAsset(message any, targetChatID int64, assetsTopicID int) (int, error)
+	StoreAsset(input AssetInput, targetChatID int64, assetsTopicID int) (int, error)
 	FetchAsset(contentChannelID int64, assetID int) (*Message, error)
 }
 
@@ -63,7 +92,7 @@ func (r *AssetRepository) snapshot() (AssetTransport, int, int64) {
 
 // StoreAsset stores a message or file to the assets channel.
 // Returns the message ID (asset ID).
-func (r *AssetRepository) StoreAsset(message any) (int, error) {
+func (r *AssetRepository) StoreAsset(input AssetInput) (int, error) {
 	transport, assetsTopicID, contentChannelID := r.snapshot()
 	if transport == nil {
 		return 0, fmt.Errorf("client not initialized in database")
@@ -74,7 +103,7 @@ func (r *AssetRepository) StoreAsset(message any) (int, error) {
 	if contentChannelID == 0 {
 		return 0, fmt.Errorf("Tried to save asset with non-existing content channel.")
 	}
-	return transport.StoreAsset(message, -1000000000000-contentChannelID, assetsTopicID)
+	return transport.StoreAsset(input, -1000000000000-contentChannelID, assetsTopicID)
 }
 
 // FetchAsset fetches a previously saved asset by its asset_id.
@@ -100,23 +129,28 @@ func newTelegramAssetTransport(client *CustomTelegramClient) AssetTransport {
 	return telegramAssetTransport{client: client}
 }
 
-func (c telegramAssetTransport) StoreAsset(message any, targetChatID int64, assetsTopicID int) (int, error) {
+func (c telegramAssetTransport) StoreAsset(input AssetInput, targetChatID int64, assetsTopicID int) (int, error) {
 	opts := []MsgOption{WithReplyTo(int64(assetsTopicID))}
 	var (
 		res any
 		err error
 	)
-	switch msgVal := message.(type) {
-	case *Message:
-		res, err = c.client.SendMessageWithOptions(ChatRefID(targetChatID), msgVal.Text, opts...)
-	case string:
-		if _, statErr := os.Stat(msgVal); statErr == nil {
-			res, err = c.client.SendFileWithOptions(ChatRefID(targetChatID), msgVal, "", opts...)
-		} else {
-			res, err = c.client.SendMessageWithOptions(ChatRefID(targetChatID), msgVal, opts...)
+	switch v := input.(type) {
+	case AssetMessage:
+		if v.Msg == nil {
+			return 0, fmt.Errorf("StoreAsset: nil message")
 		}
+		res, err = c.client.SendMessageWithOptions(ChatRefID(targetChatID), v.Msg.Text, opts...)
+	case AssetText:
+		if _, statErr := os.Stat(v.Text); statErr == nil {
+			res, err = c.client.SendFileWithOptions(ChatRefID(targetChatID), v.Text, "", opts...)
+		} else {
+			res, err = c.client.SendMessageWithOptions(ChatRefID(targetChatID), v.Text, opts...)
+		}
+	case AssetFile:
+		res, err = c.client.SendFileWithOptions(ChatRefID(targetChatID), v.File, "", opts...)
 	default:
-		res, err = c.client.SendFileWithOptions(ChatRefID(targetChatID), msgVal, "", opts...)
+		return 0, fmt.Errorf("unsupported asset input type: %T", input)
 	}
 	if err != nil {
 		return 0, err

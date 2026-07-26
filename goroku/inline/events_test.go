@@ -19,7 +19,7 @@ type mockOwnerClient struct {
 }
 
 func (m *mockOwnerClient) TGIDValue() int64 { return m.ownerID }
-func (m *mockOwnerClient) SendMessage(chat chatref.ChatRef, message string) (any, error) {
+func (m *mockOwnerClient) SendMessage(chat chatref.ChatRef, message string) (chatref.SentMessage, error) {
 	return nil, nil
 }
 func (m *mockOwnerClient) CreateGorokuFolder(botID int64) error                   { return nil }

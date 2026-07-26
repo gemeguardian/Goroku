@@ -349,12 +349,30 @@ func sendBotFileContext(ctx context.Context, bot *tgbotapi.BotAPI, chatID int64,
 	return message, err
 }
 
-func (c *CustomTelegramClient) SendMessage(chat ChatRef, message string) (any, error) {
-	return c.SendMessageWithOptions(chat, message)
+// sentMessage wraps a raw Telegram send result (tg.UpdatesClass or
+// tgbotapi.Message) and exposes the sent message ID via the chatref.SentMessage
+// interface. The raw value is retained for diagnostic logging.
+type sentMessage struct {
+	id  int64
+	raw any
 }
 
-func (c *CustomTelegramClient) SendMessageContext(ctx context.Context, chat ChatRef, message string) (any, error) {
-	return c.SendMessageWithOptionsContext(ctx, chat, message)
+func (s sentMessage) SentMessageID() int64 { return s.id }
+
+func (c *CustomTelegramClient) SendMessage(chat ChatRef, message string) (SentMessage, error) {
+	res, err := c.SendMessageWithOptions(chat, message)
+	if err != nil {
+		return nil, err
+	}
+	return sentMessage{id: GetSentMessageID(res), raw: res}, nil
+}
+
+func (c *CustomTelegramClient) SendMessageContext(ctx context.Context, chat ChatRef, message string) (SentMessage, error) {
+	res, err := c.SendMessageWithOptionsContext(ctx, chat, message)
+	if err != nil {
+		return nil, err
+	}
+	return sentMessage{id: GetSentMessageID(res), raw: res}, nil
 }
 
 func (c *CustomTelegramClient) SendMessageWithOptions(chat ChatRef, message string, opts ...MsgOption) (any, error) {
@@ -453,6 +471,44 @@ func (c *CustomTelegramClient) EditMessageContext(ctx context.Context, chat Chat
 	}
 	res, err := c.rawAPI.MessagesEditMessage(ctx, req)
 	return res, err
+}
+
+func (c *CustomTelegramClient) EditMessageFileContext(ctx context.Context, chat ChatRef, msgID int64, filePath, caption string) (any, error) {
+	if c.rawAPI == nil {
+		return nil, ErrClientNotInitialized
+	}
+	ctx = c.rpcContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	peer, err := c.resolveRequestPeerContext(ctx, chat)
+	if err != nil {
+		return nil, err
+	}
+
+	filename := filepath.Base(filePath)
+	inputFile, err := uploader.NewUploader(c.rawAPI).FromPath(ctx, filePath)
+	if err != nil {
+		return nil, err
+	}
+	mimeType := "application/octet-stream"
+	if strings.EqualFold(filepath.Ext(filename), ".txt") {
+		mimeType = "text/plain"
+	}
+	plainCaption, captionEntities := parseHTML(caption)
+	return c.rawAPI.MessagesEditMessage(ctx, &tg.MessagesEditMessageRequest{
+		Peer:     peer,
+		ID:       int(msgID),
+		Message:  plainCaption,
+		Entities: captionEntities,
+		Media: &tg.InputMediaUploadedDocument{
+			File:     inputFile,
+			MimeType: mimeType,
+			Attributes: []tg.DocumentAttributeClass{
+				&tg.DocumentAttributeFilename{FileName: filename},
+			},
+		},
+	})
 }
 
 func (c *CustomTelegramClient) DeleteMessage(chat ChatRef, msgID int64) error {

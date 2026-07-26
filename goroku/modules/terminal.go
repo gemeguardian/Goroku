@@ -7,6 +7,7 @@ import (
 	"goroku/goroku/utils"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,7 +17,15 @@ import (
 	"unicode/utf8"
 )
 
-// DANGEROUS_COMMANDS is a list of regex patterns that match destructive shell commands.
+// DANGEROUS_COMMANDS is a list of regex patterns that match destructive shell
+// commands.
+//
+// This is a typo guard, NOT a security control. Pattern matching on shell text
+// is trivially bypassed (`X=/etc; rm -rf $X`, base64, `eval`, aliases), and it
+// is not intended to contain a hostile operator. The actual boundary is that
+// .terminal is owner-only; anyone who can reach it can already run arbitrary
+// commands by construction. Do not add checks here expecting them to hold
+// against someone who wants to get around them.
 var DANGEROUS_COMMANDS = []string{
 	`rm\s+.*\s+/\s*\*?`,
 	`rm\s+.*\s+/etc/`,
@@ -72,12 +81,20 @@ type terminalSession struct {
 	user          string
 }
 
+type terminalWriter func([]byte) (int, error)
+
+func (w terminalWriter) Write(p []byte) (int, error) {
+	return w(p)
+}
+
 type TerminalMod struct {
 	client           *goroku.CustomTelegramClient
 	db               *goroku.Database
 	translator       *goroku.Translator
 	sessions         sync.Map // map[string]*terminalSession keyed by "chatID/msgID"
+	configMu         sync.RWMutex
 	floodWaitProtect int
+	shell            string
 }
 
 func (m *TerminalMod) Name() string {
@@ -88,6 +105,7 @@ func (m *TerminalMod) Strings() map[string]string {
 	return map[string]string{
 		"name":                    "Terminal",
 		"_cfg_FLOOD_WAIT_PROTECT": "Delay (in seconds) between terminal output updates to avoid floods",
+		"_cfg_SHELL":              "Shell executable for terminal commands (auto tries bash, zsh, then sh)",
 	}
 }
 
@@ -117,19 +135,72 @@ var _ goroku.ModuleWithConfigSchema = (*TerminalMod)(nil)
 func (m *TerminalMod) ConfigSchema() []goroku.ConfigField {
 	return []goroku.ConfigField{
 		{Key: "FLOOD_WAIT_PROTECT", Type: "int", Default: 2, Validator: &goroku.IntegerValidator{}},
+		{Key: "SHELL", Type: "string", Default: "auto", Validator: &goroku.StringValidator{MaxLen: 4096}},
 	}
 }
 
 func (m *TerminalMod) ConfigReady(config map[string]any) error {
+	floodWaitProtect := 2
 	switch val := config["FLOOD_WAIT_PROTECT"].(type) {
 	case float64:
-		m.floodWaitProtect = int(val)
+		floodWaitProtect = int(val)
 	case int:
-		m.floodWaitProtect = val
+		floodWaitProtect = val
 	case int64:
-		m.floodWaitProtect = int(val)
+		floodWaitProtect = int(val)
 	}
+
+	shell := "auto"
+	if val, ok := config["SHELL"]; ok {
+		configured, ok := val.(string)
+		if !ok {
+			return goroku.NewConfigError(m.Name(), "SHELL", fmt.Errorf("value must be a string"))
+		}
+		shell = strings.TrimSpace(configured)
+		if shell == "" {
+			shell = "auto"
+		}
+		if strings.ContainsRune(shell, '\x00') {
+			return goroku.NewConfigError(m.Name(), "SHELL", fmt.Errorf("value contains a NUL byte"))
+		}
+	}
+
+	m.configMu.Lock()
+	m.floodWaitProtect = floodWaitProtect
+	m.shell = shell
+	m.configMu.Unlock()
 	return nil
+}
+
+func (m *TerminalMod) terminalConfig() (int, string) {
+	m.configMu.RLock()
+	defer m.configMu.RUnlock()
+	shell := m.shell
+	if shell == "" {
+		shell = "auto"
+	}
+	return m.floodWaitProtect, shell
+}
+
+func resolveTerminalShell(preference string, lookPath func(string) (string, error)) (string, error) {
+	preference = strings.TrimSpace(preference)
+	if preference == "" || strings.EqualFold(preference, "auto") {
+		for _, candidate := range []string{"bash", "zsh", "sh"} {
+			if path, err := lookPath(candidate); err == nil {
+				return path, nil
+			}
+		}
+		return "", fmt.Errorf("no usable shell found (tried bash, zsh, and sh)")
+	}
+
+	if !filepath.IsAbs(preference) && strings.ContainsAny(preference, `/\\`) {
+		return "", fmt.Errorf("terminal shell must be an executable name or absolute path: %q", preference)
+	}
+	path, err := lookPath(preference)
+	if err != nil {
+		return "", fmt.Errorf("terminal shell %q is unavailable: %w", preference, err)
+	}
+	return path, nil
 }
 
 func (m *TerminalMod) Commands() map[string]goroku.CommandHandler {
@@ -273,6 +344,12 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 		return msg.Answer(text)
 	}
 
+	floodWaitProtect, shellPreference := m.terminalConfig()
+	shell, err := resolveTerminalShell(shellPreference, exec.LookPath)
+	if err != nil {
+		return msg.Answer(formatTrans(m.getTrans("exec_error", "❌ <b>Failed to start command:</b> <code>{}</code>"), escapeHTML(err.Error())))
+	}
+
 	runningText := formatTrans(m.getTrans("running", "⏳ <b>Running:</b> <code>{}</code>"), escapeHTML(m.censor(cmdStr)))
 	_ = msg.Answer(runningText)
 
@@ -280,7 +357,7 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 	defer cancel()
 	// Inherit ambient env for interactive shell compatibility; process group + slot still enforced.
 	cmd, err := defaultProcessExecutor.Command(ctx, ProcessSpec{
-		Name:       "bash",
+		Name:       shell,
 		Args:       []string{"-c", cmdStr},
 		InheritEnv: true,
 	})
@@ -288,17 +365,6 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 		return msg.Answer(formatTrans(m.getTrans("exec_error", "❌ <b>Failed to start command:</b> <code>{}</code>"), escapeHTML(err.Error())))
 	}
 	defer defaultProcessExecutor.Release()
-
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		errMsg := formatTrans(m.getTrans("exec_error", "❌ <b>Failed to start command:</b> <code>{}</code>"), escapeHTML(err.Error()))
-		return msg.Answer(errMsg)
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		errMsg := formatTrans(m.getTrans("exec_error", "❌ <b>Failed to start command:</b> <code>{}</code>"), escapeHTML(err.Error()))
-		return msg.Answer(errMsg)
-	}
 
 	stdinPipe, _ := cmd.StdinPipe()
 
@@ -317,146 +383,117 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 	m.sessions.Store(key, sess)
 	defer m.sessions.Delete(key)
 
+	cmd.Stdout = terminalWriter(func(p []byte) (int, error) {
+		sess.mu.Lock()
+		_, _ = sess.stdout.Write(p)
+		sess.mu.Unlock()
+		return len(p), nil
+	})
+	cmd.Stderr = terminalWriter(func(p []byte) (int, error) {
+		chunk := string(p)
+		sess.mu.Lock()
+		_, _ = sess.stderr.Write([]byte(chunk))
+		currentStderr := sess.stderr.String()
+		sess.mu.Unlock()
+
+		detectedPrompt := false
+		detectedWrong := false
+		detectedLocked := false
+		var sudoUser string
+
+		for _, prompt := range SudoPassPrompts {
+			if idx := strings.Index(currentStderr, prompt); idx != -1 {
+				tail := currentStderr[idx+len(prompt):]
+				if colonIdx := strings.Index(tail, ":"); colonIdx != -1 {
+					sudoUser = strings.TrimSpace(tail[:colonIdx])
+					detectedPrompt = true
+					break
+				}
+			}
+		}
+
+		for _, wrong := range SudoWrongPass {
+			if strings.Contains(currentStderr, wrong) {
+				detectedWrong = true
+				break
+			}
+		}
+
+		for _, locked := range SudoTooManyTries {
+			if strings.Contains(currentStderr, locked) {
+				detectedLocked = true
+				break
+			}
+		}
+
+		sess.mu.Lock()
+		if detectedPrompt && !sess.authNeeded && !sess.done {
+			sess.authNeeded = true
+			sess.user = sudoUser
+			go func(s *terminalSession) {
+				authNeededText := formatTrans(m.getTrans("auth_needed", ""), strconv.FormatInt(m.client.TGID, 10))
+				_, _ = m.client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, authNeededText)
+
+				escapedCmd := "<code>" + escapeHTML(s.cmdStr) + "</code>"
+				escapedUser := escapeHTML(s.user)
+				authMsg := formatTrans(m.getTrans("auth_msg", ""), escapedCmd, escapedUser)
+
+				sentMsg, err := m.client.SendMessage(goroku.ChatRefID(m.client.TGID), authMsg)
+				if err == nil {
+					sentID := sentMsg.SentMessageID()
+					s.mu.Lock()
+					s.authMsgID = sentID
+					s.authMsgChatID = m.client.TGID
+					s.mu.Unlock()
+				}
+			}(sess)
+		}
+
+		if detectedWrong && sess.authNeeded && !sess.done {
+			go func(s *terminalSession) {
+				failText := m.getTrans("auth_fail", "")
+				_, _ = m.client.EditMessage(goroku.ChatRefID(s.authMsgChatID), s.authMsgID, failText)
+				time.Sleep(2 * time.Second)
+				deleteMessage(m.client, s.authMsgChatID, s.authMsgID)
+
+				escapedCmd := "<code>" + escapeHTML(s.cmdStr) + "</code>"
+				escapedUser := escapeHTML(s.user)
+				authMsg := formatTrans(m.getTrans("auth_msg", ""), escapedCmd, escapedUser)
+
+				sentMsg, err := m.client.SendMessage(goroku.ChatRefID(m.client.TGID), authMsg)
+				if err == nil {
+					sentID := sentMsg.SentMessageID()
+					s.mu.Lock()
+					s.authMsgID = sentID
+					s.mu.Unlock()
+				}
+			}(sess)
+		}
+
+		if detectedLocked && sess.authNeeded && !sess.done {
+			go func(s *terminalSession) {
+				lockedText := m.getTrans("auth_locked", "")
+				_, _ = m.client.EditMessage(goroku.ChatRefID(s.authMsgChatID), s.authMsgID, lockedText)
+				time.Sleep(3 * time.Second)
+				deleteMessage(m.client, s.authMsgChatID, s.authMsgID)
+				s.mu.Lock()
+				s.authMsgID = 0
+				s.mu.Unlock()
+			}(sess)
+		}
+		sess.mu.Unlock()
+		return len(p), nil
+	})
+
 	if startErr := cmd.Start(); startErr != nil {
 		errMsg := formatTrans(m.getTrans("exec_error", "❌ <b>Failed to start command:</b> <code>{}</code>"), escapeHTML(startErr.Error()))
 		return msg.Answer(errMsg)
 	}
 
-	go func() {
-		defer func() { _ = recover() }()
-		buf := make([]byte, 4096)
-		for {
-			n, readErr := stdoutPipe.Read(buf)
-			if n > 0 {
-				sess.mu.Lock()
-				_, _ = sess.stdout.Write(buf[:n])
-				sess.mu.Unlock()
-			}
-			if readErr != nil {
-				break
-			}
-		}
-	}()
-
-	go func() {
-		defer func() { _ = recover() }()
-		buf := make([]byte, 4096)
-		for {
-			n, readErr := stderrPipe.Read(buf)
-			if n > 0 {
-				chunk := string(buf[:n])
-				sess.mu.Lock()
-				_, _ = sess.stderr.Write([]byte(chunk))
-				currentStderr := sess.stderr.String()
-				sess.mu.Unlock()
-
-				detectedPrompt := false
-				detectedWrong := false
-				detectedLocked := false
-				var sudoUser string
-
-				for _, prompt := range SudoPassPrompts {
-					if idx := strings.Index(currentStderr, prompt); idx != -1 {
-						tail := currentStderr[idx+len(prompt):]
-						if colonIdx := strings.Index(tail, ":"); colonIdx != -1 {
-							sudoUser = strings.TrimSpace(tail[:colonIdx])
-							detectedPrompt = true
-							break
-						}
-					}
-				}
-
-				for _, wrong := range SudoWrongPass {
-					if strings.Contains(currentStderr, wrong) {
-						detectedWrong = true
-						break
-					}
-				}
-
-				for _, locked := range SudoTooManyTries {
-					if strings.Contains(currentStderr, locked) {
-						detectedLocked = true
-						break
-					}
-				}
-
-				sess.mu.Lock()
-				if detectedPrompt && !sess.authNeeded && !sess.done {
-					sess.authNeeded = true
-					sess.user = sudoUser
-					go func(s *terminalSession) {
-						authNeededText := formatTrans(m.getTrans("auth_needed", ""), strconv.FormatInt(m.client.TGID, 10))
-						_, _ = m.client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, authNeededText)
-
-						escapedCmd := "<code>" + escapeHTML(s.cmdStr) + "</code>"
-						escapedUser := escapeHTML(s.user)
-						authMsg := formatTrans(m.getTrans("auth_msg", ""), escapedCmd, escapedUser)
-
-						sentMsg, err := m.client.SendMessage(goroku.ChatRefID(m.client.TGID), authMsg)
-						if err == nil {
-							var sentID int64
-							if hasID, ok := sentMsg.(interface{ GetID() int64 }); ok {
-								sentID = hasID.GetID()
-							} else if hasID, ok := sentMsg.(interface{ GetID() int }); ok {
-								sentID = int64(hasID.GetID())
-							}
-							s.mu.Lock()
-							s.authMsgID = sentID
-							s.authMsgChatID = m.client.TGID
-							s.mu.Unlock()
-						}
-					}(sess)
-				}
-
-				if detectedWrong && sess.authNeeded && !sess.done {
-					go func(s *terminalSession) {
-						failText := m.getTrans("auth_fail", "")
-						_, _ = m.client.EditMessage(goroku.ChatRefID(s.authMsgChatID), s.authMsgID, failText)
-						time.Sleep(2 * time.Second)
-						deleteMessage(m.client, s.authMsgChatID, s.authMsgID)
-
-						escapedCmd := "<code>" + escapeHTML(s.cmdStr) + "</code>"
-						escapedUser := escapeHTML(s.user)
-						authMsg := formatTrans(m.getTrans("auth_msg", ""), escapedCmd, escapedUser)
-
-						sentMsg, err := m.client.SendMessage(goroku.ChatRefID(m.client.TGID), authMsg)
-						if err == nil {
-							var sentID int64
-							if hasID, ok := sentMsg.(interface{ GetID() int64 }); ok {
-								sentID = hasID.GetID()
-							} else if hasID, ok := sentMsg.(interface{ GetID() int }); ok {
-								sentID = int64(hasID.GetID())
-							}
-							s.mu.Lock()
-							s.authMsgID = sentID
-							s.mu.Unlock()
-						}
-					}(sess)
-				}
-
-				if detectedLocked && sess.authNeeded && !sess.done {
-					go func(s *terminalSession) {
-						lockedText := m.getTrans("auth_locked", "")
-						_, _ = m.client.EditMessage(goroku.ChatRefID(s.authMsgChatID), s.authMsgID, lockedText)
-						time.Sleep(3 * time.Second)
-						deleteMessage(m.client, s.authMsgChatID, s.authMsgID)
-						s.mu.Lock()
-						s.authMsgID = 0
-						s.mu.Unlock()
-					}(sess)
-				}
-				sess.mu.Unlock()
-			}
-			if readErr != nil {
-				break
-			}
-		}
-	}()
-
 	done := make(chan struct{})
 	go func() {
 		defer func() { _ = recover() }()
-		tickerDuration := time.Duration(m.floodWaitProtect) * time.Second
+		tickerDuration := time.Duration(floodWaitProtect) * time.Second
 		if tickerDuration < 1*time.Second {
 			tickerDuration = 1 * time.Second
 		}
@@ -473,7 +510,7 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 				sess.mu.Unlock()
 
 				elapsed := time.Since(sess.startTime)
-				text := m.buildTerminalText(cmdStr, stdout, stderr, nil, elapsed)
+				text := m.buildTerminalText(cmdStr, stdout, stderr, nil, elapsed, true)
 				if msg.Client != nil {
 					msg.Client.EditMessage(goroku.ChatRefID(msg.ChatID), msg.ID, text) //nolint:errcheck,gosec
 				}
@@ -527,25 +564,7 @@ func (m *TerminalMod) TerminalCmd(msg *goroku.Message) error {
 		Status:     auditStatus(cmdErr, timedOut, false),
 	})
 
-	fullOutput := stdout
-	if stderr != "" {
-		if fullOutput != "" {
-			fullOutput += "\n--- stderr ---\n" + stderr
-		} else {
-			fullOutput = stderr
-		}
-	}
-
-	finalText := m.buildTerminalText(cmdStr, stdout, stderr, &rc, elapsed)
-
-	if len(fullOutput) > 4000 {
-		_ = msg.Answer("💾 <i>Output is too long. Sending as file...</i>")
-		if msg.Client != nil {
-			_, _ = msg.Client.SendFile(goroku.ChatRefID(msg.ChatID), []byte(fullOutput), "terminal_output.txt")
-		}
-		return nil
-	}
-
+	finalText := m.buildTerminalText(cmdStr, stdout, stderr, &rc, elapsed, false)
 	_ = msg.Answer(finalText)
 	return nil
 }
@@ -554,7 +573,7 @@ func (m *TerminalMod) censor(text string) string {
 	return censorExecutionOutput(text, m.client, m.db)
 }
 
-func (m *TerminalMod) buildTerminalText(cmdStr, stdout, stderr string, rc *int, elapsed time.Duration) string {
+func (m *TerminalMod) buildTerminalText(cmdStr, stdout, stderr string, rc *int, elapsed time.Duration, truncateOutput bool) string {
 	runningText := formatTrans(m.getTrans("running", ""), escapeHTML(m.censor(cmdStr)))
 	var finishedText string
 	if rc != nil {
@@ -563,19 +582,17 @@ func (m *TerminalMod) buildTerminalText(cmdStr, stdout, stderr string, rc *int, 
 
 	stdoutHeader := m.getTrans("stdout", "")
 
-	stdoutLen := len(stdout)
-	stdoutStart := stdoutLen - 2048
-	if stdoutStart < 0 {
-		stdoutStart = 0
+	stdoutStart := 0
+	if truncateOutput && len(stdout) > 2048 {
+		stdoutStart = len(stdout) - 2048
 	}
 	stdoutContent := escapeHTML(stdout[stdoutStart:])
 
 	var stderrPart string
 	if stderr != "" {
-		stderrLen := len(stderr)
-		stderrStart := stderrLen - 1024
-		if stderrStart < 0 {
-			stderrStart = 0
+		stderrStart := 0
+		if truncateOutput && len(stderr) > 1024 {
+			stderrStart = len(stderr) - 1024
 		}
 		stderrContent := escapeHTML(stderr[stderrStart:])
 		stderrPart = m.getTrans("stderr", "") + stderrContent

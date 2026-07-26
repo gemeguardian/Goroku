@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"goroku/goroku"
+	"html"
 	"path/filepath"
 	"sync"
 )
@@ -79,15 +80,27 @@ func unloadModuleForTransaction(loader *goroku.Modules, name string) (bool, erro
 }
 
 func restoreDetachedModule(loader *goroku.Modules, mod goroku.Module, cause error) error {
-	if err := loader.RegisterModule(mod); err != nil {
+	restored, err := freshHotModuleInstance(mod)
+	if err != nil {
+		return errors.Join(cause, fmt.Errorf("restore module %s: %w", mod.Name(), err))
+	}
+	if err := loader.RegisterModuleReady(restored, restored.ClientReady); err != nil {
 		return errors.Join(cause, fmt.Errorf("restore module %s: %w", mod.Name(), err))
 	}
 	return cause
 }
 
+func registerRestoredModule(loader *goroku.Modules, mod goroku.Module) error {
+	restored, err := freshHotModuleInstance(mod)
+	if err != nil {
+		return err
+	}
+	return loader.RegisterModuleReady(restored, restored.ClientReady)
+}
+
 func moduleTransactionReport(action string, err error) string {
 	if errors.Is(err, goroku.ErrDatabaseCommitUncertain) {
-		return fmt.Sprintf("⚠️ <b>%s completed, but manifest durability is uncertain:</b> %v", action, err)
+		return fmt.Sprintf("⚠️ <b>%s completed, but manifest durability is uncertain:</b> %s", html.EscapeString(action), html.EscapeString(err.Error()))
 	}
-	return fmt.Sprintf("❌ <b>%s failed:</b> %v", action, err)
+	return fmt.Sprintf("❌ <b>%s failed:</b> %s", html.EscapeString(action), html.EscapeString(err.Error()))
 }

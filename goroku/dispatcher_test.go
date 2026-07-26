@@ -32,6 +32,15 @@ func TestTranslateLayout(t *testing.T) {
 	}
 }
 
+func TestIsMessageNotModifiedError(t *testing.T) {
+	if !isMessageNotModifiedError(errors.New("rpc error 400: MESSAGE_NOT_MODIFIED")) {
+		t.Fatal("MESSAGE_NOT_MODIFIED must be ignored")
+	}
+	if isMessageNotModifiedError(errors.New("rpc error 400: MESSAGE_ID_INVALID")) {
+		t.Fatal("unrelated Telegram error must not be ignored")
+	}
+}
+
 func TestWatcherTagsMatch(t *testing.T) {
 	db := initializedTestDatabase(t, NewDatabase(42))
 	client := NewCustomTelegramClient(42)
@@ -249,6 +258,29 @@ func TestHandleRatelimit(t *testing.T) {
 	}
 }
 
+func TestParseCommandPreservesRawCodeInsteadOfHTMLEntities(t *testing.T) {
+	db := initializedTestDatabase(t, NewDatabase(42))
+	client := &CustomTelegramClient{TGID: 42}
+	dispatcher := NewCommandDispatcher(NewModules(client, db), client, db)
+	msg := &Message{
+		SenderID: 42,
+		Text:     `.e gorokuctx.Client.SendMessage(int64(1), &#34;text&#34;)`,
+		RawText:  `.e gorokuctx.Client.SendMessage(int64(1), "text")`,
+		Out:      true,
+	}
+
+	parsed, reason := dispatcher.parseCommand(msg)
+	if reason != ReasonOK || parsed.actualCmd != "e" {
+		t.Fatalf("parseCommand() = (%q, %v), want e/ReasonOK", parsed.actualCmd, reason)
+	}
+	if strings.Contains(msg.RawText, "&#34;") {
+		t.Fatalf("RawText was replaced with escaped HTML: %q", msg.RawText)
+	}
+	if got := strings.TrimPrefix(msg.RawText, ".e "); got != `gorokuctx.Client.SendMessage(int64(1), "text")` {
+		t.Fatalf("raw eval code = %q", got)
+	}
+}
+
 func TestDispatcherRateLimitWeightsOwnerBypassAndExpiry(t *testing.T) {
 	clock := &fakeRateLimitClock{now: time.Unix(10, 0)}
 	db := initializedTestDatabase(t, NewDatabase(42))
@@ -354,9 +386,9 @@ func TestDispatcherOwnerChecksUseStrictIdentity(t *testing.T) {
 }
 
 func TestDangerousCapabilitiesIgnoreEveryoneMask(t *testing.T) {
-	// M4.3: security mask EVERYONE must not grant eval/terminal/dlmod/loadpreset/trustmod.
+	// M4.3: security mask EVERYONE must not grant dangerous execution/install commands.
 	db := initializedTestDatabase(t, NewDatabase(77))
-	dangerous := []string{"eval", "evalpy", "terminal", "dlmod", "loadmod", "loadpreset", "trustmod", "allowmod", "external"}
+	dangerous := []string{"eval", "evalpy", "terminal", "dlmod", "loadmod", "loadpreset"}
 	masks := make(map[string]any, len(dangerous))
 	for _, name := range dangerous {
 		masks[name] = float64(EVERYONE)

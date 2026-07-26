@@ -3,6 +3,7 @@ package modules
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,21 @@ import (
 )
 
 func L() *zap.Logger { return logger.L() }
+
+// contentChannelOrFallback resolves the content channel used to file backups
+// into a forum topic. A missing channel is not fatal: it collapses to the
+// topicID == 0 case, which every caller already handles by delivering to the
+// originating chat instead. Returning here rather than blocking is what keeps a
+// never-created channel from pinning a dispatcher slot.
+func (m *GorokuBackup) contentChannelOrFallback(ctx context.Context, topicID int32) (int64, int32) {
+	channelID, err := utils.WaitForContentChannel(ctx, m.db, 3*time.Second, 0)
+	if err != nil {
+		L().Warn("content channel unavailable; delivering backup to the originating chat instead",
+			zap.Error(err))
+		return 0, 0
+	}
+	return channelID, topicID
+}
 
 // GorokuBackup handles database and module backups.
 type GorokuBackup struct {
@@ -205,7 +221,7 @@ func (m *GorokuBackup) ClientReady() error {
 
 				_, err := botAPI.Send(photo)
 				if err != nil {
-					L().Info("Failed to send backup period msg via bot: {0}", zap.Any("arg0", err))
+					L().Warn("Failed to send backup period msg via bot", zap.Error(err))
 				}
 			}()
 		}
@@ -435,6 +451,45 @@ func parseRestoreDatabase(data []byte) (map[string]map[string]any, error) {
 	return backupData, nil
 }
 
+func restoreDatabasePayload(data []byte) ([]byte, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return data, nil
+	}
+	for _, file := range zr.File {
+		if file.Name == "db.json" && file.Mode().IsRegular() {
+			return readZipFile(file)
+		}
+	}
+	return nil, fmt.Errorf("this ZIP does not contain db.json; use a database or full backup")
+}
+
+func restoreModulesPayload(data []byte) ([]byte, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		var document map[string]json.RawMessage
+		if json.Unmarshal(data, &document) == nil {
+			for _, value := range document {
+				trimmed := bytes.TrimSpace(value)
+				if len(trimmed) > 0 && trimmed[0] == '{' {
+					return nil, fmt.Errorf("this is a database-only backup; use .restoredb (it does not contain module source files)")
+				}
+			}
+		}
+		return data, nil
+	}
+	for _, file := range zr.File {
+		if file.Name == "mods.zip" && file.Mode().IsRegular() {
+			return readZipFile(file)
+		}
+	}
+	return data, nil
+}
+
+func (m *GorokuBackup) restoreFailure(key, fallback string, err error) string {
+	return formatTrans(m.getTrans(key, fallback), utils.EscapeHTML(err.Error()))
+}
+
 func (m *GorokuBackup) getBackupTopicID() int32 {
 	val := utils.GetTopicID(m.db, "Backups")
 	if val == nil {
@@ -522,8 +577,7 @@ func (m *GorokuBackup) BackupDBCmd(msg *goroku.Message) error {
 
 	nr := &namedReader{r: bytes.NewReader(jsonBytes), name: filename}
 
-	contentChannelID := utils.WaitForContentChannel(m.db, 3)
-	topicID := m.getBackupTopicID()
+	contentChannelID, topicID := m.contentChannelOrFallback(msg.Context(), m.getBackupTopicID())
 
 	if topicID == 0 {
 		_, err = m.client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
@@ -563,8 +617,11 @@ func (m *GorokuBackup) RestoreDBCmd(msg *goroku.Message) error {
 		return m.client.DownloadMedia(reply.Media, w)
 	})
 	if err != nil {
-		replyToTrans := m.getTrans("reply_to_file", "Reply with .json or .zip file")
-		return msg.Answer(replyToTrans)
+		return msg.Answer(m.restoreFailure("restore_db_failed", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Database restore failed:</b> <code>{}</code>", fmt.Errorf("could not download the replied file: %w", err)))
+	}
+	backupBytes, err = restoreDatabasePayload(backupBytes)
+	if err != nil {
+		return msg.Answer(m.restoreFailure("restore_db_failed", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Database restore failed:</b> <code>{}</code>", err))
 	}
 
 	fileContent := string(backupBytes)
@@ -599,10 +656,7 @@ func (m *GorokuBackup) RestoreDBCmd(msg *goroku.Message) error {
 
 	restoreErr := m.restoreDatabaseFromData(backupBytes)
 	if restoreErr != nil && !isForwardRestoreCommitWarning(restoreErr) {
-		prefix := m.commandPrefix()
-		probZipTrans := m.getTrans("probably_zip", "")
-		probZipMsg := strings.ReplaceAll(probZipTrans, "{}", prefix)
-		return msg.Answer(probZipMsg)
+		return msg.Answer(m.restoreFailure("restore_db_failed", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Database restore failed:</b> <code>{}</code>", restoreErr))
 	}
 
 	return m.completeRestore(restoreErr, func(warning error) {
@@ -648,8 +702,7 @@ func (m *GorokuBackup) BackupModsCmd(msg *goroku.Message) error {
 
 	nr := &namedReader{r: bytes.NewReader(modsArchive), name: filename}
 
-	contentChannelID := utils.WaitForContentChannel(m.db, 3)
-	topicID := m.getBackupTopicID()
+	contentChannelID, topicID := m.contentChannelOrFallback(msg.Context(), m.getBackupTopicID())
 
 	if topicID == 0 {
 		_, err = m.client.SendFile(goroku.ChatRefID(msg.ChatID), nr, caption)
@@ -689,13 +742,16 @@ func (m *GorokuBackup) RestoreModsCmd(msg *goroku.Message) error {
 		return m.client.DownloadMedia(reply.Media, w)
 	})
 	if err != nil {
-		replyToTrans := m.getTrans("reply_to_file", "Reply with .json or .zip file")
-		return msg.Answer(replyToTrans)
+		return msg.Answer(m.restoreFailure("restore_modules_failed", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Modules restore failed:</b> <code>{}</code>", fmt.Errorf("could not download the replied file: %w", err)))
+	}
+	backupBytes, err = restoreModulesPayload(backupBytes)
+	if err != nil {
+		return msg.Answer(m.restoreFailure("restore_modules_failed", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Modules restore failed:</b> <code>{}</code>", err))
 	}
 
 	restoreErr := m.restoreModulesFromData(backupBytes)
 	if restoreErr != nil && !isForwardRestoreCommitWarning(restoreErr) {
-		return msg.Answer(m.getTrans("reply_to_file", "Reply with .json or .zip file"))
+		return msg.Answer(m.restoreFailure("restore_modules_failed", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Modules restore failed:</b> <code>{}</code>", restoreErr))
 	}
 
 	return m.completeRestore(restoreErr, func(warning error) {
@@ -1350,14 +1406,12 @@ func (m *GorokuBackup) RestoreAllCmd(msg *goroku.Message) error {
 		return m.client.DownloadMedia(reply.Media, w)
 	})
 	if err != nil {
-		replyToTrans := m.getTrans("reply_to_file", "Reply with .json or .zip file")
-		return msg.Answer(replyToTrans)
+		return msg.Answer(m.restoreFailure("restore_all_failed", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Full backup restore failed:</b> <code>{}</code>", fmt.Errorf("could not download the replied file: %w", err)))
 	}
 
 	err = m.restoreAllFromZip(backupBytes)
 	if err != nil && !isForwardRestoreCommitWarning(err) {
-		replyToTrans := m.getTrans("reply_to_file", "Reply with .json or .zip file")
-		return msg.Answer(replyToTrans)
+		return msg.Answer(m.restoreFailure("restore_all_failed", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Full backup restore failed:</b> <code>{}</code>", err))
 	}
 
 	return m.completeRestore(err, func(warning error) {
@@ -1385,8 +1439,7 @@ func (m *GorokuBackup) BackupAllCmd(msg *goroku.Message) error {
 
 	nr := &namedReader{r: bytes.NewReader(archiveBytes), name: filename}
 
-	contentChannelID := utils.WaitForContentChannel(m.db, 3)
-	topicID := m.getBackupTopicID()
+	contentChannelID, topicID := m.contentChannelOrFallback(msg.Context(), m.getBackupTopicID())
 
 	// 1. Send file via userbot to the forum topic (or PM if topicID == 0)
 	var res any
@@ -1491,14 +1544,13 @@ func (m *GorokuBackup) handleRestoreExecuteFromMessageCallback(call inline.Callb
 		return m.client.DownloadMedia(msg.Media, w)
 	})
 	if err != nil {
-		_ = call.Answer(fmt.Sprintf("Failed to download media: %v", err), true)
+		_ = call.Answer(fmt.Sprintf("Full backup download failed: %v", err), true)
 		return nil
 	}
 
 	err = m.restoreAllFromZip(backupBytes)
 	if err != nil && !isForwardRestoreCommitWarning(err) {
-		alertText := m.getTrans("reply_to_file", "Reply with .json or .zip file")
-		_ = call.Answer(alertText, true)
+		_ = call.Answer(fmt.Sprintf("Full backup restore failed: %v", err), true)
 		return nil
 	}
 
@@ -1598,7 +1650,7 @@ func (m *GorokuBackup) backupLoop() {
 		}
 
 		if m.backupPeriod > 0 {
-			if err := m.sendPeriodicBackup(); err != nil {
+			if err := m.sendPeriodicBackupSafely(); err != nil {
 				L().Error("GorokuBackup periodic backup failed", zap.Error(err))
 				select {
 				case <-m.stopBackup:
@@ -1622,6 +1674,20 @@ func (m *GorokuBackup) backupLoop() {
 	}
 }
 
+// sendPeriodicBackupSafely converts a panic in the backup path into an error so
+// the scheduler retries on its normal cadence instead of taking down the
+// process. The loop runs unattended for the life of the bot, so a single bad
+// archive must not be fatal.
+func (m *GorokuBackup) sendPeriodicBackupSafely() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			L().Error("panic during periodic backup", zap.Any("panic", r))
+			err = fmt.Errorf("panic during periodic backup: %v", r)
+		}
+	}()
+	return m.sendPeriodicBackup()
+}
+
 func (m *GorokuBackup) sendPeriodicBackup() error {
 	archiveBytes, err := m.buildArchive()
 	if err != nil {
@@ -1636,8 +1702,7 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 
 	nr := &namedReader{r: bytes.NewReader(archiveBytes), name: filename}
 
-	contentChannelID := utils.WaitForContentChannel(m.db, 3)
-	topicID := m.getBackupTopicID()
+	contentChannelID, topicID := m.contentChannelOrFallback(context.Background(), m.getBackupTopicID())
 
 	// Send document via userbot
 	var res any
@@ -1820,6 +1885,17 @@ func (m *GorokuBackup) buildModulesArchive() ([]byte, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	// localRuntimeModules keys by declared struct name, but the source path is
+	// derived from the manifest key below. Keying by the file's own basename
+	// keeps the two consistent; keying by struct name invented an entry whose
+	// derived path did not exist whenever a file's name differed from the struct
+	// it declares (owned.go declaring type Owned).
+	for _, path := range localRuntimeModules() {
+		name := strings.TrimSuffix(filepath.Base(path), ".go")
+		if _, tracked := loadedMods[name]; !tracked {
+			loadedMods[name] = "local"
+		}
+	}
 	if len(loadedMods) > maxRestoreModules {
 		return nil, 0, fmt.Errorf("module manifest contains more than %d modules", maxRestoreModules)
 	}
@@ -1830,6 +1906,7 @@ func (m *GorokuBackup) buildModulesArchive() ([]byte, int, error) {
 		body       []byte
 	}
 	sources := make([]moduleSource, 0, len(loadedMods))
+	archivedMods := make(map[string]string, len(loadedMods))
 	for modName, provenance := range loadedMods {
 		if len(modName) > maxRestoreModuleNameBytes {
 			return nil, 0, fmt.Errorf("module name exceeds %d bytes", maxRestoreModuleNameBytes)
@@ -1840,11 +1917,17 @@ func (m *GorokuBackup) buildModulesArchive() ([]byte, int, error) {
 		if err := validateModuleProvenance(modName, provenance); err != nil {
 			return nil, 0, err
 		}
-		path, err := findInstalledModuleSource(modName)
+		path, err := runtimeModuleSourcePath(modName)
 		if err != nil {
-			return nil, 0, fmt.Errorf("module source %q is unavailable: %w", modName+".go", err)
+			return nil, 0, err
 		}
 		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			// Skipping here produced an archive whose manifest silently omitted the
+			// module, so restoring that backup lost it without any indication. A
+			// backup is complete or it fails; every other error below does the same.
+			return nil, 0, fmt.Errorf("module source %q is unavailable: declared in the module manifest but missing on disk", modName+".go")
+		}
 		if err != nil || !info.Mode().IsRegular() {
 			if err == nil {
 				err = fmt.Errorf("not a regular file")
@@ -1863,6 +1946,7 @@ func (m *GorokuBackup) buildModulesArchive() ([]byte, int, error) {
 			return nil, 0, err
 		}
 		sources = append(sources, moduleSource{name: modName + ".go", structName: structName, body: body})
+		archivedMods[modName] = provenance
 	}
 	sort.Slice(sources, func(i, j int) bool { return sources[i].name < sources[j].name })
 	for _, source := range sources {
@@ -1871,7 +1955,7 @@ func (m *GorokuBackup) buildModulesArchive() ([]byte, int, error) {
 		}
 	}
 
-	manifest, err := json.MarshalIndent(loadedMods, "", "  ")
+	manifest, err := json.MarshalIndent(archivedMods, "", "  ")
 	if err != nil {
 		return nil, 0, err
 	}

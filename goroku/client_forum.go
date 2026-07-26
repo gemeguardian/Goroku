@@ -322,17 +322,15 @@ func (c *CustomTelegramClient) CreateForumTopic(channelPeer tg.InputPeerClass, t
 	if c.rawAPI == nil {
 		return 0, fmt.Errorf("client not connected")
 	}
-	var inputChannel tg.InputChannelClass
 	var peer tg.InputPeerClass
 	if ch, ok := channelPeer.(*tg.InputPeerChannel); ok {
-		inputChannel = &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash}
 		peer = ch
 	} else {
 		return 0, fmt.Errorf("peer is not a channel")
 	}
 
-	req := &tg.ChannelsCreateForumTopicRequest{
-		Channel:  inputChannel,
+	req := &tg.MessagesCreateForumTopicRequest{
+		Peer:     peer,
 		Title:    title,
 		RandomID: rand.Int63(), //nolint:gosec
 	}
@@ -346,7 +344,7 @@ func (c *CustomTelegramClient) CreateForumTopic(channelPeer tg.InputPeerClass, t
 		req.SetIconEmojiID(iconEmojiID)
 	}
 
-	res, err := c.rawAPI.ChannelsCreateForumTopic(c.ctx, req)
+	res, err := c.rawAPI.MessagesCreateForumTopic(c.ctx, req)
 	if err != nil {
 		return 0, err
 	}
@@ -389,16 +387,13 @@ func (c *CustomTelegramClient) SearchForumTopic(channelPeer tg.InputPeerClass, t
 	if c.rawAPI == nil {
 		return 0, fmt.Errorf("client not connected")
 	}
-	var inputChannel tg.InputChannelClass
-	if ch, ok := channelPeer.(*tg.InputPeerChannel); ok {
-		inputChannel = &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash}
-	} else {
+	if _, ok := channelPeer.(*tg.InputPeerChannel); !ok {
 		return 0, fmt.Errorf("peer is not a channel")
 	}
 
-	res, err := c.rawAPI.ChannelsGetForumTopics(c.ctx, &tg.ChannelsGetForumTopicsRequest{
-		Channel: inputChannel,
-		Limit:   100,
+	res, err := c.rawAPI.MessagesGetForumTopics(c.ctx, &tg.MessagesGetForumTopicsRequest{
+		Peer:  channelPeer,
+		Limit: 100,
 	})
 	if err != nil {
 		return 0, err

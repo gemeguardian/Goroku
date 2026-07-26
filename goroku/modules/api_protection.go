@@ -5,6 +5,7 @@ import (
 	"goroku/goroku"
 	"goroku/goroku/inline"
 	"goroku/goroku/utils"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,11 +13,29 @@ import (
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 )
 
+// forbiddenConstructorIDs maps a configurable method name to the TL constructor
+// ID the client blocks. Only names listed here can be enforced.
+var forbiddenConstructorIDs = map[string]uint32{
+	"sendReaction":     3540875476,
+	"joinChannel":      615851205,
+	"importChatInvite": 1817183516,
+}
+
+// supportedForbiddenMethods lists the enforceable names in a stable order for
+// error messages.
+func supportedForbiddenMethods() []string {
+	names := make([]string, 0, len(forbiddenConstructorIDs))
+	for name := range forbiddenConstructorIDs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 type APIProtection struct {
 	client           *goroku.CustomTelegramClient
 	db               *goroku.Database
 	translator       *goroku.Translator
-	suspendUntil     time.Time
 	forbiddenTypeIDs []uint32
 }
 
@@ -105,17 +124,20 @@ func (m *APIProtection) updateForbiddenMethods(config map[string]any) error {
 		}
 	}
 
-	constructorMap := map[string]uint32{
-		"sendReaction":     3540875476,
-		"joinChannel":      615851205,
-		"importChatInvite": 1817183516,
-	}
-
 	var typeIDs []uint32
+	var unknown []string
 	for _, f := range forbidden {
-		if id, ok := constructorMap[f]; ok {
+		if id, ok := forbiddenConstructorIDs[f]; ok {
 			typeIDs = append(typeIDs, id)
+			continue
 		}
+		unknown = append(unknown, f)
+	}
+	if len(unknown) > 0 {
+		// Silently dropping these used to leave the protection looking enabled
+		// while blocking nothing.
+		return fmt.Errorf("APILimiter forbidden_methods contains unsupported method(s) %s; supported: %s",
+			strings.Join(unknown, ", "), strings.Join(supportedForbiddenMethods(), ", "))
 	}
 
 	m.forbiddenTypeIDs = typeIDs

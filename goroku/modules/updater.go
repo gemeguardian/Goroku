@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"goroku/goroku"
+	"goroku/goroku/inline"
 	"goroku/goroku/utils"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
 )
@@ -181,14 +183,22 @@ func (m *Updater) logBackgroundWrite(operation, key string, err error) {
 	)
 }
 
-func (m *Updater) persistRestartMetadata(message string, timestamp int64) error {
+func (m *Updater) persistRestartMetadata(message string, timestamp int64, moduleCount int, secureBoot bool) error {
 	return m.db.Update(map[string]map[string]any{
-		"Updater": {"selfupdatemsg": message, "restart_ts": timestamp},
+		"Updater": {"selfupdatemsg": message, "restart_ts": timestamp, "modules_count": moduleCount, "secure_boot": secureBoot},
+		"Loader":  {"secure_boot": secureBoot},
 	})
 }
 
-func (m *Updater) prepareRestart(message string) error {
-	if err := m.persistRestartMetadata(message, time.Now().Unix()); err != nil {
+func (m *Updater) prepareRestart(message string, secureBoot ...bool) error {
+	secure := len(secureBoot) > 0 && secureBoot[0]
+	moduleCount := 0
+	if m.client != nil {
+		if loader := m.client.Loader; loader != nil {
+			moduleCount = len(loader.GetModules())
+		}
+	}
+	if err := m.persistRestartMetadata(message, time.Now().Unix(), moduleCount, secure); err != nil {
 		return err
 	}
 	m.scheduleRestart()
@@ -367,22 +377,103 @@ func (m *Updater) handlePostRestart() {
 			}
 		}
 	}
-	successTpl := m.getTrans("success", "✅ <b>Restart complete! {}</b> Took <b>{}</b>s")
-	msg := formatTrans(successTpl, platform, took)
-	if err := m.persistRestartMetadata("", 0); err != nil {
+	if loader := m.client.Loader; loader != nil {
+		if loaderModule, ok := loader.LookupByName("Loader").(*LoaderModule); ok && !loaderModule.RestoreComplete() {
+			pendingTpl := m.getTrans("success", "✅ <b>Restart successful! {}</b>\n<i>But still loading modules...</i>\n<i>Restart took {}s</i>")
+			_ = m.editRestartMessage(selfUpdateMsg, formatTrans(pendingTpl, platform, took))
+			go func() {
+				<-loaderModule.WaitForRestore()
+				m.handlePostRestart()
+			}()
+			return
+		}
+	}
+	expectedModules := m.db.GetInt("Updater", "modules_count", 0)
+	actualModules := 0
+	if loader := m.client.Loader; loader != nil {
+		actualModules = len(loader.GetModules())
+	}
+	if expectedModules == 0 {
+		expectedModules = actualModules
+	}
+	msg := ""
+	loaderFullyLoaded := true
+	if loader := m.client.Loader; loader != nil {
+		if loaderModule, ok := loader.LookupByName("Loader").(*LoaderModule); ok {
+			loaderFullyLoaded = loaderModule.FullyLoaded()
+		}
+	}
+	secureBoot := m.db.GetBool("Updater", "secure_boot", false)
+	if secureBoot {
+		secureTpl := m.getTrans("secure_boot_complete", "🛡 <b>Secure Boot complete! {}</b>\n<i>User modules were skipped. Restart took {}s</i>")
+		msg = formatTrans(secureTpl, platform, took)
+	} else if actualModules >= expectedModules && loaderFullyLoaded {
+		successTpl := m.getTrans("full_success", "✅ <b>Userbot is fully loaded! {}</b>\n<i>Full restart took {}s</i>")
+		msg = formatTrans(successTpl, platform, took)
+	} else {
+		failedModules := expectedModules - actualModules
+		if failedModules < 1 {
+			failedModules = 1
+		}
+		failureTpl := m.getTrans("full_fail", "❌ <b>Userbot loaded with errors! {}</b>\n<i>Restart took {}s\nFailed to load {} modules</i>")
+		msg = formatTrans(failureTpl, platform, took, strconv.Itoa(failedModules))
+	}
+	if !m.editRestartMessage(selfUpdateMsg, msg) {
+		go func() {
+			time.Sleep(2 * time.Second)
+			m.handlePostRestart()
+		}()
+		return
+	}
+	if err := m.db.Update(map[string]map[string]any{"Updater": {"selfupdatemsg": "", "restart_ts": int64(0), "secure_boot": false}}); err != nil {
 		m.logBackgroundWrite("update", "selfupdatemsg,restart_ts", err)
 		return
 	}
 
-	if strings.Contains(selfUpdateMsg, ":") {
-		parts := strings.SplitN(selfUpdateMsg, ":", 2)
-		chatID, err1 := strconv.ParseInt(parts[0], 10, 64)
-		msgID, err2 := strconv.ParseInt(parts[1], 10, 64)
-		if err1 == nil && err2 == nil {
-			_, _ = m.client.EditMessage(goroku.ChatRefID(chatID), msgID, msg)
-		}
-	}
+}
 
+func (m *Updater) editRestartMessage(reference, text string) bool {
+	if strings.HasPrefix(reference, "inline:") {
+		if m.client.GorokuInline == nil || !m.client.GorokuInline.IsComplete() {
+			return false
+		}
+		edit := tgbotapi.EditMessageTextConfig{
+			BaseEdit:  tgbotapi.BaseEdit{InlineMessageID: strings.TrimPrefix(reference, "inline:")},
+			Text:      text,
+			ParseMode: tgbotapi.ModeHTML,
+		}
+		_, err := m.client.GorokuInline.GetBotAPI().Request(edit)
+		return err == nil
+	}
+	if strings.HasPrefix(reference, "bot:") {
+		parts := strings.SplitN(reference, ":", 3)
+		if len(parts) != 3 || m.client.GorokuInline == nil || !m.client.GorokuInline.IsComplete() {
+			return false
+		}
+		chatID, err1 := strconv.ParseInt(parts[1], 10, 64)
+		msgID, err2 := strconv.Atoi(parts[2])
+		if err1 != nil || err2 != nil {
+			return false
+		}
+		edit := tgbotapi.EditMessageTextConfig{
+			BaseEdit:  tgbotapi.BaseEdit{BaseChatMessage: tgbotapi.BaseChatMessage{ChatConfig: tgbotapi.ChatConfig{ChatID: chatID}, MessageID: msgID}},
+			Text:      text,
+			ParseMode: tgbotapi.ModeHTML,
+		}
+		_, err := m.client.GorokuInline.GetBotAPI().Request(edit)
+		return err == nil
+	}
+	if !strings.Contains(reference, ":") {
+		return false
+	}
+	parts := strings.SplitN(reference, ":", 2)
+	chatID, err1 := strconv.ParseInt(parts[0], 10, 64)
+	msgID, err2 := strconv.ParseInt(parts[1], 10, 64)
+	if err1 == nil && err2 == nil {
+		_, err := m.client.EditMessage(goroku.ChatRefID(chatID), msgID, text)
+		return err == nil
+	}
+	return false
 }
 
 func (m *Updater) UpdateCmd(msg *goroku.Message) error {
@@ -432,6 +523,75 @@ func (m *Updater) UpdateCmd(msg *goroku.Message) error {
 }
 
 func (m *Updater) RestartCmd(msg *goroku.Message) error {
+	force, secureBoot := restartOptions(utils.GetArgsRaw(msg.RawText))
+	if force || m.client.GorokuInline == nil || !m.client.GorokuInline.IsComplete() {
+		return m.restartNow(msg, secureBoot)
+	}
+
+	confirmText := m.getTrans("restart_confirm", "<tg-emoji emoji-id=5382187118216879236>❓</tg-emoji> <b>Are you sure you want to restart?</b>")
+	if secureBoot {
+		confirmText = m.getTrans("secure_boot_confirm", "<tg-emoji emoji-id=5382187118216879236>❓</tg-emoji> <b>Are you sure you want to restart in secure boot mode?</b>")
+	}
+	markup := [][]inline.Button{{
+		{
+			Text:  m.getTrans("btn_restart", "🔄 Restart"),
+			Style: "primary",
+			Handler: func(c inline.CallbackQuery) error {
+				if !requireOwnerCallback(m.client, c, c.FromID) {
+					return nil
+				}
+				text, err := m.restartCaption(secureBoot)
+				if err != nil {
+					return err
+				}
+				restartMessage := fmt.Sprintf("bot:%d:%d", c.ChatID, c.MessageID)
+				if c.InlineMessage != nil && c.InlineMessage.InlineMessageID != "" {
+					restartMessage = "inline:" + c.InlineMessage.InlineMessageID
+				}
+				if err := m.prepareRestart(restartMessage, secureBoot); err != nil {
+					return err
+				}
+				_ = c.Answer("Restarting...", false)
+				return c.Edit(text, tgbotapi.InlineKeyboardMarkup{})
+			},
+		},
+		{
+			Text:    m.getTrans("cancel", "🚫 Cancel"),
+			Style:   "danger",
+			Handler: func(c inline.CallbackQuery) error { return closeForm(c) },
+		},
+	}}
+	_, err := m.client.GorokuInline.Form(confirmText, msg, markup,
+		inline.WithForceMe(true),
+		inline.WithStartText("🍃"),
+	)
+	return err
+}
+
+func restartOptions(args string) (force, secureBoot bool) {
+	for _, arg := range strings.Fields(args) {
+		switch arg {
+		case "-f", "--force":
+			force = true
+		case "-sb", "--secure-boot":
+			secureBoot = true
+		}
+	}
+	return force, secureBoot
+}
+
+func (m *Updater) restartNow(msg *goroku.Message, secureBoot bool) error {
+	text, err := m.restartCaption(secureBoot)
+	if err != nil {
+		return err
+	}
+	if err := m.prepareRestart(fmt.Sprintf("%d:%d", msg.ChatID, msg.ID), secureBoot); err != nil {
+		return msg.Answer(fmt.Sprintf("❌ <b>Restart state could not be saved:</b> %v", err))
+	}
+	return msg.Answer(text)
+}
+
+func (m *Updater) restartCaption(secureBoot bool) (string, error) {
 	platform := "Goroku"
 	me, err := m.client.GetMe()
 	if err == nil {
@@ -441,14 +601,12 @@ func (m *Updater) RestartCmd(msg *goroku.Message) error {
 			}
 		}
 	}
+	if secureBoot {
+		return fmt.Sprintf("🛡 <b>Your %s is starting in Secure Boot...</b>\n<i>User modules will be skipped.</i>", platform), nil
+	}
 
 	template := m.getTrans("restarting_caption", "<tg-emoji emoji-id=5208622108191506906>🕗</tg-emoji> <b>Your {} is restarting...</b>")
-	text := strings.ReplaceAll(template, "{}", platform)
-
-	if err := m.prepareRestart(fmt.Sprintf("%d:%d", msg.ChatID, msg.ID)); err != nil {
-		return msg.Answer(fmt.Sprintf("❌ <b>Restart state could not be saved:</b> %v", err))
-	}
-	return msg.Answer(text)
+	return strings.ReplaceAll(template, "{}", platform), nil
 }
 
 func (m *Updater) ChangelogCmd(msg *goroku.Message) error {

@@ -901,7 +901,7 @@ func (m *SettingsModule) GorokuCmd(msg *goroku.Message) error {
 	v := goroku.Version
 	verStr := []string{strconv.Itoa(v[0]), strconv.Itoa(v[1]), strconv.Itoa(v[2])}
 
-	libraryStr := fmt.Sprintf("gotd v0.120.0 #%d", tg.Layer)
+	libraryStr := fmt.Sprintf("gotd v0.161.0 #%d", tg.Layer)
 
 	template := m.getTrans("goroku", "{} <b>{}.{}.{}</b> <i>{}</i>\n\n<b><tg-emoji emoji-id=5289608677244811430>📁</emoji> <b>goroku-tl:</b> <i>{}</i>\n\n<tg-emoji emoji-id=5228879218363872764>⌨</emoji> <b>Developers: <a href=\"t.me/coddrago\">@coddrago</a>, <a href=\"t.me/zetgo\">@zetgo</a></b>")
 	formattedText := formatTrans(template, platform, verStr[0], verStr[1], verStr[2], commitURLHTML, libraryStr)

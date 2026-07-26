@@ -45,7 +45,7 @@ func (c *authTestClient) SendCodeRequest(string) error            { return nil }
 func (c *authTestClient) SignIn(string, string, string) error     { return nil }
 func (c *authTestClient) QRLogin() (string, error)                { return "", nil }
 func (c *authTestClient) QRLoginStatus() (string, error)          { return "", nil }
-func (c *authTestClient) SendMessage(webiface.ChatRef, string) (any, error) {
+func (c *authTestClient) SendMessage(webiface.ChatRef, string) (webiface.SentMessage, error) {
 	c.once.Do(func() { close(c.notified) })
 	return nil, c.sendErr
 }
@@ -97,7 +97,7 @@ func (c testWebClient) SendCodeRequest(phone string) error        { return nil }
 func (c testWebClient) SignIn(phone, code, password string) error { return nil }
 func (c testWebClient) QRLogin() (string, error)                  { return "", nil }
 func (c testWebClient) QRLoginStatus() (string, error)            { return "", nil }
-func (c testWebClient) SendMessage(chat webiface.ChatRef, message string) (any, error) {
+func (c testWebClient) SendMessage(chat webiface.ChatRef, message string) (webiface.SentMessage, error) {
 	return nil, nil
 }
 func (c testWebClient) ResolveUsername(username string) (bool, error) { return false, nil }
@@ -295,6 +295,7 @@ func TestReadLimitedBodyRejectsOversizedPayload(t *testing.T) {
 
 func TestClientIPIgnoresProxyHeadersByDefault(t *testing.T) {
 	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "")
+	t.Setenv("GOROKU_TRUSTED_PROXIES", "")
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.0.0.1:1234"
 	req.Header.Set("X-Forwarded-For", "203.0.113.99")
@@ -305,7 +306,8 @@ func TestClientIPIgnoresProxyHeadersByDefault(t *testing.T) {
 }
 
 func TestClientIPUsesProxyHeadersWhenTrusted(t *testing.T) {
-	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "true")
+	t.Setenv("GOROKU_TRUSTED_PROXIES", "10.0.0.0/8")
+	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "")
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.0.0.1:1234"
 	req.Header.Set("X-Forwarded-For", "203.0.113.99, 10.0.0.1")
@@ -316,7 +318,8 @@ func TestClientIPUsesProxyHeadersWhenTrusted(t *testing.T) {
 }
 
 func TestClientIPRejectsInvalidTrustedHeader(t *testing.T) {
-	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "true")
+	t.Setenv("GOROKU_TRUSTED_PROXIES", "10.0.0.0/8")
+	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "")
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.0.0.1:1234"
 	req.Header.Set("CF-Connecting-IP", `<script>alert(1)</script>`)
@@ -328,6 +331,7 @@ func TestClientIPRejectsInvalidTrustedHeader(t *testing.T) {
 
 func TestIsHTTPSIgnoresForwardedProtoByDefault(t *testing.T) {
 	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "")
+	t.Setenv("GOROKU_TRUSTED_PROXIES", "")
 	req := httptest.NewRequest("GET", "http://example.com/", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
 
@@ -337,8 +341,10 @@ func TestIsHTTPSIgnoresForwardedProtoByDefault(t *testing.T) {
 }
 
 func TestIsHTTPSUsesForwardedProtoWhenTrusted(t *testing.T) {
-	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "true")
+	t.Setenv("GOROKU_TRUSTED_PROXIES", "10.0.0.0/8")
+	t.Setenv("GOROKU_TRUST_PROXY_HEADERS", "")
 	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
 	req.Header.Set("X-Forwarded-Proto", "https")
 
 	if !isHTTPS(req) {
@@ -1383,5 +1389,159 @@ func TestHealthEndpointsHaveNoSecrets(t *testing.T) {
 	web.ReadyzHandler(rz, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if rz.Code != http.StatusOK || strings.TrimSpace(rz.Body.String()) != "ok" {
 		t.Fatalf("readyz=%d %q", rz.Code, rz.Body.String())
+	}
+}
+
+func TestWebAuthPendingPerIPCap(t *testing.T) {
+	web := NewWeb(WebConfig{})
+	client := &authTestClient{tgid: 42, notified: make(chan struct{})}
+	if err := web.RegisterClient(RuntimeClient{ID: client.tgid, Client: client}); err != nil {
+		t.Fatalf("register client: %v", err)
+	}
+	ip := normalizeClientIP("192.0.2.40:1234")
+	for i := 0; i < maxPendingAuthsPerIP; i++ {
+		token := fmt.Sprintf("perip-%d", i)
+		web.pendingAuths[token] = &PendingAuth{
+			Token:    token,
+			Approved: make(chan struct{}),
+			Expiry:   time.Now().Add(time.Minute),
+			IP:       ip,
+			ClientID: 42,
+		}
+	}
+	web.pendingAuthsByIP = map[string]int{ip: maxPendingAuthsPerIP}
+
+	req := httptest.NewRequest(http.MethodPost, "/web_auth", nil)
+	req.RemoteAddr = "192.0.2.40:1234"
+	rec := httptest.NewRecorder()
+	web.WebAuthHandler(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected per-IP cap rejection %d, got %d body=%q", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	}
+	if len(web.pendingAuths) != maxPendingAuthsPerIP {
+		t.Fatalf("pending auth count changed: %d", len(web.pendingAuths))
+	}
+}
+
+func TestWebAuthPendingPerIPCapDifferentIPsAllowed(t *testing.T) {
+	web := NewWeb(WebConfig{})
+	client := &authTestClient{tgid: 42, notified: make(chan struct{})}
+	if err := web.RegisterClient(RuntimeClient{ID: client.tgid, Client: client}); err != nil {
+		t.Fatalf("register client: %v", err)
+	}
+	ipA := normalizeClientIP("192.0.2.40:1234")
+	for i := 0; i < maxPendingAuthsPerIP; i++ {
+		token := fmt.Sprintf("capA-%d", i)
+		web.pendingAuths[token] = &PendingAuth{
+			Token:    token,
+			Approved: make(chan struct{}),
+			Expiry:   time.Now().Add(time.Minute),
+			IP:       ipA,
+			ClientID: 42,
+		}
+	}
+	web.pendingAuthsByIP = map[string]int{ipA: maxPendingAuthsPerIP}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/web_auth", nil).WithContext(ctx)
+	req.RemoteAddr = "192.0.2.41:1234"
+	rec := httptest.NewRecorder()
+	web.WebAuthHandler(rec, req)
+	if rec.Code == http.StatusServiceUnavailable {
+		t.Fatalf("different IP must not be rejected by per-IP cap of another IP, got %d", rec.Code)
+	}
+}
+
+func TestWebAuthPendingExpiredSweepDecrementsIPCount(t *testing.T) {
+	web := NewWeb(WebConfig{})
+	client := &authTestClient{tgid: 42, notified: make(chan struct{})}
+	if err := web.RegisterClient(RuntimeClient{ID: client.tgid, Client: client}); err != nil {
+		t.Fatalf("register client: %v", err)
+	}
+	expiredIP := normalizeClientIP("192.0.2.50:1234")
+	web.pendingAuths["expired-token"] = &PendingAuth{
+		Token:    "expired-token",
+		Approved: make(chan struct{}),
+		Expiry:   time.Now().Add(-time.Second),
+		IP:       expiredIP,
+		ClientID: 42,
+	}
+	web.pendingAuthsByIP = map[string]int{expiredIP: 1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/web_auth", nil).WithContext(ctx)
+	req.RemoteAddr = "192.0.2.99:1234"
+	web.WebAuthHandler(httptest.NewRecorder(), req)
+
+	web.mu.RLock()
+	defer web.mu.RUnlock()
+	if _, ok := web.pendingAuthsByIP[expiredIP]; ok {
+		t.Fatalf("expired entry IP count was not decremented: %v", web.pendingAuthsByIP)
+	}
+	if len(web.pendingAuths) != 0 {
+		t.Fatalf("pending auths leaked after expired sweep + handler cleanup: %d", len(web.pendingAuths))
+	}
+}
+
+func TestWebAuthPendingPerIPConcurrent(t *testing.T) {
+	t.Parallel()
+	web := NewWeb(WebConfig{})
+	client := &authTestClient{tgid: 42, notified: make(chan struct{})}
+	if err := web.RegisterClient(RuntimeClient{ID: client.tgid, Client: client}); err != nil {
+		t.Fatalf("register client: %v", err)
+	}
+	const n = 16
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			req := httptest.NewRequest(http.MethodPost, "/web_auth", nil).WithContext(ctx)
+			req.RemoteAddr = fmt.Sprintf("192.0.2.%d:1234", i%4)
+			web.WebAuthHandler(httptest.NewRecorder(), req)
+		}(i)
+	}
+	wg.Wait()
+	web.mu.RLock()
+	defer web.mu.RUnlock()
+	if len(web.pendingAuths) != 0 {
+		t.Fatalf("pending auths leaked after concurrent register: %d", len(web.pendingAuths))
+	}
+	if len(web.pendingAuthsByIP) != 0 {
+		t.Fatalf("pendingAuthsByIP leaked after concurrent register: %d", len(web.pendingAuthsByIP))
+	}
+}
+
+func TestDecrementPendingAuthIPRemovesZeroEntries(t *testing.T) {
+	m := map[string]int{"1.2.3.4": 1}
+	decrementPendingAuthIP(m, "1.2.3.4")
+	if _, ok := m["1.2.3.4"]; ok {
+		t.Fatal("zero-count entry must be removed from map")
+	}
+	decrementPendingAuthIP(m, "5.6.7.8")
+	if _, ok := m["5.6.7.8"]; ok {
+		t.Fatal("non-existent entry must not be created")
+	}
+	m["9.10.11.12"] = 3
+	decrementPendingAuthIP(m, "9.10.11.12")
+	if m["9.10.11.12"] != 2 {
+		t.Fatalf("expected count 2, got %d", m["9.10.11.12"])
+	}
+}
+
+func TestIsLoopbackBind(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "::1", "[::1]", "localhost", "LOCALHOST", "127.1.2.3"} {
+		if !isLoopbackBind(host) {
+			t.Fatalf("expected %q to be loopback", host)
+		}
+	}
+	for _, host := range []string{"0.0.0.0", "10.0.0.1", "::", "[::]", "example.com", "192.0.2.1"} {
+		if isLoopbackBind(host) {
+			t.Fatalf("expected %q to NOT be loopback", host)
+		}
 	}
 }

@@ -9,6 +9,10 @@ import (
 // ChatRef is re-exported from chatref so webiface and goroku share the same type.
 type ChatRef = chatref.ChatRef
 
+// SentMessage is re-exported from chatref; it is the typed return of
+// TelegramClient.SendMessage.
+type SentMessage = chatref.SentMessage
+
 // TelegramClient is the subset of *goroku.CustomTelegramClient methods used
 // by the web package. It is implemented by *goroku.CustomTelegramClient.
 type TelegramClient interface {
@@ -20,7 +24,7 @@ type TelegramClient interface {
 	InlineProvider() InlineProvider
 	QRLogin() (string, error)
 	QRLoginStatus() (string, error)
-	SendMessage(chat ChatRef, message string) (any, error)
+	SendMessage(chat ChatRef, message string) (chatref.SentMessage, error)
 	ResolveUsername(username string) (bool, error)
 	CheckBot(username string) (bool, error)
 }

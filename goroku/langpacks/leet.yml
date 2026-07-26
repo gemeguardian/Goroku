@@ -95,6 +95,9 @@ goroku_security:
   _cmd_doc_newsgroup: "<name> - Cr3473 n3w s3c gr0up"
   _cmd_doc_sgroupadd: "<name> [user/reply] - 4dd u53r 2 s3c gr0up"
   _cmd_doc_sgroupdel: "<name> [user/reply] - R3m0v3 u53r fr0m s3c gr0up"
+  _cmd_doc_sudolist: "L157 u53rz 1n `sudo`"
+  _cmd_doc_sudoadd: "<user/reply> - 4dd u53r 2 `sudo`"
+  _cmd_doc_sudorm: "<user/reply> - R3m0v3 u53r fr0m `sudo`"
 
 goroku_settings:
   name: "H3r0kuS3771ng5"
@@ -153,6 +156,10 @@ goroku_settings:
   _cmd_doc_watcherbl: "<module> - 70ggl3 w47ch3r 1n curr3n7 ch47"
   _cmd_doc_watcher: "<module> - 70ggl3 gl0b4l w47ch3r rul3z\nArgs:\n[-c - 0nly 1n ch475]\n[-p - 0nly 1n pm]\n[-o - 0nly 0u7]\n[-i - 0nly 1nc0m1ng]"
   _cmd_doc_watchers: "L157 curr3n7 w47ch3rz"
+  _cmd_doc_watchercmd: "<watcher> [-c|-p|-o|-i] - 70ggl3 w47ch3r 0r s37 175 f1l73rz"
+  _cmd_doc_nonickcmdcmd: "<cmd> - 70ggl3 N0N1ck 4 4 cmd"
+  _cmd_doc_remove_core_protection: "C0nf1rm & r3m0v3 c0r3 m0dul3/cmd pr073c710n"
+  _cmd_doc_enable_core_protection: "C0nf1rm & r3570r3 c0r3 m0dul3/cmd pr073c710n"
   _cls_doc: "4dv4nc3d s3771ng5 4 H3r0ku Us3rb07"
   core_protection_already_removed: "<tg-emoji emoji-id=6003424016977628379>🔒</tg-emoji> <b>C0r3 pr073c710n 15 4lr34dy r3m0v3d</b>"
   core_protection_already_enabled: "<tg-emoji emoji-id=6003424016977628379>🔒</tg-emoji> <b>C0r3 pr073c710n 15 4lr34dy s37 up</b>"
@@ -219,6 +226,10 @@ goroku_web:
   2fa_enabled: "U h4v3 2-f4c70r 4u7h 3n4bl3d. 3n73r 7h3 p455w0rd."
   request_code: "🔃 R3qu357 7h3 c0d3 4g41n"
   code_expired: "7h3 c0d3 h45 3xp1r3d."
+  _cmd_doc_webrestart: "R3574r7 7h3 w3b s3rv3r"
+  _cmd_doc_webstop: "S70p 7h3 w3b s3rv3r"
+  _cmd_doc_approve_web: "<token> - 4ppr0v3 4 w3b d45hb04rd 4u7h r3qu357"
+  _cmd_doc_addacc: "<user/reply> [force_insecure] - S74r7 4cc 4dd1710n l0g1n 4 s3l3c73d u53r"
 
 goroku_backup:
   period: "⌚️ <b>7h3 un17 «ALPHA»</b> cr34735 r3gul4r b4ckup5. 7h353 s3771ng5 c4n b3 ch4ng3d l473r.\n\nPlz s3l3c7 7h3 b4ckup fr3qu3ncy\n\n<b>🚫 17 15 7hu5 1mp0551bl3 2 r3570r3 m0d5 d0wnl04d3d fr0m f1l35 w17h .lm cmd! B3 c4r3ful & d0 .backupmods b4 r3570r1ng.</b>"
@@ -232,6 +243,9 @@ goroku_backup:
   all_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>Ur full b4ckup h45 b33n r3570r3d, r3574r71ng...</b>"
   all_restored_bot: "🔄 Ur full b4ckup h45 b33n r3570r3d, r3574r71ng..."
   reply_to_file: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>R3ply w17h .json 0r .zip f1l3</b>"
+  restore_db_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>D474b453 r3570r3 f41l3d:</b> <code>{}</code>"
+  restore_modules_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>M0dul3 r3570r3 f41l3d:</b> <code>{}</code>"
+  restore_all_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Full b4ckup r3570r3 f41l3d:</b> <code>{}</code>"
   db_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>DB upd473d, r3574r71ng...</b>"
   modules_backup: "<tg-emoji emoji-id=5431736674147114227>🗂</tg-emoji> <b>M0dul35 b4ckup ({})</b>\n\n<b>U c4n r3570r3 17 u51ng:</b>\n<pre><code class=\"language-goroku\">{}restoremods</code></pre>"
   mods_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>M0d5 r3570r3d, r3574r71ng</b>"
@@ -279,6 +293,17 @@ presets:
   remove_from_folder_usage: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>5p3c1fy f0ld3r 4nd m0dul3 t0 r3m0v3. </b> <code>{prefix}removefromfolder <f0ld3r> <m0dul3></code>"
   removed_from_folder: "<tg-emoji emoji-id=5436040291507247633>🎉</tg-emoji> <b>Modul3 {} r3m0v3d fr0m f0ld3r</b> <code>{}</code>"
   module_not_in_folder: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Modul3 {} 15 n07 1n f0ld3r {}</b>"
+  _cmd_doc_preset: "[name] [install] - Sh0w 0r 1n574ll 4 pr3537"
+  _cmd_doc_presets: "Sh0w pr3537 m3nu 0r l157"
+  _cmd_doc_addpreset: "<name> <module URL> - 4dd m0dul3 2 4 cu570m pr3537"
+  _cmd_doc_delpreset: "<name> [module URL] - D3l cu570m pr3537 0r 1 m0dul3 fr0m 17"
+  _cmd_doc_listpresets: "L157 d3f4ul7 & cu570m pr35375"
+  _cmd_doc_loadpreset: "<reply to preset JSON> - L04d pr3537 & 1n574ll 175 m0dul35"
+  _cmd_doc_addtofolder: "<folder> <module> - 4dd 1n574ll3d m0dul3 2 f0ld3r"
+  _cmd_doc_folderload: "<folder> - 3xp0r7 f0ld3r 45 4 pr3537 JSON f1l3"
+  _cmd_doc_removefromfolder: "<folder> <module> - R3m0v3 m0dul3 fr0m f0ld3r"
+  _cmd_doc_loadaliases: "<reply to aliases JSON> - 1mp0r7 4l14535"
+  _cmd_doc_aliasload: "3xp0r7 4l14535 45 4 JSON f1l3"
   _cls_doc: "Sugg3575 n3w H3r0ku u53rz 4 p4ck5 0f m0d5 2 l04d"
 
 settings:
@@ -338,6 +363,10 @@ settings:
   _cmd_doc_delalias: "R3m0v3 4n 4l145 4 4 cmd"
   _cmd_doc_goroku: "G37 H3r0ku v3r510n"
   _cmd_doc_setprefix: "<prefix> [owner] - S375 cmd pr3f1x"
+  _cmd_doc_togglecmd: "<module> <command> - 3n4bl3 0r d154bl3 4 cmd 1n 4 m0dul3"
+  _cmd_doc_togglemod: "<module> - 3n4bl3 0r d154bl3 4ll m0dul3 cmd5"
+  _cmd_doc_clearmodule: "<module> - Cl34r m0dul3 d474 & d154bl3 s3771ng5"
+  _cmd_doc_installation: "[-vds|-wsl|-ul] - Sh0w H3r0ku 1n574ll gu1d3"
   _cmd_doc_unblacklist: "<chat_id> - Unbl4ckl157 7h3 b07 fr0m 0p3r471ng s0m3wh3r3"
   _cmd_doc_unblacklistuser: "[user_id] - 4ll0w 7h15 u53r 2 run p3rm1773d cmd5"
   _cfg_nonstandart_prefixes: "4ll0w n0n-574nd4r7 pr3f1x35 l1k3 fl4g5 0r m0r3 7h4n 1 symb0l"
@@ -381,6 +410,7 @@ goroku_config:
   libraries: "📦 L1b5"
   _cmd_doc_config: "C0nf1g m0dul35"
   _cmd_doc_fconfig: "<module_name> <property_name> <config_value> - s37 7h3 c0nf1g v4lu3 4 7h3 m0dul3"
+  _cmd_doc_dconfig: "<module_name> <property_name[, ...]> - r3537 c0nf1g v4lu3(5) 4 7h3 m0dul3"
   _cls_doc: "1n73r4c71v3 c0nf1gur470r 4 H3r0ku Us3rb07"
 
 inline_stuff:
@@ -395,6 +425,8 @@ inline_stuff:
   restart: "🔄 Ur H3r0ku 15 b31ng r3574r73d.."
   prefix_reset: "🔀 Pr3f1x r3537!"
   _cmd_doc_ch_goroku_bot: "<username> - Ch4ng3 ur H3r0ku 1nl1n3 b07 u53rn4m3"
+  _cmd_doc_ch_bot_token: "<bot token> - S37 1nl1n3 b07 70k3n (r3574r7 r3qu1r3d)"
+  _cmd_doc_inlineinfo: "Sh0w 1nl1n3 b07 u53rn4m3 & m45k3d 70k3n c0nf1g"
   _cls_doc: "Pr0v1d35 supp0r7 4 1nl1n3 57uff"
 
 test:
@@ -461,6 +493,9 @@ updater:
   _cmd_doc_source: "L1nk5 7h3 s0urc3 c0d3 0f 7h15 pr0j3c7"
   _cmd_doc_update: "D0wnl04d5 u53rb07 upd4735"
   _cmd_doc_rollback: "R0llb4ck5 u53rb07 upd4735"
+  _cmd_doc_changelog: "Sh0w 7h3 l47357 r3l3453 ch4ng3l0g"
+  _cmd_doc_autoupdate: "70ggl3 4u70 upd4735"
+  _cmd_doc_ubstop: "D154bl3 4u70 upd4735 & s70p 7h3 u53rb07"
   _cls_doc: "Upd4735 1753lf, 7r4ck5 l47357 H3r0ku r3l34535, & n071f135 u, 1f upd473 15 r3qu1r3d"
   update_required: "<tg-emoji emoji-id=5361979468887893611>🆕</tg-emoji> <b>H3r0ku Upd473 4v41l4bl3!</b>\n\nN3w H3r0ku v3r r3l3453d.\n🔮 <b>H3r0ku <s>{}</s> -> {}</b>\n\n{}"
   more: "\n<i><b>🎥 & {} m0r3...</b></i>"
@@ -503,6 +538,8 @@ help:
   not_exact: "<tg-emoji emoji-id=5355133243773435190>☝️</tg-emoji> <b>N0 3x4c7 m47ch 0ccur3d, 50 7h3 cl05357 r35ul7 15 sh0wn 1n5734d</b>"
   request_join: "U r3qu3573d l1nk 4 H3r0ku supp0r7 ch47"
   core_notice: "<tg-emoji emoji-id=5355133243773435190>☝️</tg-emoji> <b>7h15 15 4 c0r3 m0dul3. U c4n'7 unl04d 17 n0r r3pl4c3</b>"
+  _cmd_doc_help: "[module/cmd] [-f|-c|-l] - Sh0w m0dul3 l157 0r d3741l3d h3lp"
+  _cmd_doc_helphide: "<module...> - 70ggl3 m0dul3 v151b1l17y 1n h3lp"
 
 goroku_info:
   info_message: "{}\n<blockquote>┌\n├  【<tg-emoji emoji-id=5883964170268840032>👤</tg-emoji>】 <b>0wn3r</b>: {me}\n├  【<tg-emoji emoji-id=5931415565955503486>🤖</tg-emoji>】 <b>V3r510n</b>: {version}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5778335621491723621>📷</tg-emoji>】 <b>Pr3f1x</b>: {prefix}⠀ ⠀ \n├  【<tg-emoji emoji-id=5843799474362652262>🔄</tg-emoji>】 <b>Up71m3</b>: {uptime}\n├  【<tg-emoji emoji-id=5879770735999717115>👤</tg-emoji>】 <b>Br4nch</b>: {branch}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5775887550262546277>❗️</tg-emoji>】 <b>CPU</b>: {cpu_usage}\n├  【<tg-emoji emoji-id=5931409969613116639>🛡</tg-emoji>】 <b>RAM</b>: {ram_usage}\n├  【<tg-emoji emoji-id=5931472654660800739>📊</tg-emoji>】 <b>P1ng</b>: {ping}\n└</blockquote>\n<blockquote>┌\n├  【<tg-emoji emoji-id=5926783847453692661>🛡</tg-emoji>】 <b>Upd473</b>: {upd}\n├  【<tg-emoji emoji-id=5931415565955503486>🤖</tg-emoji>】 <b>H057</b>: {platform}\n├  【<tg-emoji emoji-id=5819078828017849357>🤖</tg-emoji>】 <b>OS</b>: {os}\n├  【<tg-emoji emoji-id=5819078828017849357>🤖</tg-emoji>】 <b>G0 V3r</b>: {go_ver}\n└</blockquote>"
@@ -623,6 +660,7 @@ translations:
   rpc_error: "<tg-emoji emoji-id=5877477244938489129>🚫</tg-emoji> <b>C4ll</b> <code>{}</code> <b>f41l3d du3 2 RPC 3rr:</b> <code>{}</code>"
   _cmd_doc_dllangpack: "[link to a langpack | empty to remove] - Ch4ng3 H3r0ku 7r4n5l473 p4ck (3x73rn4l)"
   _cmd_doc_setlang: "[languages in the order of priority] - Ch4ng3 d3f4ul7 l4ngu4g3"
+  _cmd_doc_listlangs: "L157 4v41l4bl3 0ff1c14l & m3m3 l4ngu4g35"
   _cls_doc: "Pr0c35535 1n73rn4l 7r4n5l4710n5"
 
 eval:

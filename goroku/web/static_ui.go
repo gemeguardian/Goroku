@@ -1,20 +1,41 @@
 package web
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
+// staticContentTypes pins Content-Type for embedded static assets so they are
+// served deterministically regardless of the host MIME registry.
+var staticContentTypes = map[string]string{
+	".css":   "text/css; charset=utf-8",
+	".js":    "application/javascript; charset=utf-8",
+	".json":  "application/json; charset=utf-8",
+	".png":   "image/png",
+	".jpg":   "image/jpeg",
+	".jpeg":  "image/jpeg",
+	".svg":   "image/svg+xml",
+	".ttf":   "font/ttf",
+	".woff":  "font/woff",
+	".woff2": "font/woff2",
+}
+
+// getPlatformEmoji returns a same-origin static path for the platform badge.
+// R4.1: previously pointed at raw.githubusercontent.com; the PNGs are now
+// vendored under assets/static and embedded into the binary.
 func (w *Web) getPlatformEmoji() string {
 	if os.Getenv("LAVHOST") != "" {
-		return "https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/victory-hand_270c-fe0f.png"
+		return "static/platform-victory.png"
 	} else if os.Getenv("DOCKER") != "" {
-		return "https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/spouting-whale_1f433.png"
+		return "static/platform-whale.png"
 	}
-	return "https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/waning-crescent-moon_1f318.png"
+	return "static/platform-moon.png"
 }
 
 func extractBlock(tpl, blockName string) string {
@@ -104,16 +125,57 @@ func webResourceDir(dataRoot string) string {
 	return "web-resources"
 }
 
+// readResource returns a template/resource by name, preferring a disk override
+// under the resolved web resource directory and falling back to the embedded
+// assets tree so onboarding renders with no on-disk resources installed.
+func (w *Web) readResource(name string) ([]byte, error) {
+	if data, err := os.ReadFile(filepath.Join(webResourceDir(w.dataRoot), name)); err == nil {
+		return data, nil
+	}
+	return embeddedAssets.ReadFile(path.Join("assets", name))
+}
+
+// staticHandler serves /static/* from disk when the operator ships an override
+// directory, otherwise from the embedded assets. R4.1: keeps the onboarding
+// panel offline (no CDN) while preserving the GOROKU_WEB_RESOURCES override.
+func (w *Web) staticHandler() http.Handler {
+	diskStaticDir := filepath.Join(webResourceDir(w.dataRoot), "static")
+	return http.HandlerFunc(func(wr http.ResponseWriter, r *http.Request) {
+		rel := strings.TrimPrefix(r.URL.Path, "/static/")
+		rel = strings.TrimPrefix(rel, "/")
+		if rel == "" || strings.Contains(rel, "..") {
+			http.NotFound(wr, r)
+			return
+		}
+		if info, err := os.Stat(filepath.Join(diskStaticDir, rel)); err == nil && !info.IsDir() {
+			http.ServeFile(wr, r, filepath.Join(diskStaticDir, rel))
+			return
+		}
+		data, err := embeddedAssets.ReadFile(path.Join("assets/static", rel))
+		if err != nil {
+			http.NotFound(wr, r)
+			return
+		}
+		ct, ok := staticContentTypes[strings.ToLower(filepath.Ext(rel))]
+		if !ok {
+			ct = http.DetectContentType(data)
+		}
+		wr.Header().Set("Content-Type", ct)
+		wr.Header().Set("Cache-Control", "public, max-age=3600")
+		http.ServeContent(wr, r, rel, time.Time{}, bytes.NewReader(data))
+	})
+}
+
 func (w *Web) RootHandler(wr http.ResponseWriter, r *http.Request) {
 	w.rememberSetupToken(wr, r)
-	resourceDir := webResourceDir(w.dataRoot)
-	baseBytes, err := os.ReadFile(filepath.Join(resourceDir, "base.jinja2"))
+
+	baseBytes, err := w.readResource("base.jinja2")
 	if err != nil {
 		http.Error(wr, "base template not found", http.StatusInternalServerError)
 		return
 	}
 
-	rootBytes, err := os.ReadFile(filepath.Join(resourceDir, "root.jinja2"))
+	rootBytes, err := w.readResource("root.jinja2")
 	if err != nil {
 		http.Error(wr, "root template not found", http.StatusInternalServerError)
 		return

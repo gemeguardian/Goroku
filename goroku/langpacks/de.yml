@@ -61,6 +61,9 @@ goroku_security:
   _cmd_doc_owneradd: "<Benutzer> - Benutzer zur Gruppe `owner` hinzufügen"
   _cmd_doc_ownerlist: "Zeigt eine Liste von Benutzern in der Gruppe `owner` an"
   _cmd_doc_ownerrm: "<Benutzer> - Benutzer aus der Gruppe `owner` entfernen"
+  _cmd_doc_sudolist: "Zeigt die Benutzer in der Gruppe `sudo` an"
+  _cmd_doc_sudoadd: "[Benutzer oder Antwort] - Fügt einen Benutzer zur Gruppe `sudo` hinzu"
+  _cmd_doc_sudorm: "[Benutzer oder Antwort] - Entfernt einen Benutzer aus der Gruppe `sudo`"
   _cmd_doc_security: "[Befehl] - Berechtigungen für den Befehl konfigurieren"
   _cmd_doc_tsec: "<\"user\"/\"chat\"/\"sgroup\"> [Zielbenutzer oder -chat] [Regel (Befehl/Modul)] [Zeit] - Eine neue zielgerichtete Sicherheitsregel hinzufügen\nBeispiele: .tsec user ban 1d, .tsec chat weather 1h, .tsec user HikariChat"
   _cmd_doc_tsecclr: "<\"user\"/\"chat\"/\"sgroup\"> - Zielgerichtete Sicherheitsregeln löschen\nBeispiele: .tsecclr user, .tsecclr chat"
@@ -141,6 +144,10 @@ goroku_settings:
   _cmd_doc_uninstall_goroku: "Goroku entfernen"
   _cmd_doc_watcherbl: "<Modul> - Aktiviere/deaktiviere Wächter im aktuellen Chat"
   _cmd_doc_watcher: "<Modul> - Verwaltung globaler Wächterregeln\nArgumente:\n[-c - nur in Chats]\n[-p - nur in privaten Nachrichten]\n[-o - nur ausgehende Nachrichten]\n[-i - nur eingehende Nachrichten]"
+  _cmd_doc_watchercmd: "<Wächter> [-c] [-p] [-o] [-i] - Schaltet einen Wächter global um oder setzt Filter für Chats, Privatnachrichten, ausgehende oder eingehende Nachrichten"
+  _cmd_doc_nonickcmdcmd: "<Befehl> - Schaltet NoNick für einen Befehl um"
+  _cmd_doc_remove_core_protection: "Deaktiviert nach Bestätigung den Schutz vor dem Ersetzen eingebauter Module und Befehle"
+  _cmd_doc_enable_core_protection: "Stellt nach Bestätigung den Schutz vor dem Ersetzen eingebauter Module und Befehle wieder her"
   _cmd_doc_watchers: "Zeigt aktive Wächter an"
   core_protection_already_removed: "<tg-emoji emoji-id=6003424016977628379>🔒</tg-emoji> <b>Kernschutz wurde bereits entfernt</b>"
   core_protection_already_enabled: "<tg-emoji emoji-id=6003424016977628379>🔒</tg-emoji> <b>kernschutz wurde bereits installiert</b>"
@@ -205,6 +212,10 @@ goroku_web:
   request_code: "🔃 Code erneut anfordern"
   code_expired: "Der Code ist abgelaufen."
   _cmd_doc_webpanel: "Öffnet einen Tunnel zur Goroku-Weboberfläche"
+  _cmd_doc_webrestart: "Startet den Goroku-Webserver auf seinem aktuellen Port neu"
+  _cmd_doc_webstop: "Stoppt den Goroku-Webserver"
+  _cmd_doc_approve_web: "<Token> - Bestätigt eine ausstehende Autorisierungsanfrage der Weboberfläche"
+  _cmd_doc_addacc: "[Benutzer oder Antwort] [force_insecure] - Startet den Anmeldevorgang zum Hinzufügen eines Kontos für einen Benutzer"
 
 goroku_backup:
   period: "⌚️ <b>Die Unit «ALPHA»</b> erstellt regelmäßig Backups. Diese Einstellungen können später geändert werden.\n\nBitte wählen Sie die Backup-Häufigkeit\n\n<b>🚫 Es ist daher nicht möglich, Module, die mit dem Befehl .lm aus Dateien heruntergeladen wurden, wiederherzustellen! Seien Sie vorsichtig und führen Sie vor der Wiederherstellung .backupmods aus.</b>"
@@ -218,6 +229,9 @@ goroku_backup:
   all_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>Ihre vollständige Sicherung wurde wiederhergestellt, Neustart...</b>"
   all_restored_bot: "🔄 Ihre vollständige Sicherung wurde wiederhergestellt, Neustart..."
   reply_to_file: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Antworten Sie mit einer JSON- oder ZIP-Datei</b>"
+  restore_db_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Datenbankwiederherstellung fehlgeschlagen:</b> <code>{}</code>"
+  restore_modules_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Modulwiederherstellung fehlgeschlagen:</b> <code>{}</code>"
+  restore_all_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Vollständige Wiederherstellung fehlgeschlagen:</b> <code>{}</code>"
   db_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>Datenbank aktualisiert, Neustart läuft…</b>"
   modules_backup: "<tg-emoji emoji-id=5431736674147114227>🗂</tg-emoji> <b>Modulsicherung ({})</b>\n\n<b>Sie können sie wiederherstellen mit:</b>\n<pre><code class=\"language-goroku\">{}restoremods</code></pre>"
   mods_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>Module wiederhergestellt, Neustart</b>"
@@ -264,6 +278,17 @@ presets:
   remove_from_folder_usage: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Geben Sie Ordner und Modul zum Entfernen an. </b> <code>{prefix}removefromfolder <ordner> <modul></code>"
   removed_from_folder: "<tg-emoji emoji-id=5436040291507247633>🎉</tg-emoji> <b>Modul {} aus Ordner entfernt</b> <code>{}</code>"
   module_not_in_folder: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Modul {} ist nicht im Ordner {}</b>"
+  _cmd_doc_preset: "[Name] [install] - Zeigt ein Preset an oder installiert alle enthaltenen Module"
+  _cmd_doc_presets: "Öffnet das Preset-Menü oder listet verfügbare Presets auf"
+  _cmd_doc_addpreset: "<Name> <Modul-URL> - Fügt einem benutzerdefinierten Preset ein Modul hinzu"
+  _cmd_doc_delpreset: "<Name> [Modul-URL] - Löscht ein benutzerdefiniertes Preset oder entfernt ein Modul daraus"
+  _cmd_doc_listpresets: "Listet eingebaute und benutzerdefinierte Presets auf"
+  _cmd_doc_loadpreset: "<Antwort auf Preset-JSON> - Zeigt ein Preset aus einer Datei an und installiert dessen Module"
+  _cmd_doc_addtofolder: "<Ordner> <Modul> - Fügt einem Ordner ein installiertes Modul hinzu"
+  _cmd_doc_folderload: "<Ordner> - Exportiert einen Modulordner als Preset-JSON-Datei"
+  _cmd_doc_removefromfolder: "<Ordner> <Modul> - Entfernt ein Modul aus einem Ordner"
+  _cmd_doc_loadaliases: "<Antwort auf Alias-JSON> - Importiert Befehlsaliase"
+  _cmd_doc_aliasload: "Exportiert Befehlsaliase als JSON-Datei"
   _cls_doc: "Schlägt neuen Goroku-Benutzern Modulsätze zum Laden vor"
 
 settings:
@@ -317,6 +342,10 @@ settings:
   _cmd_doc_delalias: "Entfernt einen Alias für einen Befehl"
   _cmd_doc_goroku: "Zeigt die Version von Goroku an"
   _cmd_doc_setprefix: "<Präfix> [Eigentümer] - Setzt den Befehlspräfix"
+  _cmd_doc_togglecmd: "<Modul> <Befehl> - Aktiviert oder deaktiviert einen Befehl"
+  _cmd_doc_togglemod: "<Modul> - Aktiviert oder deaktiviert alle Befehle eines Moduls"
+  _cmd_doc_clearmodule: "<Modul> - Löscht die Datenbankdaten und den Deaktivierungsstatus eines Moduls"
+  _cmd_doc_installation: "[-vds|-wsl|-ul] - Zeigt Anleitungen zur Installation von Goroku"
   _cmd_doc_unblacklist: "[Chat] - Aktiviert den Bot an einem bestimmten Ort"
   _cmd_doc_unblacklistuser: "[Benutzer] - Erlaubt einem Benutzer, Befehle auszuführen"
 
@@ -358,6 +387,7 @@ goroku_config:
   libraries: "📦 Bibliotheken"
   _cmd_doc_config: "Module konfigurieren"
   _cmd_doc_fconfig: "<Modul> <Einstellung> <Wert> - Setzt den Konfigurationswert für ein Modul"
+  _cmd_doc_dconfig: "<Modul> <Einstellung[, ...]> - Setzt Konfigurationswerte des Moduls zurück"
 
 inline_stuff:
   bot_username_invalid: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Ungültiger Bot-Benutzername. Er muss auf</b> <code>bot</code> <b>enden und mindestens 5 Zeichen lang sein</b>"
@@ -370,6 +400,8 @@ inline_stuff:
   restart: "🔄 Dein Goroku wird neu gestartet..."
   prefix_reset: "🔀 Präfix zurückgesetzt!"
   _cmd_doc_ch_goroku_bot: "<Benutzername> - Ändert den Benutzernamen des Inline-Bots"
+  _cmd_doc_ch_bot_token: "<Bot-Token> - Setzt das Token des Inline-Bots; zum Anwenden Goroku neu starten"
+  _cmd_doc_inlineinfo: "Zeigt den Benutzernamen und das maskierte Token des konfigurierten Inline-Bots"
 
 test:
   set_loglevel: "<tg-emoji emoji-id=5355133243773435190>🚫</tg-emoji> <b>Gib das Log-Level als Zahl oder String an</b>"
@@ -432,6 +464,9 @@ updater:
   _cmd_doc_source: "Zeigt den Link zum Quellcode des Projekts"
   _cmd_doc_update: "Lädt Updates für den Userbot herunter"
   _cmd_doc_rollback: "Macht Userbot-Updates rückgängig"
+  _cmd_doc_changelog: "Zeigt den neuesten Abschnitt des Änderungsprotokolls oder die letzten Commits"
+  _cmd_doc_autoupdate: "Schaltet die automatische Installation verfügbarer Updates um"
+  _cmd_doc_ubstop: "Deaktiviert automatische Updates und stoppt den Userbot-Prozess"
   update_required: "<tg-emoji emoji-id=5361979468887893611>🆕</tg-emoji> <b>Ein Goroku-Update ist verfügbar!</b>\n\nEine neue Version von Goroku wurde veröffentlicht.\n🔮 <b>Goroku <s>{}</s> -> {}</b>\n\n{}"
   more: "\n<i><b>🎥 Und noch {}...</b></i>"
   _cfg_doc_disable_notifications: "Update-Benachrichtigungen deaktivieren"
@@ -589,6 +624,7 @@ translations:
   rpc_error: "<tg-emoji emoji-id=5877477244938489129>🚫</tg-emoji> <b>Befehl</b> <code>{}</code> <b>ist wegen RPC-Fehler fehlgeschlagen:</b> <code>{}</code>"
   _cmd_doc_dllangpack: "[Link zum Paket | leer, um zu löschen] - Ändere das externe Übersetzungspaket"
   _cmd_doc_setlang: "[Sprachen] - Ändere die Standardsprache"
+  _cmd_doc_listlangs: "Listet verfügbare Sprachen auf und markiert die aktiven"
 
 eval:
   eval: "<tg-emoji emoji-id={}>💻</tg-emoji><b> Code:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5197688912457245639>✅</tg-emoji><b> Ergebnis:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"

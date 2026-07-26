@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -13,7 +14,10 @@ import (
 
 	"go.uber.org/zap"
 
+	"goroku/goroku/chatref"
 	"goroku/goroku/logger"
+
+	"github.com/gotd/td/tg"
 )
 
 // L returns the package-level zap logger.
@@ -101,49 +105,56 @@ func fwProtect() {
 	time.Sleep(1000 * time.Millisecond)
 }
 
-func getEntityFields(entity any) (int64, string, bool) {
+// Entity is an optional interface that custom entity types can implement to
+// participate in GetEntityURL/GetEntityID without reflection. Telegram gotd
+// types (*tg.User, *tg.Channel, tg.InputPeerClass implementers) and
+// chatref.EntityRef are handled by type switch directly; other types should
+// implement Entity.
+type Entity interface {
+	EntityID() int64
+	EntityUsername() string
+	EntityIsUser() bool
+}
+
+// entityFields extracts (id, username, isUser) from a Telegram entity using a
+// type switch over the concrete gotd types, chatref.EntityRef, and the Entity
+// interface. It replaces the previous reflect-based dispatch.
+func entityFields(entity any) (int64, string, bool) {
 	if entity == nil {
 		return 0, "", false
 	}
-	val := reflect.ValueOf(entity)
-	if val.Kind() == reflect.Ptr {
-		val = val.Elem()
-	}
-	if val.Kind() != reflect.Struct {
-		return 0, "", false
-	}
-
-	var id int64
-	var username string
-	isUser := false
-
-	idField := val.FieldByName("ID")
-	if idField.IsValid() {
-		switch idField.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			id = idField.Int()
+	switch e := entity.(type) {
+	case chatref.ChatRef:
+		return e.ID(), e.Username(), false
+	case *chatref.ChatRef:
+		if e == nil {
+			return 0, "", false
 		}
-	} else {
-		idField = val.FieldByName("Id")
-		if idField.IsValid() {
-			switch idField.Kind() {
-			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-				id = idField.Int()
-			}
-		}
+		return e.ID(), e.Username(), false
+	case *tg.User:
+		return e.ID, e.Username, true
+	case tg.User:
+		return e.ID, e.Username, true
+	case *tg.Channel:
+		return e.ID, e.Username, false
+	case tg.Channel:
+		return e.ID, e.Username, false
+	case *tg.InputPeerUser:
+		return e.UserID, "", true
+	case *tg.InputPeerUserFromMessage:
+		return e.UserID, "", true
+	case *tg.InputPeerChannel:
+		return e.ChannelID, "", false
+	case *tg.InputPeerChannelFromMessage:
+		return e.ChannelID, "", false
+	case *tg.InputPeerChat:
+		return e.ChatID, "", false
+	case *tg.InputPeerSelf:
+		return 0, "", true
+	case Entity:
+		return e.EntityID(), e.EntityUsername(), e.EntityIsUser()
 	}
-
-	usernameField := val.FieldByName("Username")
-	if usernameField.IsValid() && usernameField.Kind() == reflect.String {
-		username = usernameField.String()
-	}
-
-	typeName := val.Type().Name()
-	if strings.Contains(strings.ToLower(typeName), "user") {
-		isUser = true
-	}
-
-	return id, username, isUser
+	return 0, "", false
 }
 
 // GetLangFlag returns the country flag emoji from a 2-letter country code.
@@ -166,9 +177,28 @@ func GetLangFlag(countrycode string) string {
 	return countrycode
 }
 
-// GetEntityURL returns a link to the user/channel.
+// GetEntityRefURL returns a Telegram URL for a typed EntityRef. Pass isUser=true
+// for user references (UserRef) and false for channels/chats (ChannelRef).
+// When the ref carries a username, a tg://resolve URL is produced for non-user
+// refs; otherwise the numeric id is used.
+func GetEntityRefURL(ref chatref.EntityRef, isUser bool, openmessage bool) string {
+	if isUser {
+		if openmessage {
+			return fmt.Sprintf("tg://openmessage?id=%d", ref.ID())
+		}
+		return fmt.Sprintf("tg://user?id=%d", ref.ID())
+	}
+	if username := ref.Username(); username != "" {
+		return fmt.Sprintf("tg://resolve?domain=%s", username)
+	}
+	return ""
+}
+
+// GetEntityURL returns a link to the user/channel. It dispatches over the
+// concrete Telegram gotd types and chatref.EntityRef via a type switch (no
+// reflection). Custom types may implement the Entity interface.
 func GetEntityURL(entity any, openmessage bool) string {
-	id, username, isUser := getEntityFields(entity)
+	id, username, isUser := entityFields(entity)
 	if isUser {
 		if openmessage {
 			return fmt.Sprintf("tg://openmessage?id=%d", id)
@@ -357,7 +387,7 @@ func AssetChannel(
 	// 2. Create new channel (megagroup = !channel in python)
 	newPeer, err := creator.CreateChannel(title, description, !channel, forum)
 	if err != nil {
-		L().Info("AssetChannel failed to create channel: {0}", zap.Any("arg0", err))
+		L().Info("AssetChannel failed to create channel", zap.Error(err))
 		finish(nil)
 		return nil, false
 	}
@@ -472,14 +502,54 @@ func AssetForumTopic(
 	return topic, nil
 }
 
-// WaitForContentChannel waits until content channel exists in the database.
-func WaitForContentChannel(db Database, delay float64) int64 {
+// ErrContentChannelUnavailable reports that the content channel did not appear
+// in the database before the caller's deadline elapsed.
+var ErrContentChannelUnavailable = errors.New("goroku content channel unavailable")
+
+// DefaultContentChannelWait bounds how long WaitForContentChannel polls before
+// giving up. Callers that cannot proceed without the channel are expected to
+// degrade (for example, by sending to the originating chat instead).
+const DefaultContentChannelWait = 30 * time.Second
+
+// WaitForContentChannel polls the database until the content channel appears,
+// returning ErrContentChannelUnavailable once ctx is done or maxWait elapses,
+// whichever comes first. It never blocks indefinitely: an earlier version
+// looped forever without a deadline and, when the channel was never created,
+// pinned a dispatcher slot for the process lifetime while emitting one Info
+// line per poll.
+func WaitForContentChannel(ctx context.Context, db Database, delay, maxWait time.Duration) (int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if delay <= 0 {
+		delay = 3 * time.Second
+	}
+	if maxWait <= 0 {
+		maxWait = DefaultContentChannelWait
+	}
+	ctx, cancel := context.WithTimeout(ctx, maxWait)
+	defer cancel()
+
+	ticker := time.NewTicker(delay)
+	defer ticker.Stop()
+
+	logged := false
 	for {
 		if cid := db.GetInt64("goroku.forums", "channel_id", 0); cid != 0 {
-			return cid
+			return cid, nil
 		}
-		L().Info("Goroku content channel not found in database. Sleeping...")
-		time.Sleep(time.Duration(delay * float64(time.Second)))
+		if !logged {
+			// Logged once per call, not once per poll, to keep a missing channel
+			// from dominating log volume.
+			L().Info("Goroku content channel not in database yet; waiting",
+				zap.Duration("poll_interval", delay), zap.Duration("max_wait", maxWait))
+			logged = true
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return 0, fmt.Errorf("%w: %w", ErrContentChannelUnavailable, ctx.Err())
+		}
 	}
 }
 
@@ -493,18 +563,25 @@ func GetTopicID(db Database, topicName string) any {
 	return subCache[topicName]
 }
 
-// SetAvatar stubs setting entity avatar.
+// SetAvatar is not implemented and always reports failure.
+//
+// It previously returned true unconditionally while doing nothing, so callers
+// could not distinguish "avatar set" from "silently ignored". Reporting false
+// keeps that indistinguishable case from being mistaken for success. Implement
+// it against the Telegram photo API before relying on the result.
 func SetAvatar(client any, peer any, avatar string) bool {
 	fwProtect()
-	return true
+	return false
 }
 
-// GetTarget stubs getting a target ID from command.
+// GetTarget is not implemented and always returns nil.
+// Callers must treat nil as "no target resolved", not "no target given".
 func GetTarget(message any, argNo int) any {
 	return nil
 }
 
-// GetUser stubs fetching a user.
+// GetUser is not implemented and always returns nil.
+// Callers must treat nil as "lookup unavailable", not "user absent".
 func GetUser(message any) any {
 	return nil
 }
@@ -551,7 +628,7 @@ func GetChatID(message any) int64 {
 
 // GetEntityID returns entity ID.
 func GetEntityID(entity any) int64 {
-	id, _, _ := getEntityFields(entity)
+	id, _, _ := entityFields(entity)
 	return id
 }
 

@@ -79,14 +79,12 @@ func run() error {
 		func() goroku.Module { return &modules.GorokuBackup{} },
 		func() goroku.Module { return &modules.GorokuConfig{} },
 		func() goroku.Module { return &modules.GorokuInfo{} },
-		func() goroku.Module { return &modules.GorokuPluginSecurity{} },
 		func() goroku.Module { return &modules.GorokuSecurity{} },
 		func() goroku.Module { return &modules.GorokuSettings{} },
 		func() goroku.Module { return &modules.GorokuWeb{} },
 		func() goroku.Module { return &modules.InlineStuff{} },
 		func() goroku.Module { return &modules.LoaderModule{} },
 		func() goroku.Module { return &modules.Presets{} },
-		func() goroku.Module { return &modules.Quickstart{} },
 		func() goroku.Module { return &modules.SettingsModule{} },
 		func() goroku.Module { return &modules.TerminalMod{} },
 		func() goroku.Module { return &modules.Test{} },
@@ -94,6 +92,17 @@ func run() error {
 		func() goroku.Module { return &modules.TranslationsModule{} },
 		func() goroku.Module { return &modules.Updater{} },
 	})
+	app.SetClientReadyHook(modules.StartQuickstart)
+	if doctorFlagRequested(os.Args[1:]) {
+		app.ParseArguments()
+		if app.Doctor || app.ConfigValidate {
+			os.Exit(goroku.RunDoctor(goroku.DoctorOptions{
+				ConfigPath:         goroku.ConfigPath,
+				DataRoot:           goroku.BaseDir,
+				ConfigValidateOnly: app.ConfigValidate,
+			}))
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err = app.Run(ctx)
@@ -119,9 +128,19 @@ func restartRequested(err error) bool {
 	return errors.Is(err, goroku.ErrRestartRequested)
 }
 
+func doctorFlagRequested(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "--doctor", "--doctor=true", "--config-validate", "--config-validate=true":
+			return true
+		}
+	}
+	return false
+}
+
 func nextRestartGuard(first, second bool) (setFirst, setSecond bool, err error) {
 	if second {
-		return false, false, fmt.Errorf("GorokuTL version 1.0.2 or higher is required")
+		return false, false, fmt.Errorf("restart aborted: the process already restarted twice without becoming healthy")
 	}
 	if first {
 		return false, true, nil

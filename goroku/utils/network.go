@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -27,7 +28,7 @@ func ResolveDomain(domain string) string {
 }
 
 func IsPortOpen(host string, port int) bool {
-	address := fmt.Sprintf("%s:%d", host, port)
+	address := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", address, 1*time.Second)
 	if err != nil {
 		return false

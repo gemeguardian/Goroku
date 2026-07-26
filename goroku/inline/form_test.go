@@ -52,7 +52,7 @@ func (m *mockTelegramClient) SendInlineBotResult(chatID int64, queryID int64, re
 	return &tg.Updates{}, nil
 }
 func (m *mockTelegramClient) TGIDValue() int64 { return 0 }
-func (m *mockTelegramClient) SendMessage(chat chatref.ChatRef, message string) (any, error) {
+func (m *mockTelegramClient) SendMessage(chat chatref.ChatRef, message string) (chatref.SentMessage, error) {
 	return nil, nil
 }
 func (m *mockTelegramClient) CreateGorokuFolder(botID int64) error                   { return nil }
@@ -155,7 +155,7 @@ func TestFormSuccessful(t *testing.T) {
 type badTelegramClient struct{}
 
 func (b *badTelegramClient) TGIDValue() int64 { return 0 }
-func (b *badTelegramClient) SendMessage(chat chatref.ChatRef, message string) (any, error) {
+func (b *badTelegramClient) SendMessage(chat chatref.ChatRef, message string) (chatref.SentMessage, error) {
 	return nil, nil
 }
 func (b *badTelegramClient) CreateGorokuFolder(botID int64) error                   { return nil }

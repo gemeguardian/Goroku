@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const processExecutorConcurrency = 4
+const processExecutorConcurrency = 1
 
 // ProcessResult is the structured outcome of a managed external process.
 type ProcessResult struct {

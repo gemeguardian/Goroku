@@ -112,7 +112,17 @@ func (m *GorokuSecurity) loadGroups() (map[string]securityGroup, error) {
 
 	rawMap, ok := raw.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("goroku.security sgroups has type %T, want map", raw)
+		if typedGroups, typed := raw.(map[string]goroku.SecurityGroup); typed {
+			rawMap = make(map[string]any, len(typedGroups))
+			for name, group := range typedGroups {
+				rawMap[name] = securityGroup{Users: group.Users, Permissions: group.Permissions}
+			}
+			if err := m.db.Set("goroku.security", "sgroups", rawMap); err != nil {
+				return nil, fmt.Errorf("migrate security groups: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("goroku.security sgroups has type %T, want map", raw)
+		}
 	}
 
 	for name, val := range rawMap {

@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -25,28 +24,12 @@ import (
 var (
 	ErrDatabaseClosed          = errors.New("database closed")
 	ErrDatabaseNotInitialized  = errors.New("database not initialized")
-	ErrDatabaseWriteProtected  = errors.New("database write protected")
 	ErrDatabaseInvalidValue    = errors.New("invalid database value")
 	ErrDatabasePersistence     = errors.New("database persistence failure")
 	ErrDatabaseCommitUncertain = errors.New("database commit completed with uncertain durability")
 	ErrDatabaseNoRevision      = errors.New("database has no revision")
 	ErrDatabaseCorrupt         = errors.New("database file corrupt")
 	errAtomicWriteCommitted    = errors.New("atomic file rename committed")
-
-	dbProtectedOwners = map[string]bool{
-		"GorokuPluginSecurity": true,
-	}
-	dbAllowedWriters = map[string]bool{
-		"goroku/goroku/modules.(*GorokuPluginSecurity).UnexternalCmd": true,
-		"goroku/goroku/modules.(*GorokuPluginSecurity).ExternalCmd":   true,
-		"goroku/goroku/modules.(*GorokuPluginSecurity).AllowmodCmd":   true,
-		"goroku/goroku/modules.(*GorokuPluginSecurity).DenymodCmd":    true,
-		"goroku/goroku/modules.(*GorokuPluginSecurity).TrustmodCmd":   true,
-		// Content-digest trust writes (called from TrustmodCmd/AllowmodCmd).
-		"goroku/goroku/modules.trustContentDigest": true,
-		// Content-digest untrust writes (called from TrustmodCmd/ExternalCmd/DenymodCmd).
-		"goroku/goroku/modules.untrustContentDigest": true,
-	}
 )
 
 // DatabaseError adds operation and storage context while preserving errors.Is/errors.As.
@@ -156,7 +139,7 @@ func (db *Database) Init(redisURI string) error {
 		cancel()
 		if err != nil {
 			redisDirty = true
-			L().Info("Database Redis startup sync failed: {0}", zap.Any("arg0", err))
+			L().Warn("Database Redis startup sync failed", zap.Error(err))
 		} else {
 			lastRedisSave = time.Now().Unix()
 		}
@@ -234,7 +217,7 @@ func (db *Database) redisFlushLoop(ctx context.Context, done chan struct{}) {
 			return
 		case <-ticker.C:
 			if err := db.flushRedis(ctx); err != nil && ctx.Err() == nil {
-				L().Info("Database Redis flush failed: {0}", zap.Any("arg0", err))
+				L().Warn("Database Redis flush failed", zap.Error(err))
 			}
 		}
 	}
@@ -382,7 +365,7 @@ func (db *Database) loadLocal(dbFile string) (map[string]map[string]any, localLo
 			}
 			return make(map[string]map[string]any), localLoadStatus{primaryMissing: true}
 		}
-		L().Info("Error reading database file: {0}", zap.Any("arg0", err))
+		L().Warn("Error reading database file", zap.Error(err))
 		if data, ok, label := db.readLastValid(dbFile); ok {
 			L().Warn("Database primary unreadable; recovered from last-valid copy",
 				zap.String("path", dbFile),
@@ -406,7 +389,7 @@ func (db *Database) loadLocal(dbFile string) (map[string]map[string]any, localLo
 		return parsed, localLoadStatus{valid: true, source: "primary"}
 	}
 
-	L().Info("Database read failed! Error: {0}", zap.Any("arg0", err))
+	L().Error("Database read failed! Error", zap.Error(err))
 	if data, ok, label := db.readLastValid(dbFile); ok {
 		L().Warn("Database recovered from last-valid copy",
 			zap.String("path", dbFile),
@@ -498,9 +481,12 @@ func (db *Database) commitCandidate(operation, owner, key string, candidate map[
 		return err
 	}
 	dbFile := db.dbFile
+	// The outgoing state is retained by reference rather than deep-copied: it is
+	// about to be replaced wholesale by candidate, not mutated, and nothing else
+	// holds a mutable reference to it. Copying it here doubled the per-write cost.
 	var previous map[string]map[string]any
 	if recordRevision {
-		previous = db.deepCopy(db.data)
+		previous = db.data
 	}
 	db.mu.RUnlock()
 	persistErr := db.writeLocal(dbFile, bytes)
@@ -589,7 +575,7 @@ func (db *Database) recordRedisError(operation, owner, key string, cause error) 
 	db.mu.Lock()
 	db.lastRedisErr = err
 	db.mu.Unlock()
-	L().Info("Database Redis mirror failed: {0}", zap.Any("arg0", err))
+	L().Warn("Database Redis mirror failed", zap.Error(err))
 }
 
 func (db *Database) flushRedis(ctx context.Context) error {
@@ -1591,18 +1577,9 @@ func (db *Database) Set(owner, key string, value any) error {
 		return err
 	}
 	db.mu.RUnlock()
-	// Stack trace check for write permissions
-	if dbProtectedOwners[owner] {
-		caller := db.getWriteCaller()
-		if !dbAllowedWriters[caller] {
-			L().Info("Blocked db write to protected owner={0} key={1} from {2}", zap.Any("arg0", owner), zap.Any("arg1", key), zap.Any("arg2", caller))
-			return databaseError("set", owner, key, "", ErrDatabaseWriteProtected, nil)
-		}
-	}
-
 	cloned, err := cloneJSONValue(value)
 	if err != nil {
-		L().Info("Attempted to write non-serializable object to db key={0}: {1}", zap.Any("arg0", key), zap.Any("arg1", err))
+		L().Error("Attempted to write non-serializable object to db key", zap.Any("key", key), zap.Error(err))
 		return databaseError("set", owner, key, "local", ErrDatabaseInvalidValue, err)
 	}
 
@@ -1613,7 +1590,7 @@ func (db *Database) Set(owner, key string, value any) error {
 		db.mu.RUnlock()
 		return err
 	}
-	candidate := db.deepCopy(db.data)
+	candidate := db.copyForWrite(owner)
 	db.mu.RUnlock()
 	if candidate[owner] == nil {
 		candidate[owner] = make(map[string]any)
@@ -1635,7 +1612,7 @@ func (db *Database) Delete(owner, key string) error {
 		db.mu.RUnlock()
 		return err
 	}
-	candidate := db.deepCopy(db.data)
+	candidate := db.copyForWrite(owner)
 	db.mu.RUnlock()
 	if mod, ok := candidate[owner]; ok {
 		delete(mod, key)
@@ -1657,7 +1634,7 @@ func (db *Database) Reset(data map[string]map[string]any) error {
 	db.mu.RUnlock()
 	cloned, err := cloneJSONValue(data)
 	if err != nil {
-		L().Info("Attempted to reset db with non-serializable data: {0}", zap.Any("arg0", err))
+		L().Error("Attempted to reset db with non-serializable data", zap.Error(err))
 		return databaseError("reset", "", "", "local", ErrDatabaseInvalidValue, err)
 	}
 	newData := cloned.(map[string]map[string]any)
@@ -1665,22 +1642,6 @@ func (db *Database) Reset(data map[string]map[string]any) error {
 	db.persistMu.Lock()
 	defer db.persistMu.Unlock()
 	return db.commitCandidate("reset", "", "", newData, true)
-}
-
-func (db *Database) getWriteCaller() string {
-	pc := make([]uintptr, 10)
-	n := runtime.Callers(3, pc)
-	frames := runtime.CallersFrames(pc[:n])
-	for {
-		frame, more := frames.Next()
-		if !strings.Contains(frame.Function, "Database") && !strings.Contains(frame.Function, "pointers") {
-			return frame.Function
-		}
-		if !more {
-			break
-		}
-	}
-	return "unknown"
 }
 
 // PointerChecked returns a PointerList, PointerDict, or scalar value depending
@@ -1731,20 +1692,13 @@ func (db *Database) Update(items map[string]map[string]any) error {
 	db.mu.RUnlock()
 	cloned, err := cloneJSONValue(items)
 	if err != nil {
-		L().Info("Attempted to bulk write non-serializable data: {0}", zap.Any("arg0", err))
+		L().Error("Attempted to bulk write non-serializable data", zap.Error(err))
 		return databaseError("update", "", "", "local", ErrDatabaseInvalidValue, err)
 	}
 
 	updates := make(map[string]map[string]any, len(items))
 	for owner, keys := range cloned.(map[string]map[string]any) {
 		normOwner := db.normalizeOwner(owner)
-		if dbProtectedOwners[normOwner] {
-			caller := db.getWriteCaller()
-			if !dbAllowedWriters[caller] {
-				L().Info("Blocked bulk db write to protected owner={0} from {1}", zap.Any("arg0", normOwner), zap.Any("arg1", caller))
-				return databaseError("update", normOwner, "", "", ErrDatabaseWriteProtected, nil)
-			}
-		}
 		if updates[normOwner] == nil {
 			updates[normOwner] = make(map[string]any, len(keys))
 		}
@@ -1760,7 +1714,28 @@ func (db *Database) Update(items map[string]map[string]any) error {
 		db.mu.RUnlock()
 		return err
 	}
-	candidate := db.deepCopy(db.data)
+	changed := false
+	for owner, keys := range updates {
+		current := db.data[owner]
+		for key, value := range keys {
+			if current == nil || !reflect.DeepEqual(current[key], value) {
+				changed = true
+				break
+			}
+		}
+		if changed {
+			break
+		}
+	}
+	if !changed {
+		db.mu.RUnlock()
+		return nil
+	}
+	touched := make([]string, 0, len(updates))
+	for owner := range updates {
+		touched = append(touched, owner)
+	}
+	candidate := db.copyForWrite(touched...)
 	db.mu.RUnlock()
 	for owner, keys := range updates {
 		if _, ok := candidate[owner]; !ok {
@@ -1783,7 +1758,8 @@ func (db *Database) DeleteOwner(owner string) error {
 		db.mu.RUnlock()
 		return err
 	}
-	candidate := db.deepCopy(db.data)
+	// Only the outer map changes, so no owner map needs copying.
+	candidate := db.copyForWrite()
 	db.mu.RUnlock()
 	delete(candidate, owner)
 	return db.commitCandidate("delete_owner", owner, "", candidate, true)
@@ -1794,6 +1770,37 @@ func (db *Database) GetAll() map[string]map[string]any {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	return db.deepCopy(db.data)
+}
+
+// copyForWrite returns a detached candidate state that shares every owner map
+// with db.data except those named, which are shallow-copied so the caller can
+// add or remove keys in them. db.mu must be held for reading.
+//
+// Sharing is safe because owner maps and the values inside them are never
+// mutated in place: readers get deep copies (Get and the typed getters), and
+// writers always publish a fresh map through commitCandidate. Deep-copying the
+// whole database for a single-key write made every Set cost O(entire database)
+// in reflection-based cloning, on top of the full re-serialisation that
+// commitCandidate already performs.
+func (db *Database) copyForWrite(owners ...string) map[string]map[string]any {
+	candidate := make(map[string]map[string]any, len(db.data)+1)
+	for owner, values := range db.data {
+		candidate[owner] = values
+	}
+	for _, owner := range owners {
+		existing, ok := db.data[owner]
+		if !ok {
+			// Absent owners stay absent; callers decide whether to create one,
+			// matching the previous deepCopy-based behaviour exactly.
+			continue
+		}
+		replacement := make(map[string]any, len(existing)+1)
+		for key, value := range existing {
+			replacement[key] = value
+		}
+		candidate[owner] = replacement
+	}
+	return candidate
 }
 
 func (db *Database) deepCopy(src map[string]map[string]any) map[string]map[string]any {
@@ -1988,8 +1995,8 @@ func cloneReflectValue(src reflect.Value, seen map[cloneVisit]reflect.Value) ref
 
 // StoreAsset stores a message or file to the assets channel.
 // Thin façade over AssetRepository; does not hold DB locks during Telegram RPC.
-func (db *Database) StoreAsset(message any) (int, error) {
-	return db.assets.StoreAsset(message)
+func (db *Database) StoreAsset(input AssetInput) (int, error) {
+	return db.assets.StoreAsset(input)
 }
 
 // FetchAsset fetches a previously saved asset by its asset_id.

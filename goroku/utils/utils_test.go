@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -257,8 +258,8 @@ func TestPlatformUtils(t *testing.T) {
 	}
 
 	cpu := GetCPUUsage()
-	if cpu != "0.00" {
-		t.Errorf("Expected GetCPUUsage to be '0.00', got %q", cpu)
+	if _, err := strconv.ParseFloat(cpu, 64); err != nil {
+		t.Errorf("GetCPUUsage returned invalid percentage %q", cpu)
 	}
 
 	platform := GetPlatformName()
@@ -274,6 +275,18 @@ func TestPlatformUtils(t *testing.T) {
 	goPath := GetGoPath()
 	if goPath == "" {
 		t.Error("GetGoPath returned empty string")
+	}
+}
+
+func TestProcessMetricsParsers(t *testing.T) {
+	rss, err := processRSSFromStatus([]byte("Name:\tgoroku\nVmRSS:\t  12345 kB\n"))
+	if err != nil || rss != 12345 {
+		t.Fatalf("processRSSFromStatus() = %d, %v", rss, err)
+	}
+
+	ticks, err := processCPUTicksFromStat([]byte("42 (goroku worker) R 0 0 0 0 0 0 0 0 0 0 37 5"))
+	if err != nil || ticks != 42 {
+		t.Fatalf("processCPUTicksFromStat() = %d, %v", ticks, err)
 	}
 }
 

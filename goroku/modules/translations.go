@@ -241,7 +241,7 @@ func (m *TranslationsModule) ChooseLanguage(msg any, isMeme bool) error {
 
 	var err error
 	if msgObj, ok := msg.(*goroku.Message); ok {
-		_, err = im.Form(text, msgObj, markup)
+		_, err = im.Form(text, msgObj, markup, inline.WithModule(m.Name()))
 	} else if callObj, ok := msg.(inline.CallbackQuery); ok {
 		err = callObj.Edit(text, im.GenerateMarkup(markup))
 	}

@@ -61,6 +61,9 @@ goroku_security:
   _cmd_doc_owneradd: "<юзер> - Закинуть в `owner` (дать админку)"
   _cmd_doc_ownerlist: "Чекнуть кто в `owner`"
   _cmd_doc_ownerrm: "<юзер> - Кикнуть из `owner`"
+  _cmd_doc_sudolist: "Чекнуть кто в `sudo`"
+  _cmd_doc_sudoadd: "<юзер/реплай> - Закинуть в `sudo`"
+  _cmd_doc_sudorm: "<юзер/реплай> - Кикнуть из `sudo`"
   _cmd_doc_security: "[команда] - Настроить права, кто может юзать"
   _cmd_doc_tsec: "<\"user\"/\"chat\"/\"sgroup\"> [цель] [правило] [время] - Добавить правило, чтоб не абузили\nТипа: .tsec user ban 1d"
   _cmd_doc_tsecclr: "<\"user\"/\"chat\"/\"sgroup\"> - Вайпнуть все правила"
@@ -141,7 +144,11 @@ goroku_settings:
   _cmd_doc_uninstall_goroku: "Удалить Goroku (самовыпил)"
   _cmd_doc_watcherbl: "<module> - Оффнуть сталкера в текущем чате"
   _cmd_doc_watcher: "<модуль> - Управление сталкерами\nКлючи:\n[-c - только чаты]\n[-p - только лс]\n[-o - исходящие]\n[-i - входящие]"
+  _cmd_doc_watchercmd: "<модуль> [-c|-p|-o|-i] - Врубить/вырубить сталкера или задать фильтры"
+  _cmd_doc_nonickcmdcmd: "<команда> - Врубить/вырубить NoNick для команды"
   _cmd_doc_watchers: "Че там по сталкерам"
+  _cmd_doc_remove_core_protection: "Снять защиту встроенных модулей (опасная тема)"
+  _cmd_doc_enable_core_protection: "Вернуть защиту встроенных модулей"
   core_protection_already_removed: "<tg-emoji emoji-id=6003424016977628379>🔒</tg-emoji> <b>Защита ядра уже снята (ты опасный)</b>"
   core_protection_already_enabled: "<tg-emoji emoji-id=6003424016977628379>🔒</tg-emoji> <b>Защита ядра стоит</b>"
   core_protection_confirm: "⚠️ <b>ЧИТАЙ, БЛИН!</b>\n\nСнимаешь защиту - сам виноват, если все сломаешь. Обычным людям это <b>не надо</b>. Если ты не кодер - <b>не лезь</b>. Сомневаешься - <b>не лезь</b>.\n\n<b>Точно снимаем защиту?</b>"
@@ -182,6 +189,10 @@ goroku_web:
   host_denied: "<tg-emoji emoji-id=6037254263187443802>💬</tg-emoji> Хостинг не разрешает, сорян. Пиши админам хостинга."
   web_btn: "🌍 Веб-морда"
   _cmd_doc_webpanel: "Открыть туннель к вебу"
+  _cmd_doc_webrestart: "Ребутнуть веб-сервер"
+  _cmd_doc_webstop: "Стопнуть веб-сервер"
+  _cmd_doc_approve_web: "<токен> - Одобрить вход в веб-морду"
+  _cmd_doc_addacc: "<юзер/реплай> [force_insecure] - Подрубить еще один акк через форму входа"
   btn_yes: "🚸 Пофиг, давай"
   btn_no: "🔻 Не надо"
   lavhost_web: "✌️ <b>Это ссылка на веб Goroku на lavHost</b>\n\n<i>💡 Надо залогиниться данными от lavHost</i>"
@@ -218,6 +229,9 @@ goroku_backup:
   all_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>Фулл бэкап накатил, ребутаюсь....</b>"
   all_restored_bot: "🔄 Фулл бэкап накатил, ребутаюсь..."  
   reply_to_file: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Реплайни на .json или .zip, ну</b>"
+  restore_db_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>База не восстановилась:</b> <code>{}</code>"
+  restore_modules_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Модули не восстановились:</b> <code>{}</code>"
+  restore_all_failed: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Фулл бэкап не восстановился:</b> <code>{}</code>"
   db_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>Базу накатил, ребут...</b>"
   modules_backup: "<tg-emoji emoji-id=5431736674147114227>🗂</tg-emoji> <b>Бэкап модов ({})</b>\n\n<b>Восстановить:</b>\n<pre><code class=\"language-goroku\">{}restoremods</code></pre>"
   mods_restored: "<tg-emoji emoji-id=5774134533590880843>🔄</tg-emoji> <b>Моды вернул, ребут</b>"
@@ -265,6 +279,17 @@ presets:
   removed_from_folder: "<tg-emoji emoji-id=5436040291507247633>🎉</tg-emoji> <b>Модуль {} удален из папки</b> <code>{}</code>"
   module_not_in_folder: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Модуль {} не находится в папке {}</b>"
   _cls_doc: "Предлагает свежим адептам сборки модулей для загрузки"
+  _cmd_doc_preset: "[пак] [install] - Чекнуть или накатить пак модулей"
+  _cmd_doc_presets: "Открыть меню паков модулей"
+  _cmd_doc_addpreset: "<пак> <ссылка> - Добавить модуль в свой пак"
+  _cmd_doc_delpreset: "<пак> [ссылка] - Снести свой пак или модуль из него"
+  _cmd_doc_listpresets: "Показать все паки модулей"
+  _cmd_doc_loadpreset: "<реплай на JSON> - Импортнуть и накатить пак"
+  _cmd_doc_addtofolder: "<папка> <модуль> - Закинуть установленный модуль в папку"
+  _cmd_doc_folderload: "<папка> - Экспортнуть папку модулей в JSON-пак"
+  _cmd_doc_removefromfolder: "<папка> <модуль> - Убрать модуль из папки"
+  _cmd_doc_loadaliases: "<реплай на JSON> - Импортнуть алиасы"
+  _cmd_doc_aliasload: "Экспортнуть алиасы в JSON"
 
 settings:
   choose_installation: "<tg-emoji emoji-id=5363805650327450240>🪐</tg-emoji> <b>Где ставить будем?</b>"
@@ -317,6 +342,10 @@ settings:
   _cmd_doc_delalias: "Удалить алиас"
   _cmd_doc_goroku: "Версия Goroku"
   _cmd_doc_setprefix: "<префикс> [овнер] - Сменить префикс"
+  _cmd_doc_togglecmd: "<модуль> <команда> - Врубить/вырубить команду"
+  _cmd_doc_togglemod: "<модуль> - Врубить/вырубить модуль"
+  _cmd_doc_clearmodule: "<модуль> - Вайпнуть его настройки и вернуть из отключенных"
+  _cmd_doc_installation: "[-vds|-wsl|-ul] - Показать гайд по установке"
   _cmd_doc_unblacklist: "[чат] - Врубить бота тут"
   _cmd_doc_unblacklistuser: "[юзер] - Разрешить юзеру юзать бота"
 
@@ -358,6 +387,7 @@ goroku_config:
   libraries: "📦 Либы"
   _cmd_doc_config: "Настроить модули"
   _cmd_doc_fconfig: "<модуль> <опция> <значение> - быстро поменять конфиг"
+  _cmd_doc_dconfig: "<модуль> <опция[, ...]> - сбросить значение(я) конфига"
 
 inline_stuff:
   bot_username_invalid: "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Ник кривой. Должен быть с</b> <code>bot</code> <b>на конце и от 5 символов</b>"
@@ -370,6 +400,8 @@ inline_stuff:
   restart: "🔄 Ребутаюсь..."
   prefix_reset: "🔀 Префикс сбросил!"
   _cmd_doc_ch_goroku_bot: "<юзернейм> - Сменить ник инлайн бота"
+  _cmd_doc_ch_bot_token: "<токен> - Сохранить токен инлайн-бота (нужен ребут)"
+  _cmd_doc_inlineinfo: "Чекнуть ник и замаскированный токен инлайн-бота"
 
 test:
   set_loglevel: "<tg-emoji emoji-id=5355133243773435190>🚫</tg-emoji> <b>Уровень логов дай (числом или словом)</b>"
@@ -439,6 +471,9 @@ updater:
   _cmd_doc_source: "Ссылка на гит"
   _cmd_doc_update: "Качает обнову"
   _cmd_doc_rollback: "Откатывает обнову"
+  _cmd_doc_changelog: "Показать свежий чейнджлог или последние коммиты"
+  _cmd_doc_autoupdate: "Врубить/вырубить автообновы"
+  _cmd_doc_ubstop: "Оффнуть автообновы и стопнуть юб"
 
 api_protection:
   warning: "⚠️ <b>ЭЭЭ СТОПЭ!</b>\n\nТы превысил лимиты запросов. Чтоб телега не дала спамбан, юзербот <b>ушел в фриз</b> на {} секунд. Инфа в файле. \n\nИди в <code>{prefix}support</code> поплачь!\n\nЕсли так и надо, жди таймер, а потом юзай <code>{prefix}suspend_api_protect</code> &lt;секунды&gt;"
@@ -592,6 +627,7 @@ translations:
   rpc_error: "<tg-emoji emoji-id=5877477244938489129>🚫</tg-emoji> <b>Команда</b> <code>{}</code> <b>рипнулась (RPC Error):</b> <code>{}</code>"
   _cmd_doc_dllangpack: "[ссылка | пусто = удалить] - Внешний пак перевода"
   _cmd_doc_setlang: "[языки] - Сменить язык"
+  _cmd_doc_listlangs: "Показать все языки и какой щас активен"
 
 eval:
   eval: "<tg-emoji emoji-id={}>💻</tg-emoji><b> Говнокод:</b>\n<pre><code class=\"language-{}\">{}</code></pre>\n\n<tg-emoji emoji-id=5197688912457245639>✅</tg-emoji><b> Выхлоп:</b>\n<pre><code class=\"language-{}\">{}</code></pre>"
@@ -618,7 +654,7 @@ translate:
   no_args: "<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>Аргументы где?</b>"
   error: "<tg-emoji emoji-id=5210952531676504517>❌</tg-emoji> <b>Не перевелось (скилл ишью)</b>"
   language: "ru"
-  translated_text: "<tg-emoji emoji-id=\"5972247240217988372\">🅰</tg-emoji> Перевод:\n<blockquote>{tr_text} <\/blockquote>"
+  translated_text: "<tg-emoji emoji-id=\"5972247240217988372\">🅰</tg-emoji> Перевод:\n<blockquote>{tr_text} </blockquote>"
   _cls_doc: "Переводчик"
   _cmd_doc_translate: "[язык] [текст] - Перевести"
 

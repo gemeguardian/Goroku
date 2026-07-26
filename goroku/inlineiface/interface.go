@@ -24,6 +24,7 @@ type InlineManager interface {
 	IsComplete() bool
 	GetBotAPI() *tgbotapi.BotAPI
 	GetUnit(unitID string) (*inline.Unit, bool)
+	StoreUnit(unitID string, unit *inline.Unit)
 	CheckBot(username string) (bool, error)
 	BotUsernameStr() string
 	BotIDVal() int64

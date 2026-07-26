@@ -55,3 +55,13 @@ func (r ChatRef) AsLegacy() any {
 	}
 	return r.id
 }
+
+// SentMessage is the typed result of sending a Telegram message. It is the
+// return type of the SendMessage methods on webiface.TelegramClient and
+// inline.InlineUserBot, and is implemented by the concrete client's send
+// result wrapper. It is defined here (rather than webiface) so both the inline
+// manager and the web interface port share one low-level typed reference
+// without the inline package depending on the web interface package.
+type SentMessage interface {
+	SentMessageID() int64
+}

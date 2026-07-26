@@ -22,6 +22,23 @@ type registrationTestModule struct {
 	watcherMeta []CommandMeta
 }
 
+type stagedLoopTestModule struct {
+	registrationTestModule
+	modules *Modules
+	ticked  chan struct{}
+	once    sync.Once
+}
+
+func (m *stagedLoopTestModule) SetAllModules(modules *Modules) { m.modules = modules }
+func (m *stagedLoopTestModule) Init(*CustomTelegramClient, *Database) error {
+	loop := NewInfiniteLoop(func() error {
+		m.once.Do(func() { close(m.ticked) })
+		return nil
+	}, time.Millisecond, m.name, true)
+	m.modules.RegisterLoop(loop)
+	return nil
+}
+
 func (m *registrationTestModule) Name() string                                { return m.name }
 func (m *registrationTestModule) Strings() map[string]string                  { return nil }
 func (m *registrationTestModule) Init(*CustomTelegramClient, *Database) error { return nil }
@@ -86,6 +103,99 @@ func TestRegisterModuleRejectsCommandAndAliasCollisionsAtomically(t *testing.T) 
 				t.Fatal("first registration was changed by collision")
 			}
 		})
+	}
+}
+
+func TestRegisterModuleReadyPublishesOnlyAfterReadiness(t *testing.T) {
+	db := initializedTestDatabase(t, NewDatabase(42))
+	client := NewCustomTelegramClient(42)
+	modules := NewModules(client, db)
+	mod := &registrationTestModule{
+		name:     "staged",
+		commands: map[string]CommandHandler{"staged": testHandler("ready")},
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- modules.RegisterModuleReady(mod, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	if modules.LookupByName(mod.Name()) != nil {
+		t.Fatal("staged module became visible before readiness completed")
+	}
+	if _, ok := modules.Dispatch("staged"); ok {
+		t.Fatal("staged command became visible before readiness completed")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if modules.LookupByName(mod.Name()) != mod {
+		t.Fatal("ready module was not published")
+	}
+	if _, ok := modules.Dispatch("staged"); !ok {
+		t.Fatal("ready command was not published")
+	}
+}
+
+func TestRegisterModuleReadyFailureReleasesNamespace(t *testing.T) {
+	db := initializedTestDatabase(t, NewDatabase(42))
+	client := NewCustomTelegramClient(42)
+	modules := NewModules(client, db)
+	cause := errors.New("readiness failed")
+	failed := &registrationTestModule{name: "staged-failure", commands: map[string]CommandHandler{"retry": testHandler("failed")}}
+	if err := modules.RegisterModuleReady(failed, func() error { return cause }); !errors.Is(err, cause) {
+		t.Fatalf("readiness error = %v, want cause", err)
+	}
+	if modules.LookupByName(failed.Name()) != nil {
+		t.Fatal("failed staged module was published")
+	}
+	retry := &registrationTestModule{name: failed.Name(), commands: map[string]CommandHandler{"retry": testHandler("ok")}}
+	if err := modules.RegisterModule(retry); err != nil {
+		t.Fatalf("namespace remained reserved after readiness failure: %v", err)
+	}
+}
+
+func TestRegisterModuleReadyDefersAutostartLoopsUntilCommit(t *testing.T) {
+	db := initializedTestDatabase(t, NewDatabase(42))
+	client := NewCustomTelegramClient(42)
+	modules := NewModules(client, db)
+	mod := &stagedLoopTestModule{
+		registrationTestModule: registrationTestModule{name: "staged-loop"},
+		ticked:                 make(chan struct{}),
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- modules.RegisterModuleReady(mod, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	select {
+	case <-mod.ticked:
+		t.Fatal("staged loop ran before module publication")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mod.ticked:
+	case <-time.After(time.Second):
+		t.Fatal("autostart loop did not run after module publication")
+	}
+	if err := modules.UnloadModule(mod.Name()); err != nil {
+		t.Fatal(err)
 	}
 }
 

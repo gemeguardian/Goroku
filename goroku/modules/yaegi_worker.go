@@ -50,8 +50,30 @@ type yaegiMsgSnap struct {
 }
 
 type yaegiClientSnap struct {
-	TGID     int64  `json:"tg_id"`
-	Username string `json:"username"`
+	TGID     int64          `json:"tg_id"`
+	Username string         `json:"username"`
+	GorokuMe *yaegiUserSnap `json:"goroku_me,omitempty"`
+}
+
+type yaegiUserSnap struct {
+	ID                    int64  `json:"id"`
+	FirstName             string `json:"first_name"`
+	LastName              string `json:"last_name"`
+	Username              string `json:"username"`
+	LangCode              string `json:"lang_code"`
+	Self                  bool   `json:"self"`
+	Contact               bool   `json:"contact"`
+	MutualContact         bool   `json:"mutual_contact"`
+	Deleted               bool   `json:"deleted"`
+	Bot                   bool   `json:"bot"`
+	Verified              bool   `json:"verified"`
+	Restricted            bool   `json:"restricted"`
+	Min                   bool   `json:"min"`
+	Support               bool   `json:"support"`
+	Scam                  bool   `json:"scam"`
+	Fake                  bool   `json:"fake"`
+	Premium               bool   `json:"premium"`
+	ContactRequirePremium bool   `json:"contact_require_premium"`
 }
 
 type yaegiWorkerRequest struct {
@@ -118,11 +140,6 @@ func executeYaegiWorker(req yaegiWorkerRequest) yaegiWorkerResponse {
 	}
 
 	stdout, stderr := newBoundedBuffer(externalOutputLimit), newBoundedBuffer(externalOutputLimit)
-	i := interp.New(interp.Options{Stdout: stdout, Stderr: stderr})
-	if err := i.Use(stdlib.Symbols); err != nil {
-		return yaegiWorkerResponse{Error: err.Error()}
-	}
-
 	msg := req.Msg
 	if msg == nil {
 		msg = &yaegiMsgSnap{}
@@ -136,15 +153,27 @@ func executeYaegiWorker(req yaegiWorkerRequest) yaegiWorkerResponse {
 		db = map[string]any{}
 	}
 
-	if err := i.Use(interp.Exports{
-		"gorokuctx/gorokuctx": map[string]reflect.Value{
-			"Msg":    reflect.ValueOf(msg),
-			"Client": reflect.ValueOf(client),
-			"DB":     reflect.ValueOf(db),
-			// Loader is intentionally unavailable out-of-process (no shared bot state).
-			"Loader": reflect.ValueOf((*struct{})(nil)),
-		},
-	}); err != nil {
+	newInterpreter := func() (*interp.Interpreter, error) {
+		i := interp.New(interp.Options{Stdout: stdout, Stderr: stderr})
+		if err := i.Use(stdlib.Symbols); err != nil {
+			return nil, err
+		}
+		if err := i.Use(interp.Exports{
+			"gorokuctx/gorokuctx": map[string]reflect.Value{
+				"Msg":    reflect.ValueOf(msg),
+				"Client": reflect.ValueOf(client),
+				"DB":     reflect.ValueOf(db),
+				// Loader is intentionally unavailable out-of-process (no shared bot state).
+				"Loader": reflect.ValueOf((*struct{})(nil)),
+			},
+		}); err != nil {
+			return nil, err
+		}
+		return i, nil
+	}
+
+	i, err := newInterpreter()
+	if err != nil {
 		return yaegiWorkerResponse{Error: err.Error()}
 	}
 
@@ -168,6 +197,10 @@ func executeYaegiWorker(req yaegiWorkerRequest) yaegiWorkerResponse {
 	source := buildYaegiSource(code, true)
 	value, err := evalYaegiSource(i, source, true)
 	if err != nil {
+		i, err = newInterpreter()
+		if err != nil {
+			return out("", err)
+		}
 		source = buildYaegiSource(code, false)
 		value, err = evalYaegiSource(i, source, true)
 	}
@@ -177,6 +210,10 @@ func executeYaegiWorker(req yaegiWorkerRequest) yaegiWorkerResponse {
 
 	resultText, runErr, multiValuePanic := invokeYaegiRunner(value)
 	if multiValuePanic {
+		i, err = newInterpreter()
+		if err != nil {
+			return out("", err)
+		}
 		source = buildYaegiSource(code, false)
 		value, err = evalYaegiSource(i, source, true)
 		if err != nil {
@@ -294,6 +331,28 @@ func (m *Eval) buildYaegiRequest(msg *goroku.Message, code string) yaegiWorkerRe
 			TGID:     m.client.TGID,
 			Username: m.client.Username,
 		}
+		if u := m.client.GorokuMe; u != nil {
+			req.Client.GorokuMe = &yaegiUserSnap{
+				ID:                    u.ID,
+				FirstName:             u.FirstName,
+				LastName:              u.LastName,
+				Username:              u.Username,
+				LangCode:              u.LangCode,
+				Self:                  u.Self,
+				Contact:               u.Contact,
+				MutualContact:         u.MutualContact,
+				Deleted:               u.Deleted,
+				Bot:                   u.Bot,
+				Verified:              u.Verified,
+				Restricted:            u.Restricted,
+				Min:                   u.Min,
+				Support:               u.Support,
+				Scam:                  u.Scam,
+				Fake:                  u.Fake,
+				Premium:               u.Premium,
+				ContactRequirePremium: u.ContactRequirePremium,
+			}
+		}
 	}
 	if m.db != nil {
 		// Snapshot only — worker cannot mutate parent DB.
@@ -335,6 +394,14 @@ func runYaegiWorkerProcess(ctx context.Context, req yaegiWorkerRequest) (yaegiWo
 			return yaegiWorkerResponse{}, fmt.Errorf("yaegi worker failed: %v; stderr=%s", proc.Err, strings.TrimSpace(string(proc.Stderr)))
 		}
 		return yaegiWorkerResponse{}, errors.New("yaegi worker produced empty output")
+	}
+	if proc.Truncated {
+		// The response is a single JSON document, so a truncated stdout cannot be
+		// parsed. Report the real cause instead of letting json.Unmarshal surface
+		// a misleading "unexpected end of JSON input".
+		return yaegiWorkerResponse{}, fmt.Errorf(
+			"yaegi worker output exceeded %d bytes and was truncated; reduce the amount printed or returned",
+			externalOutputLimit)
 	}
 	var res yaegiWorkerResponse
 	if err := json.Unmarshal(proc.Stdout, &res); err != nil {

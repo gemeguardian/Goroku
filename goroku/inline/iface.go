@@ -23,7 +23,7 @@ type SecurityChecker interface {
 // from the main userbot client (CustomTelegramClient).
 type InlineUserBot interface {
 	TGIDValue() int64
-	SendMessage(chat chatref.ChatRef, message string) (any, error)
+	SendMessage(chat chatref.ChatRef, message string) (chatref.SentMessage, error)
 	CreateGorokuFolder(botID int64) error
 	InviteBotToChannel(channelPeer tg.InputPeerClass) error
 	PromoteBotToAdmin(channelPeer tg.InputPeerClass) error

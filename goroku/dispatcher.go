@@ -420,13 +420,19 @@ func (cd *CommandDispatcher) HandleCommand(msg *Message) {
 			if !message.Answered && message.Text != originalText {
 				if message.Client != nil {
 					if err := message.Answer(message.Text); err != nil {
-						L().Warn("Auto-answer failed", zap.String("cmd", actualCmd), zap.Error(err))
+						if !isMessageNotModifiedError(err) {
+							L().Warn("Auto-answer failed", zap.String("cmd", actualCmd), zap.Error(err))
+						}
 					}
 				}
 			}
 		}
 	})
 	releaseRegistration = nil
+}
+
+func isMessageNotModifiedError(err error) bool {
+	return err != nil && strings.Contains(strings.ToUpper(err.Error()), "MESSAGE_NOT_MODIFIED")
 }
 
 type parsedCommand struct {
@@ -437,7 +443,10 @@ type parsedCommand struct {
 func (cd *CommandDispatcher) parseCommand(msg *Message) (parsedCommand, DispatchReason) {
 	prefix := cd.getPrefix(msg.SenderID)
 	translatedPrefix := translateLayout(prefix)
-	msgText := msg.Text
+	msgText := msg.RawText
+	if msgText == "" {
+		msgText = msg.Text
+	}
 
 	if strings.HasPrefix(msgText, translatedPrefix) && translatedPrefix != prefix {
 		msgText = translateLayout(msgText)
@@ -470,11 +479,15 @@ func (cd *CommandDispatcher) parseCommand(msg *Message) (parsedCommand, Dispatch
 		return parsedCommand{}, ReasonDoublePrefix
 	}
 
-	cmdBody := msgText[len(prefix):]
+	cmdBody := strings.TrimLeft(msgText[len(prefix):], " \t\r\n")
 	parts := strings.Fields(cmdBody)
 	if len(parts) == 0 {
 		return parsedCommand{}, ReasonEmptyText
 	}
+	// Keep command helpers from treating a space after the prefix as an argument.
+	// RawText must remain plain Telegram text; Text may contain escaped HTML entities.
+	msg.Text = prefix + cmdBody
+	msg.RawText = prefix + cmdBody
 
 	commandName := parts[0]
 	tagParts := strings.Split(commandName, "@")

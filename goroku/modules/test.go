@@ -119,6 +119,7 @@ func (m *Test) ConfigReady(config map[string]any) error {
 	if val, ok := config["invert_media"].(bool); ok {
 		m.invertMedia = val
 	}
+	goroku.SetZapLogLevel(m.tglogLevel)
 	return nil
 }
 
@@ -190,7 +191,7 @@ func (m *Test) PingCmd(msg *goroku.Message) error {
 	} else {
 		sentMsg, err := m.client.SendMessage(goroku.ChatRefID(msg.ChatID), emoji)
 		if err == nil {
-			targetMsgID = goroku.GetSentMessageID(sentMsg)
+			targetMsgID = sentMsg.SentMessageID()
 		}
 	}
 

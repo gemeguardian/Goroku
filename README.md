@@ -45,14 +45,14 @@
 ## ⚠️ Security Notice
 
 > **Important Security Advisory**  
-> While Goroku implements extended security measures, installing modules from untrusted developers may still cause damage to your server/account.
+> Native modules can damage your server or account if their source is malicious or compromised.
 > 
 > **Recommendations:**
-> - ✅ Download modules exclusively from official repositories or trusted developers
+> - ✅ Download modules only from sources you have reviewed
 > - ❌ Do NOT install modules if unsure about their safety
 > - ⚠️ Exercise caution with unknown commands (`.terminal`, `.eval`, `.ecpp`, etc.)
 > - Go `.eval` is owner-only and always enabled. It runs **out-of-process via Yaegi** (worker child process); timeout/cancel **kills the worker process group**. No shared memory with the bot (`msg`/`client`/`db` are snapshots; `Loader` unavailable). Concurrency is limited to one worker eval.
-> - Native Go plugins (`.dlmod` / `.loadmod` / presets) require owner identity. Unsigned/untrusted installs need explicit `-confirm` (or a trusted content SHA-256). Plugins **cannot be fully unloaded from process memory** after load—unregister only removes handlers.
+> - Native Go plugins (`.dlmod` / `.loadmod` / presets) require owner identity and run as arbitrary in-process code. Plugins **cannot be fully unloaded from process memory** after load; unregister only removes handlers. Review module source before installation.
 > - Remote module downloads are HTTPS-only; private/loopback/link-local/CGNAT targets are blocked.
 
 ---
@@ -133,8 +133,24 @@ files directly in the selected data root. It does not currently create separate
 | `--root` | Allow running as root (checked in `main`) |
 | `--proxy-host` / `--proxy-port` / `--proxy-secret` | MTProto proxy (all three required together; secret is hex) |
 | `--proxy-pass` | **Deprecated alias** for `--proxy-secret` — **not** SSH tunnel |
+| `--doctor` | Run diagnostics (config, data root, Redis, runtime, web bind, trust) and exit; does not start the bot/web |
+| `--config-validate` | Parse and validate `config.json`, then exit (shorthand for the config section of `--doctor`) |
 
 Web binds to `127.0.0.1` by default (`GOROKU_IP` / Docker may override).
+
+### Onboarding panel
+
+The web onboarding (served at `/`) is fully **offline**: jQuery, SweetAlert2,
+qr-code-styling, CSS, images, and the Movement font are vendored under
+`goroku/web/assets/` and embedded into the binary via `//go:embed`, so the page
+loads with no external network access (the only browser fetches are same-origin
+`/static/…` and the Goroku API routes). The Content-Security-Policy is
+`default-src 'self'` and disallows all external origins. A disk override is
+still honoured via `$GOROKU_WEB_RESOURCES` or `<dataRoot>/web-resources/`.
+
+The panel is accessibility-aware (semantic `<button>`s, labelled inputs,
+visible focus outlines, ARIA status regions, `<h1>` heading) and ships a
+minimal **RU/EN** localization with an in-page language switcher.
 
 ### Ops / health
 
@@ -150,18 +166,16 @@ curl -fsS "http://127.0.0.1:${PORT:-8080}/healthz"  # ok
 curl -fsS "http://127.0.0.1:${PORT:-8080}/readyz"   # ok
 ```
 
-Full operations dashboard (module trust UI, sanitized log browser, update UI) is **not** shipped yet.
+Offline pre-flight (no bot/web start): `goroku --doctor` runs config, data-root,
+Redis, runtime, web-bind, and proxy diagnostics and exits 0/1; `goroku
+--config-validate` runs only the config parse+validate.
 
-### Docs
+There is **no** operations web dashboard, and none is planned for stable. Ops is
+CLI (`--doctor`) + HTTP health endpoints + owner in-bot commands — that is the
+permanent-for-now surface (R8.1 scope freeze).
 
-| Doc | Contents |
-|-----|----------|
-| [docs/QUICKSTART.md](docs/QUICKSTART.md) | Build, first run, production layout |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | High-level code map |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Run, health, backup, restart, Docker |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Flags, env, data-root files |
-| [docs/RELEASE.md](docs/RELEASE.md) | Version ldflags, manual / GoReleaser |
-| [SECURITY.md](SECURITY.md) | Threat model lite + secret rotation (M0.1, BotFather checklist) |
+Security policy, threat model, and secret rotation instructions are in
+[SECURITY.md](SECURITY.md).
 
 ### Other
 <details>
@@ -214,7 +228,7 @@ Full operations dashboard (module trust UI, sanitized log browser, update UI) is
 
 Goroku is a **Go** userbot. It does **not** load Python Hikka / FTG / GeekTG modules.
 
-- **Native Go plugins**: install/load via owner commands; unsigned installs need `-confirm` or a trusted content SHA-256.
+- **Native Go plugins**: install/load via owner-only commands and execute as arbitrary in-process code; review source before installation.
 - **Yaegi `.eval`**: owner-only, out-of-process worker; timeout kills the worker; snapshots only (no shared bot memory).
 - **Semantic familiarity**: command style and UX are inspired by Heroku/Hikka; that is **not** binary or Python import compatibility.
 
@@ -222,7 +236,7 @@ Goroku is a **Go** userbot. It does **not** load Python Hikka / FTG / GeekTG mod
 
 ## 📋 Requirements
 
-- **Go 1.24.4+** (see `go.mod`)
+- **Go 1.25.0+** (see `go.mod`)
 - **API Credentials** from [Telegram Apps](https://my.telegram.org/apps)
 
 ---
@@ -244,7 +258,7 @@ bash scripts/check-package-parity.sh
 go test -race ./...
 ```
 
-Coverage policy and security-check residuals: [docs/CI.md](docs/CI.md). Soft project coverage floor in CI is **20%** (not a quality target).
+The soft project coverage floor in CI is **20%** (not a quality target).
 
 ---
 

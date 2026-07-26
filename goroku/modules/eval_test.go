@@ -68,20 +68,77 @@ func TestEvalYaegiExpression(t *testing.T) {
 	}
 }
 
-func TestYaegiWorkerKilledOnTimeout(t *testing.T) {
-	prev := yaegiEvalTimeout
-	yaegiEvalTimeout = 250 * time.Millisecond
-	t.Cleanup(func() { yaegiEvalTimeout = prev })
-
-	m := &Eval{client: &goroku.CustomTelegramClient{TGID: 1}}
-	start := time.Now()
-	_, _, _, err := m.runYaegiEval(&goroku.Message{}, "for {}")
-	elapsed := time.Since(start)
-	if !errors.Is(err, errEvalTimeout) {
-		t.Fatalf("error = %v, want errEvalTimeout", err)
+func TestEvalYaegiFormatsLiveClient(t *testing.T) {
+	m := &Eval{client: &goroku.CustomTelegramClient{TGID: 123, Username: "matvey"}}
+	res, _, _, err := m.runYaegiEval(&goroku.Message{}, "client")
+	if err != nil {
+		t.Fatalf("client expression: %v", err)
 	}
-	if elapsed > 4*time.Second {
-		t.Fatalf("timeout kill took too long: %v", elapsed)
+	if !strings.Contains(res, "TGID:123") || !strings.Contains(res, "Username:matvey") {
+		t.Fatalf("client output is not informative: %s", res)
+	}
+	if strings.Contains(res, "CustomTelegramClient:") {
+		t.Fatalf("client output still contains a wrapper: %s", res)
+	}
+}
+
+func TestEvalYaegiExposesLiveClient(t *testing.T) {
+	m := &Eval{
+		client: &goroku.CustomTelegramClient{
+			TGID: 123,
+			GorokuMe: &tg.User{
+				ID:         123,
+				FirstName:  "Matvey",
+				Username:   "example",
+				Phone:      "+15551234567",
+				AccessHash: 987654321,
+				Premium:    true,
+			},
+		},
+	}
+
+	res, _, _, err := m.runYaegiEval(&goroku.Message{}, "gorokuctx.Client.GorokuMe.ID")
+	if err != nil {
+		t.Fatalf("GorokuMe.ID: %v", err)
+	}
+	if res != "123" {
+		t.Fatalf("GorokuMe.ID = %q, want 123", res)
+	}
+
+	res, _, _, err = m.runYaegiEval(&goroku.Message{}, "client.GorokuMe.Phone")
+	if err != nil {
+		t.Fatalf("GorokuMe.Phone: %v", err)
+	}
+	if res != "+15551234567" {
+		t.Fatalf("GorokuMe.Phone = %q, want live client value", res)
+	}
+
+	res, _, _, err = m.runYaegiEval(&goroku.Message{}, "client.GorokuMe.AccessHash")
+	if err != nil {
+		t.Fatalf("GorokuMe.AccessHash: %v", err)
+	}
+	if res != "987654321" {
+		t.Fatalf("GorokuMe.AccessHash = %q, want live client value", res)
+	}
+}
+
+func TestEvalYaegiFallbackUsesCleanInterpreter(t *testing.T) {
+	m := &Eval{client: &goroku.CustomTelegramClient{TGID: 123}}
+
+	res, _, _, err := m.runYaegiEval(&goroku.Message{}, "value := client.TGID\nreturn value")
+	if err != nil {
+		t.Fatalf("statement fallback: %v", err)
+	}
+	if res != "123" {
+		t.Fatalf("statement fallback result = %q, want 123", res)
+	}
+
+	_, _, _, err = m.runYaegiEval(&goroku.Message{}, "client.DoesNotExist")
+	if err == nil {
+		t.Fatal("unknown field unexpectedly succeeded")
+	}
+	if strings.Contains(err.Error(), "redeclared in this block") {
+		t.Fatalf("fallback masked the useful compile error: %v", err)
 	}
 }
 
@@ -90,7 +147,6 @@ func TestEvalAndTerminalCensorSuppressOutputWhenDatabaseUnavailable(t *testing.T
 	secret := "persisted-secret-value"
 
 	for name, censor := range map[string]func(string) string{
-		"eval":     (&Eval{db: db}).censor,
 		"terminal": (&TerminalMod{db: db}).censor,
 	} {
 		t.Run(name+" uninitialized", func(t *testing.T) {
@@ -105,11 +161,7 @@ func TestEvalAndTerminalCensorSuppressOutputWhenDatabaseUnavailable(t *testing.T
 	if err := db.Set("main", "db_uri", secret); err != nil {
 		t.Fatal(err)
 	}
-	eval := &Eval{db: db}
 	terminal := &TerminalMod{db: db}
-	if got := eval.censor("visible " + secret); strings.Contains(got, secret) {
-		t.Fatalf("eval censor exposed active database secret: %q", got)
-	}
 	if got := terminal.censor("visible " + secret); strings.Contains(got, secret) {
 		t.Fatalf("terminal censor exposed active database secret: %q", got)
 	}
@@ -117,7 +169,6 @@ func TestEvalAndTerminalCensorSuppressOutputWhenDatabaseUnavailable(t *testing.T
 		t.Fatal(err)
 	}
 	for name, censor := range map[string]func(string) string{
-		"eval":     eval.censor,
 		"terminal": terminal.censor,
 	} {
 		t.Run(name+" closed", func(t *testing.T) {
@@ -165,7 +216,6 @@ func TestEvalAndTerminalCensorAccountAndDatabaseSecretsConsistently(t *testing.T
 	}
 
 	for name, censor := range map[string]func(string) string{
-		"eval":     (&Eval{client: client, db: db}).censor,
 		"terminal": (&TerminalMod{client: client, db: db}).censor,
 	} {
 		t.Run(name, func(t *testing.T) {

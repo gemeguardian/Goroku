@@ -3,6 +3,7 @@
 package modules
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,134 @@ import (
 
 	"goroku/goroku"
 )
+
+func TestHotPluginArtifactKeyInputs(t *testing.T) {
+	source := []hotModuleSource{{structName: "One", source: []byte("package modules\ntype One struct{}\n")}}
+	key := hotPluginArtifactKey("single", source, "/repo")
+	if len(key) != sha256.Size*2 {
+		t.Fatalf("key length = %d", len(key))
+	}
+	tests := []struct {
+		name string
+		kind string
+		src  []hotModuleSource
+		root string
+	}{
+		{name: "kind", kind: "bundle", src: source, root: "/repo"},
+		{name: "name", kind: "single", src: []hotModuleSource{{structName: "Two", source: source[0].source}}, root: "/repo"},
+		{name: "source", kind: "single", src: []hotModuleSource{{structName: "One", source: append(source[0].source, '/')}}, root: "/repo"},
+		{name: "root", kind: "single", src: source, root: "/other"},
+	}
+	for _, tc := range tests {
+		if got := hotPluginArtifactKey(tc.kind, tc.src, tc.root); got == key {
+			t.Errorf("%s did not affect artifact key", tc.name)
+		}
+	}
+}
+
+func TestHotPluginCacheValidityAndCleanup(t *testing.T) {
+	cacheRoot := t.TempDir()
+	artifactsRoot := filepath.Join(cacheRoot, "artifacts")
+	if err := os.MkdirAll(artifactsRoot, 0750); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for i := 0; i < hotPluginArtifactLimit+3; i++ {
+		dir := filepath.Join(artifactsRoot, fmt.Sprintf("unit-cleanup-%02d", i))
+		if err := os.Mkdir(dir, 0750); err != nil {
+			t.Fatal(err)
+		}
+		pluginFile := filepath.Join(dir, "plugin.so")
+		if err := os.WriteFile(pluginFile, []byte("plugin"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		stamp := now.Add(time.Duration(i) * time.Second)
+		if err := os.Chtimes(dir, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	invalid := filepath.Join(artifactsRoot, "unit-invalid")
+	if err := os.Mkdir(invalid, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(invalid, "plugin.so"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(cacheRoot, ".tmp-unused-build")
+	if err := os.Mkdir(stale, 0750); err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-2 * hotPluginTempMaxAge)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(cacheRoot, "legacy_0123456789abcdef")
+	if err := os.Mkdir(legacy, 0750); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cleanupHotPluginCache(cacheRoot, now); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(artifactsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != hotPluginArtifactLimit {
+		t.Fatalf("retained artifact count = %d", len(entries))
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale temp directory remains: %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy artifact directory remains: %v", err)
+	}
+	if validHotPluginArtifact(filepath.Join(invalid, "plugin.so")) {
+		t.Fatal("empty plugin was considered valid")
+	}
+}
+
+func TestCachedHotPluginArtifactReusesPublishedFile(t *testing.T) {
+	oldBaseDir := goroku.BaseDir
+	goroku.BaseDir = t.TempDir()
+	t.Cleanup(func() { goroku.BaseDir = oldBaseDir })
+	builds := 0
+	build := func(workDir string) (string, error) {
+		builds++
+		path := filepath.Join(workDir, "plugin.so")
+		return path, os.WriteFile(path, []byte("plugin"), 0600)
+	}
+	first, err := cachedHotPluginArtifact("unit-reuse", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := cachedHotPluginArtifact("unit-reuse", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || builds != 1 || !validHotPluginArtifact(second) {
+		t.Fatalf("first=%q second=%q builds=%d valid=%v", first, second, builds, validHotPluginArtifact(second))
+	}
+}
+
+func TestHotArtifactBuildLockSerializesSameKey(t *testing.T) {
+	releaseFirst := acquireHotArtifactBuildLock("unit-lock")
+	acquired := make(chan func(), 1)
+	go func() { acquired <- acquireHotArtifactBuildLock("unit-lock") }()
+	select {
+	case release := <-acquired:
+		release()
+		t.Fatal("same-key lock was acquired concurrently")
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseFirst()
+	select {
+	case release := <-acquired:
+		release()
+	case <-time.After(time.Second):
+		t.Fatal("waiting build lock was not released")
+	}
+}
 
 func TestBuildAndOpenPluginWithExternalDataRoot(t *testing.T) {
 	dataRoot := t.TempDir()
@@ -59,6 +188,106 @@ func (*ExternalRootModule) Watchers() []goroku.WatcherHandler { return nil }
 	}
 	if mod.Name() != "ExternalRootModule" {
 		t.Fatalf("plugin module name = %q", mod.Name())
+	}
+}
+
+func TestBuildAndOpenPluginChangedRevision(t *testing.T) {
+	dataRoot := t.TempDir()
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldBaseDir, oldBasePath := goroku.BaseDir, goroku.BasePath
+	goroku.BaseDir, goroku.BasePath = dataRoot, repoRoot
+	t.Cleanup(func() { goroku.BaseDir, goroku.BasePath = oldBaseDir, oldBasePath })
+	if err := ensureRuntimeModuleSourceDir(); err != nil {
+		t.Fatal(err)
+	}
+
+	sourcePath, err := runtimeModuleSourcePath("HotUpdateIdentityModule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := func(version string) []byte {
+		return []byte(fmt.Sprintf(`package modules
+
+import "goroku/goroku"
+
+type HotUpdateIdentityModule struct{}
+func (*HotUpdateIdentityModule) Name() string { return "HotUpdateIdentityModule" }
+func (*HotUpdateIdentityModule) Strings() map[string]string { return map[string]string{"version": %q} }
+func (*HotUpdateIdentityModule) Init(*goroku.CustomTelegramClient, *goroku.Database) error { return nil }
+func (*HotUpdateIdentityModule) ClientReady() error { return nil }
+func (*HotUpdateIdentityModule) OnUnload() error { return nil }
+func (*HotUpdateIdentityModule) OnDlmod() error { return nil }
+func (*HotUpdateIdentityModule) Commands() map[string]goroku.CommandHandler { return nil }
+func (*HotUpdateIdentityModule) Watchers() []goroku.WatcherHandler { return nil }
+`, version))
+	}
+
+	for _, version := range []string{"v1", "v2"} {
+		if err := os.WriteFile(sourcePath, source(version), 0600); err != nil {
+			t.Fatal(err)
+		}
+		mod, err := buildAndOpenPluginFromSource("HotUpdateIdentityModule", sourcePath)
+		if err != nil {
+			t.Fatalf("open %s: %v", version, err)
+		}
+		if got := mod.Strings()["version"]; got != version {
+			t.Fatalf("opened revision = %q, want %q", got, version)
+		}
+	}
+}
+
+func TestBuildAndOpenPluginBundle(t *testing.T) {
+	dataRoot := t.TempDir()
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldBaseDir, oldBasePath := goroku.BaseDir, goroku.BasePath
+	goroku.BaseDir, goroku.BasePath = dataRoot, repoRoot
+	t.Cleanup(func() { goroku.BaseDir, goroku.BasePath = oldBaseDir, oldBasePath })
+	if err := ensureRuntimeModuleSourceDir(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"BundleFirst", "BundleSecond"} {
+		path, err := runtimeModuleSourcePath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, directModuleSource(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mods, err := buildAndOpenPluginBundle([]string{"BundleFirst", "BundleSecond"})
+	if err != nil {
+		t.Fatalf("bundle build failed: %v", err)
+	}
+	if len(mods) != 2 || mods[0].Name() != "BundleFirst" || mods[1].Name() != "BundleSecond" {
+		t.Fatalf("bundle modules = %#v", mods)
+	}
+}
+
+func TestClearStalePluginSources(t *testing.T) {
+	workDir := t.TempDir()
+	for _, name := range []string{"module.go", "plugin_export.go", "legacy_module.go", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(workDir, name), []byte(name), 0600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	if err := clearStalePluginSources(workDir); err != nil {
+		t.Fatalf("clear stale plugin sources: %v", err)
+	}
+	for _, name := range []string{"module.go", "plugin_export.go", "notes.txt"} {
+		if _, err := os.Stat(filepath.Join(workDir, name)); err != nil {
+			t.Errorf("%s should remain: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "legacy_module.go")); !os.IsNotExist(err) {
+		t.Errorf("legacy source still exists, err=%v", err)
 	}
 }
 
@@ -110,7 +339,7 @@ func TestPresetFailedUpdatePreservesSourceRegistryAndDatabase(t *testing.T) {
 	}
 
 	presets := &Presets{client: client, db: db}
-	err = presets.installDownloadedModule(nil, "PresetRollback", "https://example.test/new.go", []byte("not go source"))
+	_, err = presets.installDownloadedModule(nil, "PresetRollback", "https://example.test/new.go", []byte("not go source"))
 	if err == nil {
 		t.Fatal("invalid preset update succeeded")
 	}
@@ -219,7 +448,7 @@ func TestDirectInstallPersistenceFailureRollsBackLiveModuleAndSource(t *testing.
 				}
 				return client.Loader.RegisterModule(&directRollbackModule{name: fallbackName})
 			}
-			err = loader.installPersistedHotModule(nil, moduleName, sourcePath, tc.provenance, directModuleSource(moduleName))
+			_, err = loader.installPersistedHotModule(nil, moduleName, sourcePath, tc.provenance, directModuleSource(moduleName))
 			if err == nil || !strings.Contains(err.Error(), "database update failed") {
 				t.Fatalf("install error = %v, want manifest persistence failure", err)
 			}
@@ -292,7 +521,8 @@ func TestRestoreAndInstallSerializeRuntimeModuleTransaction(t *testing.T) {
 			}
 			return client.Loader.RegisterModule(&directRollbackModule{name: fallbackName})
 		}
-		installDone <- loader.installPersistedHotModule(nil, "ConcurrentRestore", path, "https://example.test/current.go", installSource)
+		_, installErr := loader.installPersistedHotModule(nil, "ConcurrentRestore", path, "https://example.test/current.go", installSource)
+		installDone <- installErr
 	}()
 	select {
 	case err := <-installDone:
@@ -365,7 +595,7 @@ func testInstallApply(client *goroku.CustomTelegramClient) func(*goroku.Message,
 	}
 }
 
-func TestInstallCommittedManifestWarningRetainsSourceAndRuntime(t *testing.T) {
+func TestInstallCommittedStateWarningRetainsSourceAndRuntime(t *testing.T) {
 	db, client, _ := newModuleTransactionHarness(t, 903)
 	name := "CommittedInstall"
 	path, err := runtimeModuleSourcePath(name)
@@ -385,7 +615,7 @@ func TestInstallCommittedManifestWarningRetainsSourceAndRuntime(t *testing.T) {
 			return committedManifestWarning(cause)
 		},
 	}
-	err = loader.installPersistedHotModule(nil, name, path, "local", body)
+	_, err = loader.installPersistedHotModule(nil, name, path, "local", body)
 	if !errors.Is(err, goroku.ErrDatabaseCommitUncertain) || !errors.Is(err, cause) {
 		t.Fatalf("install error = %v, want committed durability warning and cause", err)
 	}
@@ -399,12 +629,12 @@ func TestInstallCommittedManifestWarningRetainsSourceAndRuntime(t *testing.T) {
 	if got, readErr := os.ReadFile(path); readErr != nil || string(got) != string(body) {
 		t.Fatalf("committed install source = %q, %v", got, readErr)
 	}
-	if got := db.GetStringMap("Loader", "loaded_modules", nil)[name]; got != "local" {
-		t.Fatalf("committed manifest provenance = %q", got)
+	if _, persisted := db.GetStringMap("Loader", "loaded_modules", nil)[name]; persisted {
+		t.Fatal("local runtime module should not be persisted")
 	}
 }
 
-func TestUninstallManifestFaultSemantics(t *testing.T) {
+func TestUninstallStateFaultSemantics(t *testing.T) {
 	for i, tc := range []struct {
 		name      string
 		committed bool
@@ -504,7 +734,7 @@ func TestPresetManifestFaultSemantics(t *testing.T) {
 					return errors.Join(goroku.ErrDatabasePersistence, cause)
 				},
 			}
-			err = presets.installDownloadedModule(nil, name, "https://example.test/preset.go", body)
+			_, err = presets.installDownloadedModule(nil, name, "https://example.test/preset.go", body)
 			if !errors.Is(err, cause) {
 				t.Fatalf("preset error lost cause: %v", err)
 			}
@@ -545,7 +775,12 @@ func (m *teardownOrderingModule) Init(*goroku.CustomTelegramClient, *goroku.Data
 	}
 	return nil
 }
-func (m *teardownOrderingModule) ClientReady() error { m.events <- "new-ready"; return nil }
+func (m *teardownOrderingModule) ClientReady() error {
+	if m.events != nil {
+		m.events <- "new-ready"
+	}
+	return nil
+}
 func (m *teardownOrderingModule) OnUnload() error {
 	if m.events != nil {
 		m.events <- "old-unload"
@@ -585,7 +820,8 @@ func TestLeasedHandlerSelfReplaceIsRejectedCoherently(t *testing.T) {
 	}
 	old := &teardownOrderingModule{name: name}
 	old.command = func(msg *goroku.Message) error {
-		return loader.installPersistedHotModule(msg, name, path, "local", directModuleSource(name))
+		_, err := loader.installPersistedHotModule(msg, name, path, "local", directModuleSource(name))
+		return err
 	}
 	if err := client.Loader.RegisterModule(old); err != nil {
 		t.Fatal(err)

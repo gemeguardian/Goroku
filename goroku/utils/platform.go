@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -31,16 +32,64 @@ func FormattedUptime() string {
 }
 
 func GetRAMUsage() float64 {
+	if rss, err := processRSSFromStatus(mustReadFile("/proc/self/status")); err == nil {
+		return float64(rss) / 1024
+	}
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
-	// Convert bytes to MB
-	mb := float64(m.Alloc) / (1024 * 1024)
-	return mb
+	return float64(m.Sys) / (1024 * 1024)
 }
 
 func GetCPUUsage() string {
-	// Simple placeholder, in Go CPU tracking is OS dependent
-	return "0.00"
+	startTicks, err := processCPUTicksFromStat(mustReadFile("/proc/self/stat"))
+	if err != nil {
+		return "n/a"
+	}
+	start := time.Now()
+	time.Sleep(200 * time.Millisecond)
+	endTicks, err := processCPUTicksFromStat(mustReadFile("/proc/self/stat"))
+	if err != nil || endTicks < startTicks {
+		return "n/a"
+	}
+	// Linux exposes /proc process time in USER_HZ, fixed at 100 ticks per second.
+	percent := float64(endTicks-startTicks) / 100 / time.Since(start).Seconds() * 100
+	return fmt.Sprintf("%.2f", percent)
+}
+
+func mustReadFile(path string) []byte {
+	data, _ := os.ReadFile(path)
+	return data
+}
+
+func processRSSFromStatus(data []byte) (uint64, error) {
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[0] != "VmRSS:" || fields[2] != "kB" {
+			continue
+		}
+		return strconv.ParseUint(fields[1], 10, 64)
+	}
+	return 0, fmt.Errorf("VmRSS is unavailable")
+}
+
+func processCPUTicksFromStat(data []byte) (uint64, error) {
+	closeName := strings.LastIndex(string(data), ")")
+	if closeName == -1 {
+		return 0, fmt.Errorf("invalid process stat")
+	}
+	fields := strings.Fields(string(data[closeName+1:]))
+	if len(fields) < 13 {
+		return 0, fmt.Errorf("process stat is incomplete")
+	}
+	userTicks, err := strconv.ParseUint(fields[11], 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	systemTicks, err := strconv.ParseUint(fields[12], 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return userTicks + systemTicks, nil
 }
 
 func GetPlatformName() string {

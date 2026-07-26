@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"io"
 	"os"
 	"sync"
 
@@ -11,6 +12,25 @@ import (
 
 var Logger *zap.Logger
 var loggerMu sync.RWMutex
+var outputMu sync.RWMutex
+var extraOutput io.Writer
+var extraMinimumLevel = zapcore.ErrorLevel
+
+// SetExtraOutput mirrors zap records to an optional runtime sink.
+func SetExtraOutput(output io.Writer) {
+	outputMu.Lock()
+	extraOutput = output
+	outputMu.Unlock()
+	Init()
+}
+
+// SetExtraMinimumLevel controls the minimum level mirrored to the runtime sink.
+func SetExtraMinimumLevel(level zapcore.Level) {
+	outputMu.Lock()
+	extraMinimumLevel = level
+	outputMu.Unlock()
+	Init()
+}
 
 func Init() {
 	logger := build()
@@ -41,7 +61,13 @@ func build() *zap.Logger {
 	}
 
 	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
-	fileEncoder := zapcore.NewJSONEncoder(encoderConfig)
+
+	// Colour belongs on the console only. Sharing encoderConfig put ANSI escapes
+	// into the JSON "level" field on disk ("[34mINFO[0m"), which
+	// breaks log parsers and level filtering.
+	fileEncoderConfig := encoderConfig
+	fileEncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+	fileEncoder := zapcore.NewJSONEncoder(fileEncoderConfig)
 
 	consoleCore := zapcore.NewCore(
 		consoleEncoder,
@@ -62,6 +88,22 @@ func build() *zap.Logger {
 	)
 
 	core := zapcore.NewTee(consoleCore, fileCore)
+	outputMu.RLock()
+	extra := extraOutput
+	extraLevel := extraMinimumLevel
+	outputMu.RUnlock()
+	if extra != nil {
+		telegramEncoderConfig := encoderConfig
+		telegramEncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+		telegramCore := zapcore.NewCore(
+			zapcore.NewJSONEncoder(telegramEncoderConfig),
+			zapcore.AddSync(extra),
+			zap.LevelEnablerFunc(func(entryLevel zapcore.Level) bool {
+				return entryLevel >= level && entryLevel >= extraLevel
+			}),
+		)
+		core = zapcore.NewTee(core, telegramCore)
+	}
 	return zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
 }
 

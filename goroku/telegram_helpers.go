@@ -10,10 +10,22 @@ import (
 
 // SendMessageWithTopic sends a message to a specific topic thread in a forum chat.
 func SendMessageWithTopic(bot *tgbotapi.BotAPI, chatID int64, text string, topicID int) (tgbotapi.Message, error) {
+	return SendMessageWithTopicMarkup(bot, chatID, text, topicID, nil)
+}
+
+// SendMessageWithTopicMarkup sends a forum-topic message with optional inline controls.
+func SendMessageWithTopicMarkup(bot *tgbotapi.BotAPI, chatID int64, text string, topicID int, markup *tgbotapi.InlineKeyboardMarkup) (tgbotapi.Message, error) {
 	params := tgbotapi.Params{
 		"chat_id":    strconv.FormatInt(chatID, 10),
 		"text":       text,
 		"parse_mode": tgbotapi.ModeHTML,
+	}
+	if markup != nil {
+		encodedMarkup, err := json.Marshal(markup)
+		if err != nil {
+			return tgbotapi.Message{}, err
+		}
+		params["reply_markup"] = string(encodedMarkup)
 	}
 	if topicID != 0 {
 		params["message_thread_id"] = strconv.Itoa(topicID)

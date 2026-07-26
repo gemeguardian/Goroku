@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"sync"
@@ -14,10 +15,18 @@ type mockUser struct {
 	Username string
 }
 
+func (m mockUser) EntityID() int64        { return m.ID }
+func (m mockUser) EntityUsername() string { return m.Username }
+func (m mockUser) EntityIsUser() bool     { return true }
+
 type mockChannel struct {
 	Id    int64
 	Title string
 }
+
+func (m mockChannel) EntityID() int64        { return m.Id }
+func (m mockChannel) EntityUsername() string { return "" }
+func (m mockChannel) EntityIsUser() bool     { return false }
 
 type mockDB struct {
 	data   map[string]map[string]any
@@ -614,9 +623,42 @@ func TestWaitForContentChannel(t *testing.T) {
 	}}
 
 	// Since it exists, it should return instantly without looping
-	got := WaitForContentChannel(db, 0.001)
+	got, err := WaitForContentChannel(context.Background(), db, time.Millisecond, time.Second)
+	if err != nil {
+		t.Fatalf("WaitForContentChannel() error = %v", err)
+	}
 	if got != 112233 {
 		t.Errorf("Expected 112233, got %d", got)
+	}
+}
+
+// A channel that never appears must not block forever: the call is made from
+// command handlers that hold a dispatcher slot for their whole duration.
+func TestWaitForContentChannelGivesUpWhenChannelNeverAppears(t *testing.T) {
+	db := &mockDB{data: make(map[string]map[string]any)}
+
+	start := time.Now()
+	got, err := WaitForContentChannel(context.Background(), db, time.Millisecond, 50*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, ErrContentChannelUnavailable) {
+		t.Fatalf("error = %v, want ErrContentChannelUnavailable", err)
+	}
+	if got != 0 {
+		t.Errorf("channel id = %d, want 0 on failure", got)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("returned after %s; deadline was not honoured", elapsed)
+	}
+}
+
+func TestWaitForContentChannelHonoursCancellation(t *testing.T) {
+	db := &mockDB{data: make(map[string]map[string]any)}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := WaitForContentChannel(ctx, db, time.Millisecond, time.Hour); !errors.Is(err, ErrContentChannelUnavailable) {
+		t.Fatalf("error = %v, want ErrContentChannelUnavailable", err)
 	}
 }
 

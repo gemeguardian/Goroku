@@ -60,6 +60,7 @@ type PendingAuth struct {
 	approveMu  sync.Once
 	cancelMu   sync.Once
 	Expiry     time.Time
+	IP         string
 }
 
 type WebSession struct {
@@ -80,6 +81,7 @@ const (
 	shortBodyLimit          = 8 * 1024
 	webAuthTTL              = 60 * time.Second
 	maxPendingAuths         = 64
+	maxPendingAuthsPerIP    = 4
 	sessionTokenSize        = 32
 	csrfTokenSize           = 32
 )
@@ -112,13 +114,14 @@ type qrLoginState struct {
 
 // LoginCoordinator owns Telegram phone/QR login and pending web-auth challenges.
 type LoginCoordinator struct {
-	signInClients map[string]webiface.TelegramClient
-	pendingClient webiface.TelegramClient
-	qrLogin       qrLoginState
-	qrTaskActive  bool
-	twoFANeeded   bool
-	pendingAuths  map[string]*PendingAuth
-	authAccepting bool
+	signInClients    map[string]webiface.TelegramClient
+	pendingClient    webiface.TelegramClient
+	qrLogin          qrLoginState
+	qrTaskActive     bool
+	twoFANeeded      bool
+	pendingAuths     map[string]*PendingAuth
+	pendingAuthsByIP map[string]int
+	authAccepting    bool
 }
 
 // StaticUI resolves template/static resource roots for web delivery.
@@ -176,9 +179,10 @@ func NewWeb(cfg WebConfig) *Web {
 			clientData: make(map[int64]RuntimeClient),
 		},
 		LoginCoordinator: LoginCoordinator{
-			signInClients: make(map[string]webiface.TelegramClient),
-			pendingAuths:  make(map[string]*PendingAuth),
-			authAccepting: true,
+			signInClients:    make(map[string]webiface.TelegramClient),
+			pendingAuths:     make(map[string]*PendingAuth),
+			pendingAuthsByIP: make(map[string]int),
+			authAccepting:    true,
 		},
 		StaticUI: StaticUI{
 			dataRoot: cfg.DataRoot,

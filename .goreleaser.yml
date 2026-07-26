@@ -1,4 +1,6 @@
-# Optional release automation. Manual flow: docs/RELEASE.md
+# Optional release automation.
+# Stable releases MUST also pass scripts/release-check.sh, which enforces
+# mandatory cosign signing + SBOM + checksums for tagged (non-snapshot) builds.
 version: 2
 
 project_name: goroku
@@ -6,6 +8,9 @@ project_name: goroku
 before:
   hooks:
     - go mod tidy
+    # CycloneDX SBOM from scripts/generate-sbom.sh (no Syft dependency).
+    # Produced into dist/sbom and attached to the release via release.extra_files.
+    - bash scripts/generate-sbom.sh dist/sbom
 
 builds:
   - id: goroku
@@ -13,6 +18,8 @@ builds:
     binary: goroku
     env:
       - CGO_ENABLED=0
+    # Linux amd64 + arm64 are the stable release targets.
+    # Android/Termux are intentionally NOT built here (separate pipeline).
     goos:
       - linux
       - darwin
@@ -22,6 +29,9 @@ builds:
     ignore:
       - goos: darwin
         goarch: arm64
+    # VersionInfo + Commit are injected from the git tag via ldflags.
+    # {{.Version}} is the tag without the leading "v"; {{.ShortCommit}} is the
+    # short SHA. See goroku/version.go.
     ldflags:
       - -s -w
       - -X goroku/goroku.VersionInfo={{.Version}}
@@ -45,3 +55,9 @@ changelog:
 
 release:
   draft: true
+  # SBOM artifacts produced in before.hooks are attached to the release.
+  extra_files:
+    - glob: dist/sbom/sbom.cdx.json
+    - glob: dist/sbom/go-modules.txt
+    - glob: dist/sbom/go-modules-direct.txt
+    - glob: dist/sbom/SBOM_ARTIFACTS.txt

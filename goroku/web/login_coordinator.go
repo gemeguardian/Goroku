@@ -24,9 +24,26 @@ func (w *Web) cancelPendingAuthsLocked(clientID int64, all bool) {
 			continue
 		}
 		delete(w.pendingAuths, token)
+		decrementPendingAuthIP(w.pendingAuthsByIP, auth.IP)
 		if auth.Cancelled != nil {
 			auth.cancelMu.Do(func() { close(auth.Cancelled) })
 		}
+	}
+}
+
+func decrementPendingAuthIP(m map[string]int, ip string) {
+	if ip == "" {
+		return
+	}
+	count, ok := m[ip]
+	if !ok {
+		return
+	}
+	count--
+	if count <= 0 {
+		delete(m, ip)
+	} else {
+		m[ip] = count
 	}
 }
 
@@ -100,11 +117,11 @@ func (w *Web) SendTGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 	}
 	phone := parsePhone(strings.TrimSpace(string(body)))
 	if phone == "" {
-		L().Info("send_tg_code rejected empty or invalid phone from {0}", zap.Any("arg0", r.RemoteAddr))
+		L().Info("send_tg_code rejected: empty or invalid phone", zap.Any("remote_addr", r.RemoteAddr))
 		http.Error(wr, "Invalid phone number", http.StatusBadRequest)
 		return
 	}
-	L().Info("send_tg_code started for phone={0} from={1}", zap.Any("arg0", maskPhone(phone)), zap.Any("arg1", r.RemoteAddr))
+	L().Info("send_tg_code started", zap.Any("phone", maskPhone(phone)), zap.Any("remote_addr", r.RemoteAddr))
 
 	w.mu.Lock()
 	if w.pendingClient != nil {
@@ -133,18 +150,18 @@ func (w *Web) SendTGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 
 	if ok && client != nil {
 		if err := client.Connect(); err != nil {
-			L().Info("Telegram client connect failed for phone auth: {0}", zap.Any("arg0", err))
+			L().Warn("Telegram client connect failed for phone auth", zap.Error(err))
 			http.Error(wr, "connect failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		L().Info("Telegram client connected, sending login code to {0}", zap.Any("arg0", maskPhone(phone)))
+		L().Info("Telegram client connected; sending login code", zap.Any("phone", maskPhone(phone)))
 		err := client.SendCodeRequest(phone)
 		if err != nil {
-			L().Info("send code failed for {0}: {1}", zap.Any("arg0", maskPhone(phone)), zap.Any("arg1", err))
+			L().Warn("send code failed", zap.Any("phone", maskPhone(phone)), zap.Error(err))
 			writeTelegramAuthError(wr, err)
 			return
 		}
-		L().Info("login code sent to {0}", zap.Any("arg0", maskPhone(phone)))
+		L().Info("login code sent", zap.Any("phone", maskPhone(phone)))
 	} else {
 		L().Info("send_tg_code failed: pending client unavailable")
 		http.Error(wr, "Telegram client not available", http.StatusInternalServerError)
@@ -256,6 +273,7 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 		ClientID:   selected.ID,
 		generation: selected.generation,
 		Expiry:     time.Now().Add(webAuthTTL),
+		IP:         ip,
 	}
 
 	w.mu.Lock()
@@ -263,6 +281,7 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 	for pendingToken, pending := range w.pendingAuths {
 		if !now.Before(pending.Expiry) {
 			delete(w.pendingAuths, pendingToken)
+			decrementPendingAuthIP(w.pendingAuthsByIP, pending.IP)
 			if pending.Cancelled != nil {
 				pending.cancelMu.Do(func() { close(pending.Cancelled) })
 			}
@@ -284,17 +303,24 @@ func (w *Web) WebAuthHandler(wr http.ResponseWriter, r *http.Request) {
 		http.Error(wr, "TOO_MANY_PENDING_AUTHS", http.StatusServiceUnavailable)
 		return
 	}
+	if w.pendingAuthsByIP[ip] >= maxPendingAuthsPerIP {
+		w.mu.Unlock()
+		http.Error(wr, "TOO_MANY_PENDING_AUTHS", http.StatusServiceUnavailable)
+		return
+	}
 	w.pendingAuths[token] = auth
+	w.pendingAuthsByIP[ip]++
 	w.mu.Unlock()
 	defer func() {
 		w.mu.Lock()
 		if w.pendingAuths[token] == auth {
 			delete(w.pendingAuths, token)
+			decrementPendingAuthIP(w.pendingAuthsByIP, auth.IP)
 		}
 		w.mu.Unlock()
 	}()
 
-	msg := fmt.Sprintf("🪐🔐 <b>Click button below to confirm web application ops</b>\n\n<b>Client IP</b>: <code>%s</code>\n\n<i>If you did not request any codes, simply ignore this message</i>", html.EscapeString(ip))
+	msg := fmt.Sprintf("🪐🔐 <b>Click button below to confirm web application ops</b>\n\n<b>Client IP</b>: <code>%s</code>\n\n<i>If you did not request any codes, simply ignore this message</i>", html.EscapeString(clampIPForDiagnostic(ip)))
 	if inlineBot != nil {
 		markup := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🔓 Authorize user", "authorize_web_"+token)))
 		cfg := tgbotapi.NewMessage(client.TGIDValue(), msg)
@@ -382,8 +408,10 @@ func (w *Web) createAuthorizedSession(wr http.ResponseWriter, r *http.Request, t
 	if oldSession != "" {
 		delete(w.sessions, oldSession)
 	}
+	w.sweepSessionsLocked()
 	w.sessions[session] = WebSession{Token: session, CSRFToken: csrf, Expiry: time.Now().Add(sessionTTL)}
 	delete(w.pendingAuths, token)
+	decrementPendingAuthIP(w.pendingAuthsByIP, auth.IP)
 	w.mu.Unlock()
 	w.setSessionCookies(wr, r, session, csrf)
 	return session, true, nil
@@ -438,6 +466,7 @@ func (w *Web) ApproveWebAuth(token string) bool {
 			return true
 		}
 		delete(w.pendingAuths, token)
+		decrementPendingAuthIP(w.pendingAuthsByIP, auth.IP)
 	}
 	return false
 }
@@ -459,7 +488,7 @@ func (w *Web) TGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 	text := string(body)
 	split := strings.Split(text, "\n")
 	if len(split) < 2 {
-		L().Info("tg_code rejected malformed payload from {0}", zap.Any("arg0", r.RemoteAddr))
+		L().Info("tg_code rejected: malformed payload", zap.Any("remote_addr", r.RemoteAddr))
 		http.Error(wr, "Invalid code payload", http.StatusBadRequest)
 		return
 	}
@@ -489,16 +518,16 @@ func (w *Web) TGCodeHandler(wr http.ResponseWriter, r *http.Request) {
 	w.mu.Unlock()
 
 	if ok && client != nil {
-		L().Info("signing in with code for phone={0}, has_password={1}", zap.Any("arg0", maskPhone(phone)), zap.Any("arg1", password != ""))
+		L().Info("signing in with code", zap.Any("phone", maskPhone(phone)), zap.Any("has_password", password != ""))
 		err := client.SignIn(phone, code, password)
 		if err != nil {
-			L().Info("sign in failed for {0}: {1}", zap.Any("arg0", maskPhone(phone)), zap.Any("arg1", err))
+			L().Warn("sign in failed", zap.Any("phone", maskPhone(phone)), zap.Error(err))
 			writeTelegramAuthError(wr, err)
 			return
 		}
-		L().Info("sign in succeeded for {0}", zap.Any("arg0", maskPhone(phone)))
+		L().Info("sign in succeeded", zap.Any("phone", maskPhone(phone)))
 		if err := w.finishPendingLogin(client); err != nil {
-			L().Info("finish after tg_code failed: {0}", zap.Any("arg0", err))
+			L().Warn("finish after tg_code failed", zap.Error(err))
 			http.Error(wr, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -527,7 +556,7 @@ func (w *Web) FinishLoginHandler(wr http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := w.finishPendingLogin(client); err != nil {
-		L().Info("finish_login failed: {0}", zap.Any("arg0", err))
+		L().Warn("finish_login failed", zap.Error(err))
 		http.Error(wr, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -601,7 +630,7 @@ func (w *Web) CustomBotHandler(wr http.ResponseWriter, r *http.Request) {
 	if w.saveConfig != nil {
 		w.saveConfig("custom_bot", username)
 	}
-	L().Info("custom inline bot saved: {0}", zap.Any("arg0", username))
+	L().Info("custom inline bot saved", zap.Any("username", username))
 	writeString(wr, "OK")
 }
 
@@ -612,7 +641,7 @@ func (w *Web) InitQRLoginHandler(wr http.ResponseWriter, r *http.Request) {
 	}
 	url, err := w.initQRLogin(r)
 	if err != nil {
-		L().Info("QR login init failed: {0}", zap.Any("arg0", err))
+		L().Warn("QR login init failed", zap.Error(err))
 		http.Error(wr, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -655,7 +684,7 @@ func (w *Web) initQRLogin(r *http.Request) (string, error) {
 	}()
 
 	if ok && client != nil {
-		L().Info("QR login connect started from={0}", zap.Any("arg0", r.RemoteAddr))
+		L().Info("QR login connect started", zap.Any("remote_addr", r.RemoteAddr))
 		if err := client.Connect(); err != nil {
 			return "", fmt.Errorf("connect failed: %v", err)
 		}
@@ -667,7 +696,7 @@ func (w *Web) initQRLogin(r *http.Request) (string, error) {
 		w.mu.Lock()
 		w.qrLogin = qrLoginState{URL: url}
 		w.mu.Unlock()
-		L().Info("QR login URL generated, len={0}", zap.Any("arg0", len(url)))
+		L().Info("QR login URL generated, len", zap.Any("len", len(url)))
 		go w.pollQRLogin(client)
 		return url, nil
 	}
@@ -711,7 +740,7 @@ func (w *Web) pollQRLogin(client TelegramClient) {
 					L().Info("QR login completed, 2FA required")
 					return
 				}
-				L().Info("QR login poll error", zap.Error(err))
+				L().Warn("QR login poll error", zap.Error(err))
 				errStr := strings.ToLower(err.Error())
 				if strings.Contains(errStr, "canceled") || strings.Contains(errStr, "closed") || strings.Contains(errStr, "dead") {
 					L().Info("stopping QR login poll because client connection is inactive")
@@ -719,7 +748,7 @@ func (w *Web) pollQRLogin(client TelegramClient) {
 				}
 			} else if status == "SUCCESS" {
 				if err := w.finishPendingLogin(client); err != nil {
-					L().Info("QR finish_login failed", zap.Error(err))
+					L().Warn("QR finish_login failed", zap.Error(err))
 					return
 				}
 				w.mu.Lock()
@@ -764,7 +793,7 @@ func (w *Web) GetQRURLHandler(wr http.ResponseWriter, r *http.Request) {
 	L().Info("get_qr_url called before QR exists, initializing")
 	url, err := w.initQRLogin(r)
 	if err != nil {
-		L().Info("get_qr_url init failed: {0}", zap.Any("arg0", err))
+		L().Warn("get_qr_url init failed", zap.Error(err))
 		http.Error(wr, "Internal Server Error: Unable to initialize QR login: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -801,13 +830,13 @@ func (w *Web) QR2FAHandler(wr http.ResponseWriter, r *http.Request) {
 
 	L().Info("QR 2FA password received, checking")
 	if err := client.SignIn("", "", password); err != nil {
-		L().Info("QR 2FA failed: {0}", zap.Any("arg0", err))
+		L().Warn("QR 2FA failed", zap.Error(err))
 		http.Error(wr, err.Error(), http.StatusForbidden)
 		return
 	}
 	L().Info("QR 2FA accepted")
 	if err := w.finishPendingLogin(client); err != nil {
-		L().Info("QR 2FA finish_login failed: {0}", zap.Any("arg0", err))
+		L().Warn("QR 2FA finish_login failed", zap.Error(err))
 		http.Error(wr, err.Error(), http.StatusInternalServerError)
 		return
 	}
