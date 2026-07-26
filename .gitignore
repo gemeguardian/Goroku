@@ -20,7 +20,6 @@ execution_audit.log
 
 .ruff_cache
 # Byte-compiled / optimized / DLL files
-__pycache__/
 *.py[cod]
 *$py.class
 .requirements_hash
@@ -31,47 +30,13 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
-develop-eggs/
 dist/
 downloads/
-eggs/
-.eggs/
 lib/
 lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
 
 # Translations
 *.mo
@@ -80,97 +45,39 @@ coverage.xml
 # Django stuff:
 *.log
 *.out
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
 
-# Flask stuff:
-instance/
-.webassets-cache
 
-# Scrapy stuff:
-.scrapy
 
-# Sphinx documentation
-docs/_build/
 
-# PyBuilder
-target/
 
-# Jupyter Notebook
-.ipynb_checkpoints
 
-# IPython
-profile_default/
-ipython_config.py
 
-# pyenv
-.python-version
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow
-__pypackages__/
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
 
-# SageMath parsed files
-*.sage.py
 
 # Environments
 .env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
 
-# Spyder project settings
-.spyderproject
-.spyproject
 
-# Rope project settings
-.ropeproject
 
 # mkdocs documentation
 /site
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
 
 # Pyre type checker
-.pyre/
 
-
-*__pycache__
-*.pyc
-heroku/api_token.py
-heroku/loaded_modules
 loaded_modules
-heroku/debug_modules
 heroku*.session*
 database-*.json
 *.swp
 .setup_complete
-.tox
 .idea/
-venv/
 api_token.txt
-.coverage
 .vscode/
 ftg-install.log
 config.ini
-.cache
 config-*.json
 config.json
 *cache*.json
@@ -185,20 +92,15 @@ config.json
 *.mp3
 *.avi
 
-# R4.1: vendored web onboarding assets are embedded via //go:embed and must be
-# tracked even though they are *.png, otherwise a fresh checkout breaks the
 # goroku/web build (embed has no matching files).
 !goroku/web/assets/static/*.png
 !web-resources/static/*.png
 
 # Heroku-specific rules
-.heroku/
 .apt/
 .profile.d/
 vendor/
-Pipfile.lock
 
-heroku.log.*
 unknown_errors.txt
 
 # Go binaries / local builds
@@ -228,7 +130,6 @@ coverage.out
 .goroku_go/
 /modules/
 .kimchi/
-# GOPATH created when building with GOPATH=$PWD/go; sits in the package tree
 # (no leading dot), so `go list ./...` walks into it unless ignored.
 /go/
 
@@ -243,3 +144,10 @@ coverage.out
 
 # User-downloaded module sources (outside package tree; not tracked)
 /user_modules/
+
+# tracking one here meant the embedded copy was never the thing being served.
+/web-resources/
+
+# Go build cache. Some local scripts point GOCACHE here; it reaches gigabytes
+# and must never enter the repository or a Docker build context.
+.cache/
