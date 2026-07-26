@@ -57,7 +57,7 @@ Persistence:
 
 1. **Built-in modules** — compiled into the binary via factories in `main.go`.
 2. **Native Go plugins** (Linux) — owner install/load (`.dlmod` / `.loadmod` / presets); trust digests / `-confirm`; cannot fully unload from process memory.
-3. **Yaegi `.eval`** — owner-only; out-of-process worker (`--yaegi-worker` re-exec) via `ProcessExecutor`; process group killed on timeout/cancel. Context is JSON snapshots (no shared bot memory); `Loader` unavailable in worker.
+3. **Yaegi `.eval`** — owner-only; runs **in the bot process** with the live `msg`, `client`, `db` and `loader` in the interpreter context. That is the point of the command: an out-of-process snapshot cannot call client methods. The cost is that evaluated code is neither sandboxed nor interruptible — Yaegi offers no cancellation, so an eval that exceeds `yaegiEvalTimeout` (15s) reports a timeout while its goroutine keeps running until the process restarts. Abandoned goroutines are counted and reported as `stuck_evals` by `GET /health`; output buffers are bounded (`externalOutputLimit`) and mutex-protected. `.eval` is owner-only and stays that way: it is equivalent to running code as the process user.
 
 There is **no** Python module loader.
 

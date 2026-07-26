@@ -28,7 +28,9 @@ Short reference for flags, env, and on-disk config. No example secrets.
 | `GOROKU_IP` | Listen / URL host override |
 | `GOROKU_NO_GIT` | Disable git |
 | `GOROKU_SETUP_TOKEN` | Setup token seed |
-| `GOROKU_TRUST_PROXY_HEADERS` | Trust proxy client IP headers |
+| `GOROKU_TRUSTED_PROXIES` | Comma-separated trusted-proxy CIDRs; **required** before any forwarding header is trusted (see SECURITY.md) |
+| `GOROKU_TRUST_PROXY_HEADERS` | **Deprecated**, inert without `GOROKU_TRUSTED_PROXIES` |
+| `GOROKU_WEB_BIND` | Web panel listen address (default loopback) |
 | `GOROKU_DEBUG` | Debug logs |
 | `GOROKU_WEB_RESOURCES` | Static UI resources path |
 | `api_id` / `api_hash` | Optional bootstrap from env if config empty (prefer file) |

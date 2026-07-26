@@ -51,7 +51,7 @@
 > - ✅ Download modules only from sources you have reviewed
 > - ❌ Do NOT install modules if unsure about their safety
 > - ⚠️ Exercise caution with unknown commands (`.terminal`, `.eval`, `.ecpp`, etc.)
-> - Go `.eval` is owner-only and always enabled. It runs **out-of-process via Yaegi** (worker child process); timeout/cancel **kills the worker process group**. No shared memory with the bot (`msg`/`client`/`db` are snapshots; `Loader` unavailable). Concurrency is limited to one worker eval.
+> - Go `.eval` is owner-only and always enabled. It runs **inside the bot process** with the live `msg`/`client`/`db`/`loader`, which is the point of the command — it is **not** sandboxed. Yaegi cannot be cancelled, so an eval that hangs keeps a goroutine running until the process restarts; the timeout only frees the command. Output is bounded and abandoned goroutines show up as `stuck_evals` on `/health`. Concurrency is limited to one eval.
 > - Native Go plugins (`.dlmod` / `.loadmod` / presets) require owner identity and run as arbitrary in-process code. Plugins **cannot be fully unloaded from process memory** after load; unregister only removes handlers. Review module source before installation.
 > - Remote module downloads are HTTPS-only; private/loopback/link-local/CGNAT targets are blocked.
 
@@ -221,7 +221,7 @@ Security policy, threat model, and secret rotation instructions are in
 | 🎨 **UI/UX Improvements** | Modern interface and user experience |
 | 📦 **Core Modules** | Improved and new core functionality |
 | ⏱ **Rapid Bug Fixes** | Faster resolution than Hikka/Heroku/FTG/GeekTG |
-| 🔌 **Go plugins + Yaegi** | Native Go plugins (`.dlmod` / `.loadmod`) and out-of-process Yaegi `.eval` — **not** a Python module runtime |
+| 🔌 **Go plugins + Yaegi** | Native Go plugins (`.dlmod` / `.loadmod`) and in-process Yaegi `.eval` — **not** a Python module runtime |
 | ▶️ **Inline Elements** | Forms, galleries and lists support |
 
 ### Module compatibility (honest)
@@ -229,7 +229,7 @@ Security policy, threat model, and secret rotation instructions are in
 Goroku is a **Go** userbot. It does **not** load Python Hikka / FTG / GeekTG modules.
 
 - **Native Go plugins**: install/load via owner-only commands and execute as arbitrary in-process code; review source before installation.
-- **Yaegi `.eval`**: owner-only, out-of-process worker; timeout kills the worker; snapshots only (no shared bot memory).
+- **Yaegi `.eval`**: owner-only, in-process, with the live bot state; not sandboxed and not interruptible — a hung eval needs a restart.
 - **Semantic familiarity**: command style and UX are inspired by Heroku/Hikka; that is **not** binary or Python import compatibility.
 
 ---

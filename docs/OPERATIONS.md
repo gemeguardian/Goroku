@@ -20,7 +20,9 @@ Environment (common):
 | `GOROKU_IP` | Override listen / advertised host |
 | `GOROKU_NO_GIT=1` | Same as `--no-git` |
 | `GOROKU_SETUP_TOKEN` | Pre-seed web setup token (cleared after setup) |
-| `GOROKU_TRUST_PROXY_HEADERS` | Trust `X-Forwarded-For` / similar when behind a trusted proxy |
+| `GOROKU_TRUSTED_PROXIES` | Comma-separated CIDRs of trusted reverse proxies. **Required** to honour `X-Forwarded-For` / `CF-Connecting-IP`: without it forwarding headers are ignored and `RemoteAddr` is used. See SECURITY.md |
+| `GOROKU_TRUST_PROXY_HEADERS` | **Deprecated and inert on its own.** Kept for compatibility; without `GOROKU_TRUSTED_PROXIES` it enables nothing |
+| `GOROKU_WEB_BIND` | Listen address for the web panel (default loopback). Bind non-loopback only behind a TLS proxy |
 | `GOROKU_DEBUG=1` | Debug logging |
 | `GOROKU_WEB_RESOURCES` | Override web static resources directory |
 | `NO_SUDO` | Allow root path without interactive prompt (with root guard logic) |

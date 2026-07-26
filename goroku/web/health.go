@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"goroku/goroku/evalstats"
 	"goroku/goroku/utils"
 )
 
@@ -14,10 +15,14 @@ type healthPayload struct {
 	// Clients is how many accounts are registered; ClientsConnected is how many
 	// of them have a live MTProto transport. A gap between the two is the
 	// signal that the bot is up but deaf.
-	Clients          int    `json:"clients"`
-	ClientsConnected int    `json:"clients_connected"`
-	SetupCompleted   bool   `json:"setup_completed"`
-	Version          string `json:"version"`
+	Clients          int `json:"clients"`
+	ClientsConnected int `json:"clients_connected"`
+	// StuckEvals counts .eval goroutines abandoned at their timeout. Yaegi
+	// cannot be interrupted, so they run until the process restarts; a number
+	// that only ever grows is the operator's cue to schedule one.
+	StuckEvals     int64  `json:"stuck_evals"`
+	SetupCompleted bool   `json:"setup_completed"`
+	Version        string `json:"version"`
 }
 
 // HealthHandler returns a minimal ops snapshot without secrets.
@@ -31,6 +36,7 @@ func (w *Web) HealthHandler(wr http.ResponseWriter, r *http.Request) {
 		Status:           "ok",
 		Clients:          w.clientCount(),
 		ClientsConnected: w.connectedClientCount(),
+		StuckEvals:       evalstats.Stuck(),
 		SetupCompleted:   SetupCompleted(w.dataRoot),
 		Version:          utils.GetVersionRaw(),
 	}

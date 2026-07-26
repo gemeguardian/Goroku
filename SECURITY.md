@@ -9,7 +9,7 @@ Practical threat model and secret-handling notes for Goroku operators.
 | Web panel | Session theft, CSRF, open bind | Binds `127.0.0.1` by default; Docker uses `0.0.0.0` only with `DOCKER` set. `--web-bind` / `GOROKU_IP` can override. Non-loopback binds emit a startup warning. Forwarding headers (`CF-Connecting-IP`, `X-Forwarded-For`) are **fail-closed** unless `GOROKU_TRUSTED_PROXIES` CIDRs are configured and `RemoteAddr` matches. Setup token, CSRF, session rotation. Prefer reverse proxy + TLS if exposed. |
 | SSH reverse tunnel (`--ssh-tunnel`) | Exposes panel to public tunnel providers | **Off by default.** Only enable when you accept third-party tunnel risk. |
 | MTProto proxy flags | Wrong secret / MITM path | `--proxy-host` + `--proxy-port` + `--proxy-secret` required together; `--proxy-pass` is a deprecated alias for the secret, **not** SSH. |
-| Yaegi `.eval` | RCE as the bot owner | Owner-only; single concurrent worker; eval runs in a **child process** killed on timeout/cancel (process group SIGKILL). No shared memory with the bot (snapshots only). |
+| Yaegi `.eval` | RCE as the bot owner | Owner-only; one eval at a time. Runs **in the bot process** with the live client/db/loader — deliberately, so eval can act on the running bot. Not sandboxed, and a hung eval cannot be interrupted before a restart; output is bounded, and abandoned goroutines are reported as `stuck_evals` on `/health`. |
 | Native Go plugins | In-process code load | Owner-only install commands and callback owner rechecks; plugins are arbitrary code and cannot be fully unloaded from memory. Review source before installation. |
 | Remote module download | SSRF / hostile payload | HTTPS-only; private/loopback/link-local/CGNAT targets blocked; redirects and response size are bounded. Persisted restores require an exact recorded source SHA-256 match. |
 | Terminal module | Shell RCE | Owner-only; treat as full host compromise capability. |
@@ -186,7 +186,7 @@ cannot be fully unloaded from process memory.
 
 ## Residual risks (honest)
 
-- **Yaegi eval** runs out-of-process and is killable on timeout, but still full RCE as the process user while the worker is alive. Snapshots only: no live `msg`/`client`/`db`/`loader` shared with the parent; `Loader` is unavailable in the worker.
+- **Yaegi eval** runs inside the bot process with the live `msg`, `client`, `db` and `loader`. It is full RCE as the process user, it is not sandboxed, and Yaegi cannot be cancelled: an eval that hangs keeps a goroutine burning CPU until the process is restarted. The timeout only frees the command, not the interpreter. Watch `stuck_evals` on `/health` and restart when it climbs. This is why `.eval` is owner-only and will remain so.
 - **Native plugins** cannot be fully unloaded after `plugin.Open`.
 - **`CheckBranch` / `ResetToMaster`** can hard-reset a non-master git worktree for non-allowlisted accounts when git is enabled. For production binary deploys use `--no-git` (or `GOROKU_NO_GIT=1`) so the process does not perform destructive git operations.
 - Running as root is discouraged (`--root` / `force_insecure` / `DOCKER` / `NO_SUDO` only when intentional).

@@ -1,6 +1,6 @@
 # Quickstart
 
-Requirements: **Go 1.24.4+** (see `go.mod`), Telegram API credentials from [my.telegram.org/apps](https://my.telegram.org/apps).
+Requirements: **Go 1.25.0+** (see `go.mod`), Telegram API credentials from [my.telegram.org/apps](https://my.telegram.org/apps).
 
 ## Build and run (local)
 
