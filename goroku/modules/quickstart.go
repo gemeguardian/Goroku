@@ -141,7 +141,7 @@ func StartQuickstart(ctx context.Context, client *goroku.CustomTelegramClient, d
 		if !m.db.GetBool("Quickstart", "no_msg", false) {
 			im := m.client.GorokuInline
 			if im != nil && im.IsComplete() {
-				if err := m.sendMenu(m.client.TGID); err != nil {
+				if err := m.sendMenu(m.client.TGIDValue()); err != nil {
 					return
 				}
 				if err := m.db.SetBool("Quickstart", "no_msg", true); err != nil {

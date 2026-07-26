@@ -209,7 +209,7 @@ func (m *GorokuSecurity) resolveSecurityUser(ref any) (resolvedSecurityUser, boo
 		}
 		return res, false
 	}
-	id := inputPeerUserID(peer, m.Client.TGID)
+	id := inputPeerUserID(peer, m.Client.TGIDValue())
 	if id == 0 {
 		return res, false
 	}
@@ -242,7 +242,7 @@ func (m *GorokuSecurity) resolveUserFromMessage(msg *goroku.Message) (resolvedSe
 			return m.resolveSecurityUser(replyMsg.SenderID)
 		}
 	}
-	if msg.IsPrivate && msg.ChatID != m.Client.TGID {
+	if msg.IsPrivate && msg.ChatID != m.Client.TGIDValue() {
 		return m.resolveSecurityUser(msg.ChatID)
 	}
 	return resolvedSecurityUser{}, false
@@ -302,7 +302,7 @@ func parseUserID(client *goroku.CustomTelegramClient, arg string) (int64, string
 	if client != nil {
 		peer, err := client.ResolvePeer(arg)
 		if err == nil {
-			id := inputPeerUserID(peer, client.TGID)
+			id := inputPeerUserID(peer, client.TGIDValue())
 			if id != 0 {
 				name := arg
 				if full, err := client.GetFullUser(arg, 3600, false); err == nil {
@@ -336,11 +336,11 @@ func (m *GorokuSecurity) OwnerCmd(msg *goroku.Message) error {
 			users = append(users, resolvedSecurityUser{ID: id, Name: fmt.Sprintf("User%d", id), URL: fmt.Sprintf("tg://user?id=%d", id)})
 		}
 	}
-	if m.Client != nil && m.Client.TGID != 0 && !seen[m.Client.TGID] {
-		if u, ok := m.resolveSecurityUser(m.Client.TGID); ok {
+	if m.Client != nil && m.Client.TGIDValue() != 0 && !seen[m.Client.TGIDValue()] {
+		if u, ok := m.resolveSecurityUser(m.Client.TGIDValue()); ok {
 			users = append(users, u)
 		} else {
-			users = append(users, resolvedSecurityUser{ID: m.Client.TGID, Name: fmt.Sprintf("User%d", m.Client.TGID), URL: fmt.Sprintf("tg://user?id=%d", m.Client.TGID)})
+			users = append(users, resolvedSecurityUser{ID: m.Client.TGIDValue(), Name: fmt.Sprintf("User%d", m.Client.TGIDValue()), URL: fmt.Sprintf("tg://user?id=%d", m.Client.TGIDValue())})
 		}
 	}
 
@@ -385,7 +385,7 @@ func (m *GorokuSecurity) AddownerCmd(msg *goroku.Message) error {
 	if !ok {
 		return msg.Answer(m.T("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Укажи, кому выдавать права</b>"))
 	}
-	if user.ID == m.Client.TGID {
+	if user.ID == m.Client.TGIDValue() {
 		return msg.Answer(m.T("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</tg-emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
@@ -485,7 +485,7 @@ func (m *GorokuSecurity) DelownerCmd(msg *goroku.Message) error {
 	if !ok {
 		return msg.Answer(m.T("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</tg-emoji> <b>Укажи, кому выдавать права</b>"))
 	}
-	if user.ID == m.Client.TGID {
+	if user.ID == m.Client.TGIDValue() {
 		return msg.Answer(m.T("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</tg-emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
@@ -525,7 +525,7 @@ func (m *GorokuSecurity) AddsudoCmd(msg *goroku.Message) error {
 		return msg.Answer(m.T("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
 	}
 
-	if user.ID == m.Client.TGID {
+	if user.ID == m.Client.TGIDValue() {
 		return msg.Answer(m.T("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 
@@ -560,7 +560,7 @@ func (m *GorokuSecurity) DelsudoCmd(msg *goroku.Message) error {
 		return msg.Answer(m.T("no_user", "<tg-emoji emoji-id=5210952531676504517>🚫</emoji> <b>Укажи, кому выдавать права</b>"))
 	}
 
-	if user.ID == m.Client.TGID {
+	if user.ID == m.Client.TGIDValue() {
 		return msg.Answer(m.T("self", "<tg-emoji emoji-id=5447644880824181073>⚠️</emoji> <b>Нельзя управлять своими правами!</b>"))
 	}
 

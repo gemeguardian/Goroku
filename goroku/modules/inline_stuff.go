@@ -365,7 +365,7 @@ func (m *InlineStuff) HandleBotPM(msg *tgbotapi.Message) {
 		_, _ = im.GetBotAPI().Send(photoConfig)
 
 	case "/profile":
-		if msg.From == nil || msg.From.ID != m.Client.TGID {
+		if msg.From == nil || msg.From.ID != m.Client.TGIDValue() {
 			return
 		}
 

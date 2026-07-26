@@ -267,7 +267,7 @@ func (h *Goroku) sendBadge(client *CustomTelegramClient, db *Database) {
 			name = u.Username
 		}
 	} else {
-		name = client.Username
+		name = client.Username()
 	}
 
 	uptime := utils.FormattedUptime()
@@ -283,7 +283,7 @@ func (h *Goroku) sendBadge(client *CustomTelegramClient, db *Database) {
 		name, platform, emoji, uptime, GetVersionString(),
 	)
 
-	_, _ = client.SendMessage(ChatRefID(client.TGID), msg)
+	_, _ = client.SendMessage(ChatRefID(client.TGIDValue()), msg)
 }
 
 func GenerateAppName() string {

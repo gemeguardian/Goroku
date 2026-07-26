@@ -484,7 +484,7 @@ func tracebackUnit(client *CustomTelegramClient, traceback telegramTraceback) *i
 		Buttons: [][]inline.Button{{{
 			Text: "🪐 Full Traceback",
 			Handler: func(call inline.CallbackQuery) error {
-				if call.FromID != client.TGID {
+				if call.FromID != client.TGIDValue() {
 					return call.Answer("This traceback belongs to the account owner.", true)
 				}
 				return call.Edit(traceback.full, tgbotapi.InlineKeyboardMarkup{})

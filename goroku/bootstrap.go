@@ -771,7 +771,7 @@ func (h *Goroku) startup(ctx context.Context, factories []ModuleFactory) error {
 		client.APIHash = h.APIHash
 		client.SessionPath = zeroSession
 		if err := client.ConnectContext(ctx); err == nil {
-			realID := client.TGID
+			realID := client.TGIDValue()
 			_ = client.Disconnect()
 			select {
 			case <-time.After(500 * time.Millisecond):
@@ -922,7 +922,7 @@ func (h *Goroku) startup(ctx context.Context, factories []ModuleFactory) error {
 			}
 			if h.Web != nil {
 				if err := h.registerWebRuntime(client); err != nil {
-					L().Error("Failed to register web runtime", zap.Int64("tg_id", client.TGID), zap.Error(err))
+					L().Error("Failed to register web runtime", zap.Int64("tg_id", client.TGIDValue()), zap.Error(err))
 				}
 			}
 		}

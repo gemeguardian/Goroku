@@ -782,7 +782,7 @@ func TestInlineModuleHandlerLeaseDefersUnload(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := loader.client
-	client.TGID = 42
+	client.SetTGID(42)
 	im := inline.NewInlineManager(client, loader.db, NewInlineModulesAdapter(loader))
 	done := make(chan struct{})
 	go func() {

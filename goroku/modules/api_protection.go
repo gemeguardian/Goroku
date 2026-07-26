@@ -58,7 +58,7 @@ func (m *APIProtection) Init(client *goroku.CustomTelegramClient, db *goroku.Dat
 		return err
 	}
 	if len(m.forbiddenTypeIDs) > 0 {
-		m.Client.ForbiddenConstructors = m.forbiddenTypeIDs
+		m.Client.SetForbiddenConstructors(m.forbiddenTypeIDs)
 	}
 	return nil
 }
@@ -133,7 +133,7 @@ func (m *APIProtection) updateForbiddenMethods(config map[string]any) error {
 
 	m.forbiddenTypeIDs = typeIDs
 	if m.Client != nil {
-		m.Client.ForbiddenConstructors = typeIDs
+		m.Client.SetForbiddenConstructors(typeIDs)
 	}
 	return nil
 }

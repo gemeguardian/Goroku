@@ -281,7 +281,7 @@ func (m *GorokuInfo) InfoCmd(msg *goroku.Message) error {
 		}
 	}
 	if meStr == "" {
-		meStr = fmt.Sprintf("<b><a href=\"tg://user?id=%d\">User%d</a></b>", m.Client.TGID, m.Client.TGID)
+		meStr = fmt.Sprintf("<b><a href=\"tg://user?id=%d\">User%d</a></b>", m.Client.TGIDValue(), m.Client.TGIDValue())
 	}
 
 	prefixFormat := fmt.Sprintf("«<code>%s</code>»", utils.EscapeHTML(prefix))

@@ -624,7 +624,7 @@ func (m *GorokuSettings) getSettingsMarkup(im inlineiface.InlineManager) [][]inl
 								loader := m.Client.Loader
 								if loader != nil {
 									msg := &goroku.Message{
-										ChatID: m.Client.TGID,
+										ChatID: m.Client.TGIDValue(),
 										Client: m.Client,
 										Out:    true,
 									}

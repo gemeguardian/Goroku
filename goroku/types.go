@@ -56,7 +56,13 @@ type Message struct {
 	IsForwarded  bool
 	Answered     bool
 	ViaBotID     int64
-	ctx          context.Context
+	// SenderChannelID identifies the channel a message was sent as, for
+	// anonymous admins and channel-signed posts. Telegram gives those a
+	// *tg.PeerChannel FromID and no user, so SenderID is 0 for them; policies
+	// that want to name such a sender must use this field.
+	SenderChannelID int64
+	SenderIsChannel bool
+	ctx             context.Context
 }
 
 // Context is canceled when dispatcher shutdown begins. Existing handlers
@@ -192,29 +198,38 @@ type WebRuntime interface {
 }
 
 type CustomTelegramClient struct {
-	APIID                  int64
-	APIHash                string
-	TGID                   int64
-	Username               string
+	APIID   int64
+	APIHash string
+	// identityMu guards the account identity below. It is filled by the
+	// client.Run goroutine once the session authorizes, while the web login
+	// coordinator, the security manager and every module read it — the fields
+	// were plain and raced on every login.
+	identityMu             sync.RWMutex
+	tgID                   int64
+	username               string
+	gorokuMe               *tg.User
 	parseMode              string
 	cacheMu                sync.RWMutex
 	GorokuEntityCache      map[cache.EntityCacheKey]cache.CacheRecordEntity
 	GorokuPermsCache       map[cache.EntityCacheKey]map[cache.EntityCacheKey]cache.CacheRecordPerms
 	GorokuFullChannelCache map[cache.EntityCacheKey]cache.CacheRecordFullChannel
 	GorokuFullUserCache    map[cache.EntityCacheKey]cache.CacheRecordFullUser
-	ForbiddenConstructors  []uint32
-	GorokuMe               *tg.User
-	GorokuDB               *Database
-	Loader                 *Modules
-	GorokuInline           inlineiface.InlineManager // assigned by goroku package via *inline.InlineManager
-	Web                    WebRuntime
-	phoneCodeHash          string
-	qrLoginSignal          <-chan struct{}
-	SessionPath            string
-	client                 *telegram.Client
-	rawAPI                 *tg.Client
-	ctx                    context.Context
-	cancel                 context.CancelFunc
+	// forbiddenConstructors is read on every outgoing RPC and rewritten by the
+	// config reload goroutine. It is an atomic pointer to an immutable slice:
+	// readers take a snapshot, writers publish a fresh slice. A plain field
+	// let a reader observe a torn slice header and skip the check entirely.
+	forbiddenConstructors atomic.Pointer[[]uint32]
+	GorokuDB              *Database
+	Loader                *Modules
+	GorokuInline          inlineiface.InlineManager // assigned by goroku package via *inline.InlineManager
+	Web                   WebRuntime
+	phoneCodeHash         string
+	qrLoginSignal         <-chan struct{}
+	SessionPath           string
+	client                *telegram.Client
+	rawAPI                *tg.Client
+	ctx                   context.Context
+	cancel                context.CancelFunc
 
 	RatelimitMu        sync.Mutex
 	Ratelimiter        []RateLimitRecord
@@ -234,7 +249,78 @@ type CustomTelegramClient struct {
 
 // TGIDValue returns the Telegram user ID associated with the client.
 func (c *CustomTelegramClient) TGIDValue() int64 {
-	return c.TGID
+	if c == nil {
+		return 0
+	}
+	c.identityMu.RLock()
+	defer c.identityMu.RUnlock()
+	return c.tgID
+}
+
+// Username returns the account username, empty until the session authorizes.
+func (c *CustomTelegramClient) Username() string {
+	if c == nil {
+		return ""
+	}
+	c.identityMu.RLock()
+	defer c.identityMu.RUnlock()
+	return c.username
+}
+
+// Me returns the authorized account, nil until the session authorizes.
+func (c *CustomTelegramClient) Me() *tg.User {
+	if c == nil {
+		return nil
+	}
+	c.identityMu.RLock()
+	defer c.identityMu.RUnlock()
+	return c.gorokuMe
+}
+
+// Identity returns the account identity as one consistent snapshot. Calling
+// TGIDValue, Username and Me separately takes three snapshots, which a
+// concurrent SetIdentity can fall between.
+func (c *CustomTelegramClient) Identity() (int64, string, *tg.User) {
+	if c == nil {
+		return 0, "", nil
+	}
+	c.identityMu.RLock()
+	defer c.identityMu.RUnlock()
+	return c.tgID, c.username, c.gorokuMe
+}
+
+// SetIdentity publishes the account identity learned from an authorized
+// session. All three fields move together: a reader must never see a new TGID
+// beside a stale Me.
+func (c *CustomTelegramClient) SetIdentity(id int64, username string, me *tg.User) {
+	if c == nil {
+		return
+	}
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
+	c.tgID = id
+	c.username = username
+	c.gorokuMe = me
+}
+
+// SetUsername overrides the cached username.
+func (c *CustomTelegramClient) SetUsername(username string) {
+	if c == nil {
+		return
+	}
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
+	c.username = username
+}
+
+// SetMe overrides the cached account.
+func (c *CustomTelegramClient) SetMe(me *tg.User) {
+	if c == nil {
+		return
+	}
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
+	c.gorokuMe = me
 }
 
 // API returns the live gotd Telegram API client for trusted modules.
@@ -257,7 +343,12 @@ func (c *CustomTelegramClient) InlineProvider() webiface.InlineProvider {
 
 // SetTGID sets the Telegram user ID associated with the client.
 func (c *CustomTelegramClient) SetTGID(id int64) {
-	c.TGID = id
+	if c == nil {
+		return
+	}
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
+	c.tgID = id
 }
 
 type RateLimitRecord struct {
@@ -266,14 +357,15 @@ type RateLimitRecord struct {
 }
 
 func NewCustomTelegramClient(tgID int64) *CustomTelegramClient {
-	return &CustomTelegramClient{
-		TGID:                   tgID,
+	client := &CustomTelegramClient{
+		tgID:                   tgID,
 		GorokuEntityCache:      make(map[cache.EntityCacheKey]cache.CacheRecordEntity),
 		GorokuPermsCache:       make(map[cache.EntityCacheKey]map[cache.EntityCacheKey]cache.CacheRecordPerms),
 		GorokuFullChannelCache: make(map[cache.EntityCacheKey]cache.CacheRecordFullChannel),
 		GorokuFullUserCache:    make(map[cache.EntityCacheKey]cache.CacheRecordFullUser),
-		ForbiddenConstructors:  make([]uint32, 0),
 	}
+	client.SetForbiddenConstructors(nil)
+	return client
 }
 
 var (
@@ -333,10 +425,10 @@ func (c *CustomTelegramClient) Close(ctx context.Context) error {
 // GracefulStop preserves the historical logging wrapper.
 func (c *CustomTelegramClient) GracefulStop(ctx context.Context) {
 	if err := c.Close(ctx); err != nil {
-		L().Warn("Client stop failed", zap.Int64("tg_id", c.TGID), zap.Error(err))
+		L().Warn("Client stop failed", zap.Int64("tg_id", c.TGIDValue()), zap.Error(err))
 		return
 	}
-	L().Info("Client stopped gracefully", zap.Int64("tg_id", c.TGID))
+	L().Info("Client stopped gracefully", zap.Int64("tg_id", c.TGIDValue()))
 }
 
 // AnimateMessage cycles through frames in a Telegram message.

@@ -69,7 +69,7 @@ func TestForbiddenInvokerBlocksConfiguredConstructor(t *testing.T) {
 			called = true
 			return nil
 		}},
-		client: &CustomTelegramClient{ForbiddenConstructors: []uint32{123}},
+		client: newForbiddenTestClient(123),
 	}
 
 	if err := invoker.Invoke(context.Background(), typedTestRequest{typeID: 123}, nil); err == nil {

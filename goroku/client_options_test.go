@@ -7,7 +7,7 @@ import (
 
 func TestGetLogChatID(t *testing.T) {
 	// Without DB
-	client := &CustomTelegramClient{TGID: 42}
+	client := NewCustomTelegramClient(42)
 	if got := client.GetLogChatID(); got != 0 {
 		t.Errorf("GetLogChatID without DB = %d; want 0", got)
 	}
@@ -45,7 +45,7 @@ func TestGetLogChatID(t *testing.T) {
 }
 
 func TestGetLogChatIDCheckedReportsLifecycleErrors(t *testing.T) {
-	client := &CustomTelegramClient{TGID: 42, GorokuDB: NewDatabase(42)}
+	client := newTestClient(42, NewDatabase(42))
 	if _, err := client.GetLogChatIDChecked(); !errors.Is(err, ErrDatabaseNotInitialized) {
 		t.Fatalf("uninitialized lookup error = %v", err)
 	}
@@ -61,7 +61,7 @@ func TestGetLogChatIDCheckedReportsLifecycleErrors(t *testing.T) {
 }
 
 func TestCheckBotNilInline(t *testing.T) {
-	client := &CustomTelegramClient{TGID: 42}
+	client := NewCustomTelegramClient(42)
 	ok, err := client.CheckBot("test_bot")
 	if err == nil {
 		t.Error("Expected error when inline manager is nil")

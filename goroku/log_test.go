@@ -66,7 +66,7 @@ func TestTranslatorInitCheckedReportsDatabaseLifecycle(t *testing.T) {
 }
 
 func TestTracebackUnitUsesRegisteredLoaderModule(t *testing.T) {
-	unit := tracebackUnit(&CustomTelegramClient{TGID: 42}, telegramTraceback{})
+	unit := tracebackUnit(NewCustomTelegramClient(42), telegramTraceback{})
 	if unit.Module != "Loader" {
 		t.Fatalf("traceback callback module = %q, want Loader", unit.Module)
 	}

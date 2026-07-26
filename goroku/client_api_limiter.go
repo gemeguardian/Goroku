@@ -14,6 +14,22 @@ import (
 	"go.uber.org/zap"
 )
 
+// waitContext sleeps for d unless ctx ends first, in which case it reports the
+// context error. time.Sleep here ignored cancellation entirely.
+func waitContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 type forbiddenInvoker struct {
 	parent tg.Invoker
 	client *CustomTelegramClient
@@ -23,7 +39,7 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 	if input != nil {
 		if t, ok := input.(interface{ TypeID() uint32 }); ok {
 			typeID := t.TypeID()
-			for _, forbidden := range f.client.ForbiddenConstructors {
+			for _, forbidden := range f.client.forbiddenConstructorsSnapshot() {
 				if typeID == forbidden {
 					L().Warn("Blocked forbidden constructor call", zap.Int64("type_id", int64(typeID)))
 					return fmt.Errorf("constructor %d is forbidden", typeID)
@@ -40,12 +56,16 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 					f.client.RatelimitMu.Unlock()
 
 					if !bypassed {
-						// If currently suspended, wait
+						// If currently suspended, wait — but honour ctx, or a
+						// shutdown waits out the whole local floodwait for
+						// nothing.
 						f.client.RatelimitMu.Lock()
 						for time.Now().Before(f.client.SuspendUntil) {
 							dur := time.Until(f.client.SuspendUntil)
 							f.client.RatelimitMu.Unlock()
-							time.Sleep(dur)
+							if err := waitContext(ctx, dur); err != nil {
+								return err
+							}
 							f.client.RatelimitMu.Lock()
 						}
 						f.client.RatelimitMu.Unlock()
@@ -95,24 +115,29 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 									botClient := im.GetBotAPI()
 									fb := tgbotapi.FileBytes{Name: "report.json", Bytes: reportBytes}
 									go func() {
-										doc := tgbotapi.NewDocument(f.client.TGID, fb)
+										doc := tgbotapi.NewDocument(f.client.TGIDValue(), fb)
 										doc.Caption = caption
 										doc.ParseMode = tgbotapi.ModeHTML
 										_, _ = botClient.Send(doc)
 									}()
 								} else {
 									go func(data []byte, capText string) {
-										_, _ = f.client.SendFile(ChatRefID(f.client.TGID), data, capText)
+										_, _ = f.client.SendFile(ChatRefID(f.client.TGIDValue()), data, capText)
 									}(reportBytes, caption)
 								}
 
-								// Sleep
-								time.Sleep(time.Duration(localFloodWait) * time.Second)
+								// Hold off for the local floodwait, but let a
+								// cancelled context cut it short: Close() used
+								// to wait out the full 30s default.
+								waitErr := waitContext(ctx, time.Duration(localFloodWait)*time.Second)
 
 								f.client.RatelimitMu.Lock()
 								f.client.FloodWaitLock = false
 								f.client.Ratelimiter = nil
 								f.client.RatelimitMu.Unlock()
+								if waitErr != nil {
+									return waitErr
+								}
 							} else {
 								f.client.RatelimitMu.Unlock()
 							}
@@ -125,16 +150,60 @@ func (f *forbiddenInvoker) Invoke(ctx context.Context, input bin.Encoder, output
 	err := f.parent.Invoke(ctx, input, output)
 	if err != nil {
 		if strings.Contains(err.Error(), "AUTH_KEY_UNREGISTERED") {
-			HandleAuthKeyUnregistered(f.client.TGID, f.client.SessionPath)
+			HandleAuthKeyUnregistered(f.client.TGIDValue(), f.client.SessionPath)
 		}
 	}
 	return err
 }
 
-func (c *CustomTelegramClient) ForbidConstructor(constructor uint32) {
-	c.ForbiddenConstructors = append(c.ForbiddenConstructors, constructor)
+// SetForbiddenConstructors replaces the blocked constructor list. The slice is
+// copied and published atomically, so an RPC in flight sees either the old list
+// or the new one — never a half-written one.
+func (c *CustomTelegramClient) SetForbiddenConstructors(constructors []uint32) {
+	snapshot := append([]uint32(nil), constructors...)
+	c.forbiddenConstructors.Store(&snapshot)
 }
 
+// ForbiddenConstructors returns a snapshot of the blocked constructor list.
+func (c *CustomTelegramClient) ForbiddenConstructors() []uint32 {
+	current := c.forbiddenConstructors.Load()
+	if current == nil {
+		return nil
+	}
+	return append([]uint32(nil), *current...)
+}
+
+// forbiddenConstructorsSnapshot returns the published slice without copying it.
+// The slice is never mutated after publication, so readers on the RPC hot path
+// can use it directly.
+func (c *CustomTelegramClient) forbiddenConstructorsSnapshot() []uint32 {
+	current := c.forbiddenConstructors.Load()
+	if current == nil {
+		return nil
+	}
+	return *current
+}
+
+func (c *CustomTelegramClient) ForbidConstructor(constructor uint32) {
+	c.ForbidConstructors([]uint32{constructor})
+}
+
+// ForbidConstructors appends to the blocked list. Compare-and-swap rather than
+// append-in-place: two modules forbidding constructors at once must not lose
+// one of the updates.
 func (c *CustomTelegramClient) ForbidConstructors(constructors []uint32) {
-	c.ForbiddenConstructors = append(c.ForbiddenConstructors, constructors...)
+	if len(constructors) == 0 {
+		return
+	}
+	for {
+		current := c.forbiddenConstructors.Load()
+		var updated []uint32
+		if current != nil {
+			updated = append(updated, *current...)
+		}
+		updated = append(updated, constructors...)
+		if c.forbiddenConstructors.CompareAndSwap(current, &updated) {
+			return
+		}
+	}
 }

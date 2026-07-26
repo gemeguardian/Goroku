@@ -26,3 +26,11 @@ func initializedTestDatabase(t *testing.T, db *Database) *Database {
 	})
 	return db
 }
+
+// newTestClient builds a client with an attached database, replacing struct
+// literals that used to set the now-private identity fields directly.
+func newTestClient(tgID int64, db *Database) *CustomTelegramClient {
+	client := NewCustomTelegramClient(tgID)
+	client.GorokuDB = db
+	return client
+}

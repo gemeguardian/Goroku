@@ -416,6 +416,50 @@ func (w *Web) createAuthorizedSession(wr http.ResponseWriter, r *http.Request, t
 	w.setSessionCookies(wr, r, session, csrf)
 	return session, true, nil
 }
+
+// maxRateLimitKeys bounds the endpoint rate-limit map. The key is
+// endpoint+IP and used to live forever: once a window expired the value was
+// emptied but the key stayed, so a panel behind a proxy on the public internet
+// grew a key per distinct source address — unbounded with rotating IPv6.
+const maxRateLimitKeys = 8192
+
+// sweepRateLimitLocked drops keys whose window has fully expired, and — if the
+// map is still saturated — the least recently used ones. w.mu must be held.
+func (w *Web) sweepRateLimitLocked(now int64, window time.Duration) {
+	windowSec := int64(window.Seconds())
+	for key, stamps := range w.ratelimit {
+		fresh := stamps[:0]
+		for _, ts := range stamps {
+			if now-ts < windowSec {
+				fresh = append(fresh, ts)
+			}
+		}
+		if len(fresh) == 0 {
+			delete(w.ratelimit, key)
+			continue
+		}
+		w.ratelimit[key] = fresh
+	}
+	for len(w.ratelimit) >= maxRateLimitKeys {
+		oldestKey, oldestTS := "", int64(0)
+		for key, stamps := range w.ratelimit {
+			last := int64(0)
+			for _, ts := range stamps {
+				if ts > last {
+					last = ts
+				}
+			}
+			if oldestKey == "" || last < oldestTS {
+				oldestKey, oldestTS = key, last
+			}
+		}
+		if oldestKey == "" {
+			return
+		}
+		delete(w.ratelimit, oldestKey)
+	}
+}
+
 func (w *Web) checkEndpointRateLimit(endpoint, ips string, maxAttempts int, window time.Duration) bool {
 	now := time.Now().Unix()
 	ip := normalizeClientIP(ips)
@@ -425,6 +469,8 @@ func (w *Web) checkEndpointRateLimit(endpoint, ips string, maxAttempts int, wind
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	w.sweepRateLimitLocked(now, window)
 
 	key := endpoint + ":" + ip
 	var recent []int64

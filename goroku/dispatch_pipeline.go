@@ -263,7 +263,7 @@ func (cd *CommandDispatcher) nicknamePolicy(msg *Message, reg *commandRegistrati
 		return ReasonOK
 	}
 	mentioned := false
-	if cd.client.Username != "" && strings.Contains(strings.ToLower(msg.Text), "@"+strings.ToLower(cd.client.Username)) {
+	if username := cd.client.Username(); username != "" && strings.Contains(strings.ToLower(msg.Text), "@"+strings.ToLower(username)) {
 		mentioned = true
 	}
 	if mentioned {

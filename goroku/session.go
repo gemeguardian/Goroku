@@ -31,7 +31,7 @@ func (h *Goroku) finishWebLogin(pending webiface.TelegramClient, factories []Mod
 		return fmt.Errorf("unexpected pending client type %T", pending)
 	}
 
-	tgID := pendingClient.TGID
+	tgID := pendingClient.TGIDValue()
 	if tgID == 0 {
 		me, err := pendingClient.GetMe()
 		if err != nil {
@@ -49,7 +49,7 @@ func (h *Goroku) finishWebLogin(pending webiface.TelegramClient, factories []Mod
 	clients := append([]*CustomTelegramClient(nil), h.Clients...)
 	h.lifecycleMu.Unlock()
 	for _, existing := range clients {
-		if existing.TGID == tgID {
+		if existing.TGIDValue() == tgID {
 			return fmt.Errorf("client %d is already running", tgID)
 		}
 	}
@@ -81,7 +81,7 @@ func (h *Goroku) finishWebLogin(pending webiface.TelegramClient, factories []Mod
 		}
 	}
 
-	L().Info("Web login client initialized without restart", zap.Int64("tg_id", client.TGID))
+	L().Info("Web login client initialized without restart", zap.Int64("tg_id", client.TGIDValue()))
 	return nil
 }
 
@@ -198,13 +198,13 @@ func (h *Goroku) startCliLogin(ctx context.Context, factories []ModuleFactory) e
 	PrintBanner("success.txt")
 	fmt.Println("\033[0;92mLogged in successfully!\033[0m")
 
-	tgID := client.TGID
+	tgID := client.TGIDValue()
 	if tgID == 0 {
 		me, err := client.GetMe()
 		if err == nil {
 			if user, ok := me.(*tg.User); ok {
 				tgID = user.ID
-				client.TGID = tgID
+				client.SetTGID(tgID)
 			}
 		}
 	}
@@ -248,13 +248,13 @@ func (h *Goroku) cliPhoneLogin(ctx context.Context, client *CustomTelegramClient
 	PrintBanner("success.txt")
 	fmt.Println("\033[0;92mLogged in successfully!\033[0m")
 
-	tgID := client.TGID
+	tgID := client.TGIDValue()
 	if tgID == 0 {
 		me, err := client.GetMe()
 		if err == nil {
 			if user, ok := me.(*tg.User); ok {
 				tgID = user.ID
-				client.TGID = tgID
+				client.SetTGID(tgID)
 			}
 		}
 	}
@@ -311,7 +311,7 @@ func (h *Goroku) cliSetupBot(ctx context.Context, client *CustomTelegramClient, 
 }
 
 func (h *Goroku) cliSaveClientSession(ctx context.Context, client *CustomTelegramClient, factories []ModuleFactory) error {
-	tgID := client.TGID
+	tgID := client.TGIDValue()
 	if tgID == 0 {
 		return fmt.Errorf("login failed: authorized Telegram user ID is 0")
 	}

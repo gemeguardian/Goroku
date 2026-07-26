@@ -68,7 +68,7 @@ func callbackIsAccountOwner(client *goroku.CustomTelegramClient, fromID int64) b
 	if client == nil || fromID == 0 {
 		return false
 	}
-	if fromID == client.TGID {
+	if fromID == client.TGIDValue() {
 		return true
 	}
 	if sm := client.GetSecurityManager(); sm != nil {

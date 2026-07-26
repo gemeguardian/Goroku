@@ -575,46 +575,46 @@ func (im *InlineManager) isCallbackAllowed(unit *Unit, userID int64) bool {
 	L().Debug("isCallbackAllowed", zap.Int64("user_id", userID), zap.String("module", unit.Module), zap.Bool("disable_security", unit.DisableSecurity), zap.Bool("force_me", unit.ForceMe))
 
 	if unit.DisableSecurity {
-		L().Info("[SecurityDebug] Allow click: security is disabled for this unit.")
+		L().Debug("[SecurityDebug] Allow click: security is disabled for this unit.")
 		return true
 	}
 	for _, allowed := range unit.AlwaysAllow {
 		if allowed == userID {
-			L().Info("[SecurityDebug] Allow click: userID is in AlwaysAllow list.", zap.Any("user_id", userID))
+			L().Debug("[SecurityDebug] Allow click: userID is in AlwaysAllow list.", zap.Any("user_id", userID))
 			return true
 		}
 	}
 	if unit.ForceMe {
 		res := userID == im.ownerID()
-		L().Info("[SecurityDebug] ForceMe check: allowed (userID, ownerID)", zap.Any("allowed", res), zap.Any("user_id", userID), zap.Any("owner_id", im.ownerID()))
+		L().Debug("[SecurityDebug] ForceMe check: allowed (userID, ownerID)", zap.Any("allowed", res), zap.Any("user_id", userID), zap.Any("owner_id", im.ownerID()))
 		return res
 	}
 
 	// Default security check
 	if userID == im.ownerID() {
-		L().Info("[SecurityDebug] Allow click: userID matches ownerID.", zap.Any("user_id", userID), zap.Any("owner_id", im.ownerID()))
+		L().Debug("[SecurityDebug] Allow click: userID matches ownerID.", zap.Any("user_id", userID), zap.Any("owner_id", im.ownerID()))
 		return true
 	}
 
 	if sm := im.getSecurityManager(); sm != nil {
 		// Check owner first using SecurityManager
 		if sm.IsOwner(userID) {
-			L().Info("[SecurityDebug] Allow click: userID is verified owner by SecurityManager.", zap.Any("user_id", userID))
+			L().Debug("[SecurityDebug] Allow click: userID is verified owner by SecurityManager.", zap.Any("user_id", userID))
 			return true
 		}
 
 		// Check module trust
 		if unit.Module != "" {
 			res := im.isUserOwnerOrTrustedForModule(sm, userID, unit.Module)
-			L().Info("[SecurityDebug] Module trust check: userID, module, allowed", zap.Any("user_id", userID), zap.Any("module", unit.Module), zap.Any("allowed", res))
+			L().Debug("[SecurityDebug] Module trust check: userID, module, allowed", zap.Any("user_id", userID), zap.Any("module", unit.Module), zap.Any("allowed", res))
 			return res
 		}
-		L().Info("[SecurityDebug] unit.Module is empty!")
+		L().Debug("[SecurityDebug] unit.Module is empty!")
 	} else {
-		L().Info("[SecurityDebug] SecurityManager is not available!")
+		L().Debug("[SecurityDebug] SecurityManager is not available!")
 	}
 
-	L().Info("[SecurityDebug] Deny click: userID has no permission for module.", zap.Any("user_id", userID), zap.Any("module", unit.Module))
+	L().Debug("[SecurityDebug] Deny click: userID has no permission for module.", zap.Any("user_id", userID), zap.Any("module", unit.Module))
 	return false
 }
 

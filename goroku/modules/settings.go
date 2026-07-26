@@ -304,7 +304,7 @@ func (m *SettingsModule) UnblacklistUserCmd(msg *goroku.Message) error {
 }
 
 func (m *SettingsModule) isUserInSecurity(userID int64) (bool, error) {
-	if userID == m.Client.TGID {
+	if userID == m.Client.TGIDValue() {
 		return true, nil
 	}
 
@@ -415,14 +415,14 @@ func (m *SettingsModule) SetPrefixCmd(msg *goroku.Message) error {
 			userID = p.UserID
 			userName = args[1]
 		case *tg.InputPeerSelf:
-			userID = m.Client.TGID
+			userID = m.Client.TGIDValue()
 			userName = args[1]
 		default:
 			_ = msg.Answer(fmt.Sprintf("The entity %s is not a User", args[1]))
 			return nil
 		}
 
-		if userID != m.Client.TGID {
+		if userID != m.Client.TGIDValue() {
 			inSecurity, err := m.isUserInSecurity(userID)
 			if err != nil {
 				return answerSettingsReadFailure(msg, err)
@@ -858,8 +858,8 @@ func (m *SettingsModule) ClearModuleCmd(msg *goroku.Message) error {
 
 func (m *SettingsModule) GorokuCmd(msg *goroku.Message) error {
 	isPremium := false
-	if m.Client != nil && m.Client.GorokuMe != nil {
-		if u := m.Client.GorokuMe; u != nil {
+	if m.Client != nil && m.Client.Me() != nil {
+		if u := m.Client.Me(); u != nil {
 			isPremium = u.Premium
 		}
 	}

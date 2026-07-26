@@ -94,7 +94,7 @@ func (m *GorokuWeb) WebpanelCmd(msg *goroku.Message) error {
 		prefix := m.DB.GetString("goroku.main", "command_prefix", ".")
 
 		if hasInline {
-			text := formatTrans(privacyLeakNowarn, fmt.Sprintf("%d", m.Client.TGID))
+			text := formatTrans(privacyLeakNowarn, fmt.Sprintf("%d", m.Client.TGIDValue()))
 			btnYes := inline.Button{
 				Text: m.T("btn_yes", "🚸 Confirm anyway"),
 				Handler: func(call inline.CallbackQuery) error {
@@ -113,7 +113,7 @@ func (m *GorokuWeb) WebpanelCmd(msg *goroku.Message) error {
 			)
 			return err
 		} else {
-			text := formatTrans(privacyLeak, fmt.Sprintf("%d", m.Client.TGID), prefix)
+			text := formatTrans(privacyLeak, fmt.Sprintf("%d", m.Client.TGIDValue()), prefix)
 			return msg.Answer(text)
 		}
 	}
@@ -263,7 +263,7 @@ func (m *GorokuWeb) AddaccCmd(msg *goroku.Message) error {
 		return nil
 	}
 
-	if targetID == m.Client.TGID {
+	if targetID == m.Client.TGIDValue() {
 		template := getTrans(m.Translator, m.Name(), "cant_add_self", "You can't add yourself.")
 		_ = msg.Answer(template)
 		return nil
@@ -506,7 +506,7 @@ func (m *GorokuWeb) Inline2FAHandler(c inline.CallbackQuery, password string, te
 }
 
 func (m *GorokuWeb) SuccessLogin(c inline.CallbackQuery, tempClient *goroku.CustomTelegramClient) error {
-	tgID := tempClient.TGID
+	tgID := tempClient.TGIDValue()
 	_ = tempClient.Disconnect()
 
 	if tgID != 0 {

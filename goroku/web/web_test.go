@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"goroku/goroku/evalstats"
 	"goroku/goroku/webiface"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
@@ -1640,5 +1642,84 @@ func TestHealthReportsConnectedClientCount(t *testing.T) {
 	}
 	if !strings.Contains(body, `"clients_connected":1`) {
 		t.Fatalf("health body = %q, want clients_connected=1", body)
+	}
+}
+
+// A hung .eval cannot be interrupted before a restart, so the operator has to
+// be able to watch abandoned goroutines accumulate.
+func TestHealthReportsStuckEvals(t *testing.T) {
+	web := NewWeb(WebConfig{DataRoot: t.TempDir()})
+
+	evalstats.Enter()
+	t.Cleanup(evalstats.Leave)
+
+	rec := httptest.NewRecorder()
+	web.HealthHandler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	var payload struct {
+		StuckEvals int64 `json:"stuck_evals"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("health body is not JSON: %v", err)
+	}
+	if payload.StuckEvals < 1 {
+		t.Fatalf("stuck_evals = %d, want at least the one just recorded", payload.StuckEvals)
+	}
+}
+
+// The endpoint+IP key used to live forever: the window expired, the value was
+// emptied, and the key stayed. A panel behind a proxy grew one key per source
+// address, unbounded with rotating IPv6.
+func TestRateLimitKeyDisappearsAfterItsWindow(t *testing.T) {
+	web := NewWeb(WebConfig{})
+	const ip = "203.0.113.7"
+
+	if !web.checkEndpointRateLimit("probe", ip, 3, time.Minute) {
+		t.Fatal("first attempt was rate limited")
+	}
+	web.mu.Lock()
+	if _, ok := web.ratelimit["probe:"+ip]; !ok {
+		web.mu.Unlock()
+		t.Fatal("attempt was not recorded")
+	}
+	// Age the recorded stamp past the window.
+	web.ratelimit["probe:"+ip] = []int64{time.Now().Unix() - 3600}
+	web.mu.Unlock()
+
+	if !web.checkEndpointRateLimit("other", "198.51.100.9", 3, time.Minute) {
+		t.Fatal("unrelated endpoint was rate limited")
+	}
+
+	web.mu.Lock()
+	_, stillThere := web.ratelimit["probe:"+ip]
+	web.mu.Unlock()
+	if stillThere {
+		t.Fatal("expired rate-limit key survived the sweep")
+	}
+}
+
+func TestRateLimitMapStaysBounded(t *testing.T) {
+	web := NewWeb(WebConfig{})
+	for i := 0; i < maxRateLimitKeys+500; i++ {
+		web.checkEndpointRateLimit("probe", fmt.Sprintf("198.51.100.%d", i%256)+fmt.Sprintf(":%d", i), 3, time.Minute)
+	}
+	web.mu.Lock()
+	size := len(web.ratelimit)
+	web.mu.Unlock()
+	if size > maxRateLimitKeys {
+		t.Fatalf("rate-limit map holds %d keys, limit is %d", size, maxRateLimitKeys)
+	}
+}
+
+// Bounding the map must not disarm the limit itself.
+func TestRateLimitStillBlocksAfterSweeping(t *testing.T) {
+	web := NewWeb(WebConfig{})
+	const ip = "203.0.113.11"
+	for i := 0; i < 3; i++ {
+		if !web.checkEndpointRateLimit("login", ip, 3, time.Minute) {
+			t.Fatalf("attempt %d was rejected before the limit", i+1)
+		}
+	}
+	if web.checkEndpointRateLimit("login", ip, 3, time.Minute) {
+		t.Fatal("fourth attempt passed a limit of three")
 	}
 }

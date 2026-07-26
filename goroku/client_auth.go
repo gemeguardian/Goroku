@@ -38,9 +38,7 @@ func (c *CustomTelegramClient) SignIn(phone, code, password string) error {
 	}
 	if err == nil {
 		if me, selfErr := c.client.Self(c.ctx); selfErr == nil {
-			c.TGID = me.ID
-			c.Username = me.Username
-			c.GorokuMe = me
+			c.SetIdentity(me.ID, me.Username, me)
 		}
 	}
 	return err
@@ -78,9 +76,7 @@ func (c *CustomTelegramClient) QRLoginStatus() (string, error) {
 	}
 	if auth != nil && auth.User != nil {
 		if user, ok := auth.User.(*tg.User); ok {
-			c.TGID = user.ID
-			c.Username = user.Username
-			c.GorokuMe = user
+			c.SetIdentity(user.ID, user.Username, user)
 		}
 	}
 	return "SUCCESS", nil

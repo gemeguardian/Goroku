@@ -336,8 +336,8 @@ func (c *CustomTelegramClient) CreateForumTopic(channelPeer tg.InputPeerClass, t
 	}
 
 	var premium bool
-	if c.GorokuMe != nil {
-		premium = c.GorokuMe.Premium
+	if c.Me() != nil {
+		premium = c.Me().Premium
 	}
 
 	if premium && iconEmojiID != 0 {

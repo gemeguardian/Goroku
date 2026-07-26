@@ -95,10 +95,7 @@ func TestEntitiesToHTML(t *testing.T) {
 }
 
 func TestGetEntityCached(t *testing.T) {
-	client := &CustomTelegramClient{
-		TGID:              42,
-		GorokuEntityCache: make(map[cache.EntityCacheKey]cache.CacheRecordEntity),
-	}
+	client := NewCustomTelegramClient(42)
 
 	client.GorokuEntityCache[cache.NormalizeEntityCacheKey(123)] = cache.CacheRecordEntity{
 		Entity: &tg.InputPeerUser{UserID: 123},
@@ -145,12 +142,8 @@ func TestGetEntityCached(t *testing.T) {
 }
 
 func TestGetFullUserCached(t *testing.T) {
-	client := &CustomTelegramClient{
-		TGID:                42,
-		ctx:                 context.Background(),
-		GorokuEntityCache:   make(map[cache.EntityCacheKey]cache.CacheRecordEntity),
-		GorokuFullUserCache: make(map[cache.EntityCacheKey]cache.CacheRecordFullUser),
-	}
+	client := NewCustomTelegramClient(42)
+	client.ctx = context.Background()
 
 	// Mock cached full user
 	client.GorokuFullUserCache[cache.NormalizeEntityCacheKey(123)] = cache.CacheRecordFullUser{
@@ -196,12 +189,8 @@ func TestGetFullUserCached(t *testing.T) {
 }
 
 func TestGetFullChannelCached(t *testing.T) {
-	client := &CustomTelegramClient{
-		TGID:                   42,
-		ctx:                    context.Background(),
-		GorokuEntityCache:      make(map[cache.EntityCacheKey]cache.CacheRecordEntity),
-		GorokuFullChannelCache: make(map[cache.EntityCacheKey]cache.CacheRecordFullChannel),
-	}
+	client := NewCustomTelegramClient(42)
+	client.ctx = context.Background()
 
 	// Mock cached channel
 	client.GorokuFullChannelCache[cache.NormalizeEntityCacheKey(-100123)] = cache.CacheRecordFullChannel{
@@ -245,12 +234,8 @@ func TestGetFullChannelCached(t *testing.T) {
 }
 
 func TestGetPermsCachedDirect(t *testing.T) {
-	client := &CustomTelegramClient{
-		TGID:              42,
-		ctx:               context.Background(),
-		GorokuEntityCache: make(map[cache.EntityCacheKey]cache.CacheRecordEntity),
-		GorokuPermsCache:  make(map[cache.EntityCacheKey]map[cache.EntityCacheKey]cache.CacheRecordPerms),
-	}
+	client := NewCustomTelegramClient(42)
+	client.ctx = context.Background()
 
 	// Mock cached perms
 	client.GorokuPermsCache[cache.NormalizeEntityCacheKey(-100123)] = map[cache.EntityCacheKey]cache.CacheRecordPerms{

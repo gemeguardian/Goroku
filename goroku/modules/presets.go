@@ -130,7 +130,7 @@ func (m *Presets) ClientReady() error {
 				time.Sleep(500 * time.Millisecond)
 			}
 			if im.IsComplete() {
-				if err := m.sendMenu(m.Client.TGID); err != nil {
+				if err := m.sendMenu(m.Client.TGIDValue()); err != nil {
 					return
 				}
 				if err := m.DB.SetBool("Presets", "sent", true); err != nil {
@@ -199,7 +199,7 @@ func (m *Presets) HandleBotPM(msg *tgbotapi.Message) {
 		return
 	}
 
-	if msg.Text == "/presets" && msg.From != nil && msg.From.ID == m.Client.TGID {
+	if msg.Text == "/presets" && msg.From != nil && msg.From.ID == m.Client.TGIDValue() {
 		_ = m.sendMenu(msg.Chat.ID)
 	}
 }
@@ -462,7 +462,7 @@ func (m *Presets) InstallSingleModule(call inline.CallbackQuery, preset string, 
 	_ = closeForm(call)
 
 	progressMsgText := getTrans(m.Translator, "Loader", "loading_module_via_file", "<tg-emoji emoji-id=5873204392429096339>🔄</tg-emoji> Loading the module...")
-	progressMsg, err := m.Client.SendMessage(goroku.ChatRefID(m.Client.TGID), progressMsgText)
+	progressMsg, err := m.Client.SendMessage(goroku.ChatRefID(m.Client.TGIDValue()), progressMsgText)
 	if err != nil {
 		return err
 	}
@@ -470,7 +470,7 @@ func (m *Presets) InstallSingleModule(call inline.CallbackQuery, preset string, 
 	progressMsgID := progressMsg.SentMessageID()
 	msgObj := &goroku.Message{
 		ID:     progressMsgID,
-		ChatID: m.Client.TGID,
+		ChatID: m.Client.TGIDValue(),
 		Client: m.Client,
 	}
 
@@ -478,20 +478,20 @@ func (m *Presets) InstallSingleModule(call inline.CallbackQuery, preset string, 
 
 	bodyBytes, err := downloadPresetModuleURL(link)
 	if err != nil {
-		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, formatModuleInstallError(fmt.Errorf("download %s: %w", modName, err)))
+		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGIDValue()), progressMsgID, formatModuleInstallError(fmt.Errorf("download %s: %w", modName, err)))
 		return nil
 	}
 
 	installed, err := m.installDownloadedModule(msgObj, modName, link, bodyBytes)
 	if err != nil && !errors.Is(err, goroku.ErrDatabaseCommitUncertain) {
-		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, moduleTransactionReport("Preset module install", err))
+		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGIDValue()), progressMsgID, moduleTransactionReport("Preset module install", err))
 		return nil
 	}
 	if installed != nil {
-		card := formatModuleInstalledCard(installed, moduleCommandPrefix(m.DB, m.Client.TGID), sanitizedModuleSource(moduleSourceRepository, link), err, getTrans(m.Translator, "Loader", "loaded", defaultLoadedTemplate), defaultCommandEmoji, getTrans(m.Translator, "Loader", "undoc", "No docs"))
-		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, card)
+		card := formatModuleInstalledCard(installed, moduleCommandPrefix(m.DB, m.Client.TGIDValue()), sanitizedModuleSource(moduleSourceRepository, link), err, getTrans(m.Translator, "Loader", "loaded", defaultLoadedTemplate), defaultCommandEmoji, getTrans(m.Translator, "Loader", "undoc", "No docs"))
+		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGIDValue()), progressMsgID, card)
 	} else {
-		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, formatModuleInstallError(errors.New("installed module is missing from the runtime registry")))
+		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGIDValue()), progressMsgID, formatModuleInstallError(errors.New("installed module is missing from the runtime registry")))
 	}
 	return nil
 }
@@ -503,7 +503,7 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 	_ = closeForm(call)
 
 	progressMsgText := fmt.Sprintf(m.T("installing", "⏳ <b>Installing preset</b> <code>%s</code><b>...</b>"), preset)
-	progressMsg, err := m.Client.SendMessage(goroku.ChatRefID(m.Client.TGID), progressMsgText)
+	progressMsg, err := m.Client.SendMessage(goroku.ChatRefID(m.Client.TGIDValue()), progressMsgText)
 	if err != nil {
 		return err
 	}
@@ -511,7 +511,7 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 	progressMsgID := progressMsg.SentMessageID()
 	msgObj := &goroku.Message{
 		ID:     progressMsgID,
-		ChatID: m.Client.TGID,
+		ChatID: m.Client.TGIDValue(),
 		Client: m.Client,
 	}
 
@@ -522,7 +522,7 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 		_, modName := moduleFileAndName(link)
 
 		updateText := fmt.Sprintf(m.T("installing_module", "⏳ <b>Installing preset %s (%d/%d modules)... Installing module %s...</b>"), html.EscapeString(preset), i+1, len(links), html.EscapeString(modName))
-		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, updateText)
+		_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGIDValue()), progressMsgID, updateText)
 		bodyBytes, err := downloadPresetModuleURL(link)
 		if err != nil {
 			failed++
@@ -547,7 +547,7 @@ func (m *Presets) InstallPresetModules(call inline.CallbackQuery, preset string,
 	if installed == 0 {
 		summary = fmt.Sprintf("❌ <b>No preset modules were installed</b>\n<blockquote><b>Preset:</b> %s\n<b>Failed:</b> %d</blockquote>", html.EscapeString(preset), failed)
 	}
-	_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGID), progressMsgID, summary)
+	_, _ = m.Client.EditMessage(goroku.ChatRefID(m.Client.TGIDValue()), progressMsgID, summary)
 
 	return nil
 }

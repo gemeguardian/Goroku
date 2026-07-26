@@ -171,8 +171,8 @@ func TestAPIProtectionMissingKeysUseDefaults(t *testing.T) {
 	if err := m.ConfigReady(map[string]any{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(m.forbiddenTypeIDs) != 2 || len(client.ForbiddenConstructors) != 2 {
-		t.Fatalf("default forbidden methods not applied: module=%v client=%v", m.forbiddenTypeIDs, client.ForbiddenConstructors)
+	if len(m.forbiddenTypeIDs) != 2 || len(client.ForbiddenConstructors()) != 2 {
+		t.Fatalf("default forbidden methods not applied: module=%v client=%v", m.forbiddenTypeIDs, client.ForbiddenConstructors())
 	}
 }
 

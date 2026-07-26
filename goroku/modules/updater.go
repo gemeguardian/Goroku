@@ -56,7 +56,7 @@ func (m *Updater) ClientReady() error {
 
 	if !m.DB.GetBool("Updater", "do_not_create", false) {
 		go func() {
-			if err := m.Client.CreateGorokuFolder(m.Client.TGID); err != nil {
+			if err := m.Client.CreateGorokuFolder(m.Client.TGIDValue()); err != nil {
 				return
 			}
 			if err := m.DB.SetBool("Updater", "do_not_create", true); err != nil {
@@ -268,7 +268,7 @@ func (m *Updater) pollerTick() error {
 				m.logBackgroundWrite("update", "selfupdatemsg,restart_ts", err)
 				return err
 			}
-			_, _ = m.Client.SendMessage(goroku.ChatRefID(m.Client.TGID),
+			_, _ = m.Client.SendMessage(goroku.ChatRefID(m.Client.TGIDValue()),
 				fmt.Sprintf("🔄 <b>Auto-updated to</b> <code>%s</code>\n\n%s", latest[:6], changelog))
 			m.notified = latest
 		}
@@ -279,7 +279,7 @@ func (m *Updater) pollerTick() error {
 		m.logBackgroundWrite("set", "ignore_permanent", err)
 		return err
 	}
-	_, _ = m.Client.SendMessage(goroku.ChatRefID(m.Client.TGID),
+	_, _ = m.Client.SendMessage(goroku.ChatRefID(m.Client.TGIDValue()),
 		fmt.Sprintf(
 			"🪐 <b>Goroku update available!</b>\n\n"+
 				"📌 <b>Current:</b> <code>%s</code>\n"+
@@ -313,7 +313,7 @@ func (m *Updater) announcementTick() error {
 	previous := m.DB.GetString("Updater", "announcement", "")
 
 	if announcement != "" && announcement != previous {
-		_, _ = m.Client.SendMessage(goroku.ChatRefID(m.Client.TGID),
+		_, _ = m.Client.SendMessage(goroku.ChatRefID(m.Client.TGIDValue()),
 			fmt.Sprintf("📢 <b>Goroku Announcement:</b>\n\n%s", announcement))
 		if err := m.DB.SetString("Updater", "announcement", announcement); err != nil {
 			m.logBackgroundWrite("set", "announcement", err)

@@ -43,7 +43,7 @@ func (c *CustomTelegramClient) ConnectContext(ctx context.Context) error {
 	connectResult := make(chan error, 1)
 	sessionPath := c.SessionPath
 	if sessionPath == "" {
-		sessionPath = filepath.Join(BaseDir, fmt.Sprintf("goroku-%d.session", c.TGID))
+		sessionPath = filepath.Join(BaseDir, fmt.Sprintf("goroku-%d.session", c.TGIDValue()))
 	}
 	storage := &session.FileStorage{Path: sessionPath}
 
@@ -180,9 +180,7 @@ func (c *CustomTelegramClient) ConnectContext(ctx context.Context) error {
 			if status.Authorized {
 				me, err := client.Self(ctx)
 				if err == nil {
-					c.TGID = me.ID
-					c.Username = me.Username
-					c.GorokuMe = me
+					c.SetIdentity(me.ID, me.Username, me)
 				}
 				_ = c.CacheDialogs()
 			}
@@ -197,7 +195,7 @@ func (c *CustomTelegramClient) ConnectContext(ctx context.Context) error {
 		})
 		if err != nil {
 			if strings.Contains(err.Error(), "AUTH_KEY_UNREGISTERED") {
-				HandleAuthKeyUnregistered(c.TGID, c.SessionPath)
+				HandleAuthKeyUnregistered(c.TGIDValue(), c.SessionPath)
 			}
 			L().Error("gotd client run error", zap.Error(err))
 			select {

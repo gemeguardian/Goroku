@@ -163,7 +163,7 @@ func (rs *RemoteStorage) Fetch(url, auth string) (string, error) {
 
 	req.Header.Set("User-Agent", "Goroku Userbot")
 	req.Header.Set("X-Goroku-Version", GetVersionString())
-	req.Header.Set("X-Goroku-User", fmt.Sprintf("%d", rs.client.TGID))
+	req.Header.Set("X-Goroku-User", fmt.Sprintf("%d", rs.client.TGIDValue()))
 
 	if auth != "" {
 		parts := strings.SplitN(auth, ":", 2)

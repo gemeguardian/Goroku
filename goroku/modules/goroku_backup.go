@@ -201,7 +201,7 @@ func (m *GorokuBackup) ClientReady() error {
 
 				periodText := m.T("period", "⌚️ <b>The unit «ALPHA»</b> creates regular backups...")
 
-				photo := tgbotapi.NewPhoto(m.Client.TGID, tgbotapi.FileURL("https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/unit_alpha.png"))
+				photo := tgbotapi.NewPhoto(m.Client.TGIDValue(), tgbotapi.FileURL("https://raw.githubusercontent.com/gemeguardian/Goroku/master/goroku/assets/unit_alpha.png"))
 				photo.Caption = periodText
 				photo.ParseMode = tgbotapi.ModeHTML
 				photo.ReplyMarkup = im.GenerateMarkup(markup)
@@ -1690,7 +1690,7 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 	// Send document via userbot
 	var res any
 	if topicID == 0 {
-		res, err = m.Client.SendFile(goroku.ChatRefID(m.Client.TGID), nr, caption)
+		res, err = m.Client.SendFile(goroku.ChatRefID(m.Client.TGIDValue()), nr, caption)
 	} else {
 		res, err = m.Client.SendFileWithOptions(goroku.ChatRefID(int64(-1000000000000-contentChannelID)),
 			nr,
@@ -1722,7 +1722,7 @@ func (m *GorokuBackup) sendPeriodicBackup() error {
 			},
 		}
 
-		targetChat := m.Client.TGID
+		targetChat := m.Client.TGIDValue()
 		if topicID != 0 {
 			targetChat = int64(-1000000000000 - contentChannelID)
 		}
