@@ -126,6 +126,61 @@ func TestBaseTFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// legacyStyleModule is written the way modules were before Base existed: it
+// owns its client/db fields, wires them in Init, and spells out every lifecycle
+// method. Base must stay strictly additive, so modules like this — including
+// ones users already wrote and installed — keep working untouched.
+type legacyStyleModule struct {
+	client  *CustomTelegramClient
+	db      *Database
+	inited  bool
+	readied bool
+}
+
+func (m *legacyStyleModule) Name() string { return "LegacyStyle" }
+
+func (m *legacyStyleModule) Strings() map[string]string {
+	return map[string]string{"name": "LegacyStyle"}
+}
+
+func (m *legacyStyleModule) Init(client *CustomTelegramClient, db *Database) error {
+	m.client = client
+	m.db = db
+	m.inited = true
+	return nil
+}
+
+func (m *legacyStyleModule) ClientReady() error { m.readied = true; return nil }
+func (m *legacyStyleModule) OnUnload() error    { return nil }
+func (m *legacyStyleModule) OnDlmod() error     { return nil }
+
+func (m *legacyStyleModule) Commands() map[string]CommandHandler {
+	return map[string]CommandHandler{"legacystyle": func(msg *Message) error { return nil }}
+}
+
+func (m *legacyStyleModule) Watchers() []WatcherHandler { return []WatcherHandler{} }
+
+func TestModuleWithoutBaseStillRegisters(t *testing.T) {
+	db := initializedTestDatabase(t, NewDatabase(42))
+	client := NewCustomTelegramClient(42)
+	modules := NewModules(client, db)
+
+	mod := &legacyStyleModule{}
+	if err := modules.RegisterModule(mod); err != nil {
+		t.Fatalf("register legacy-style module: %v", err)
+	}
+
+	if !mod.inited {
+		t.Error("Init was not called on a module that does not embed Base")
+	}
+	if mod.client == nil || mod.db == nil {
+		t.Error("legacy module's own fields were not wired by its own Init")
+	}
+	if _, ok := modules.resolveCommand("legacystyle"); !ok {
+		t.Error("legacy module's command was not registered")
+	}
+}
+
 type aliasedModule struct{ Base }
 
 func (m *aliasedModule) Name() string                        { return "APILimiter" }
