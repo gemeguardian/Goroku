@@ -18,7 +18,7 @@ func TestSecurityCheckDoesNotReloadRightsEveryCall(t *testing.T) {
 		},
 	}
 
-	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	sm := NewSecurityManager(NewCustomTelegramClient(42), db)
 
 	// Simulate prefixes being written after startup. Check() is a hot path and
 	// must not run reloadRights()/cleanup on every message.
@@ -55,7 +55,7 @@ func TestSecurityCheckWhitelistsOwnerAndBlacklistsUsers(t *testing.T) {
 		"blacklist_users": []any{int64(200)}, // Non-owner 200 is blacklisted
 	}
 
-	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	sm := NewSecurityManager(NewCustomTelegramClient(42), db)
 	sm.Stop() // Stop background reloader tick to avoid leak
 
 	// Owner/Self (SenderID = 42) -> should pass
@@ -91,7 +91,7 @@ func TestSecurityCheckEveryoneAndPMMasks(t *testing.T) {
 		},
 	}
 
-	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	sm := NewSecurityManager(NewCustomTelegramClient(42), db)
 	sm.Stop()
 
 	// everyone_cmd can be run by anyone (SenderID = 200)
@@ -129,7 +129,7 @@ func TestSecurityCheckSudoMask(t *testing.T) {
 	}
 	db.data["goroku.main"] = map[string]any{}
 
-	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	sm := NewSecurityManager(NewCustomTelegramClient(42), db)
 	sm.Stop()
 
 	if !sm.Check(&Message{SenderID: 100, ChatID: 1}, "sudo_cmd") {
@@ -164,7 +164,7 @@ func TestSecurityCheckTsecRules(t *testing.T) {
 		},
 	}
 
-	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	sm := NewSecurityManager(NewCustomTelegramClient(42), db)
 	sm.Stop()
 
 	// Non-owner 100 runs other cmd -> fails
@@ -262,7 +262,7 @@ func TestSecurityRulePersistenceFailuresDoNotPublishState(t *testing.T) {
 		"tsec_chat": []any{},
 	}
 	db.data["goroku.main"] = map[string]any{"command_prefixes": map[string]any{}}
-	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	sm := NewSecurityManager(NewCustomTelegramClient(42), db)
 	t.Cleanup(sm.Stop)
 
 	failure := errors.New("injected security write failure")
@@ -313,7 +313,7 @@ func TestSecurityCommittedWarningsPublishAuthorizationState(t *testing.T) {
 		"tsec_chat": []any{},
 	}
 	db.data["goroku.main"] = map[string]any{"command_prefixes": map[string]any{}}
-	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	sm := NewSecurityManager(NewCustomTelegramClient(42), db)
 	t.Cleanup(sm.Stop)
 	cause := errors.New("post-rename security warning")
 	installPostRenameWarning(t, db, cause)
@@ -476,7 +476,7 @@ func TestBoundingMaskAlsoBoundsDelegatedRules(t *testing.T) {
 	}
 	db.data["goroku.main"] = map[string]any{}
 
-	sm := NewSecurityManager(&CustomTelegramClient{TGID: 42}, db)
+	sm := NewSecurityManager(NewCustomTelegramClient(42), db)
 	t.Cleanup(sm.Stop)
 
 	delegate := &Message{SenderID: 100, ChatID: 100, IsPrivate: true}
@@ -496,5 +496,33 @@ func TestIsPrivilegedModuleIsCaseInsensitive(t *testing.T) {
 	}
 	if IsPrivilegedModule("GorokuInfo") {
 		t.Error("IsPrivilegedModule(GorokuInfo) = true, want false")
+	}
+}
+
+// SenderID 0 is not an identity. Anonymous admins and channel-signed posts
+// carry no user, and the client TGID is 0 until the session authorizes —
+// comparing the two matched, so such a message passed as the owner.
+func TestUnknownSenderDoesNotMatchAnUnauthorizedClient(t *testing.T) {
+	db := initializedTestDatabase(t, NewDatabase(0))
+	db.data["goroku.security"] = map[string]any{
+		"owner":         []any{},
+		"all_users":     []any{},
+		"bounding_mask": float64(ALL),
+	}
+	db.data["goroku.main"] = map[string]any{}
+
+	client := NewCustomTelegramClient(0)
+	sm := NewSecurityManager(client, db)
+	t.Cleanup(sm.Stop)
+
+	anonymous := &Message{SenderID: 0, ChatID: -100500, IsChannel: true}
+	if sm.Check(anonymous, "owneradd") {
+		t.Fatal("a message with no sender passed as the owner of an unauthorized client")
+	}
+
+	// Once authorized, the owner's own messages still pass.
+	client.SetTGID(42)
+	if !sm.Check(&Message{SenderID: 42, ChatID: 1}, "ping") {
+		t.Fatal("the owner stopped passing their own security check")
 	}
 }

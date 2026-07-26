@@ -260,16 +260,21 @@ func (sm *SecurityManager) reloadRights() error {
 
 func (sm *SecurityManager) reloadRightsLocked(owner []int64, userRules, chatRules []SecurityRule, groups map[string]SecurityGroup, persistGroups bool) error {
 	groups = clonePointerValue(groups)
-	// Ensure client owner ID is in the list of owners
-	hasOwner := false
-	for _, id := range owner {
-		if id == sm.client.TGID {
-			hasOwner = true
-			break
+	// Ensure client owner ID is in the list of owners. Not while it is still
+	// zero: an unauthorized client would seed the persisted owner list with 0,
+	// which then matches every message that carries no sender (anonymous
+	// admins, channel-signed posts).
+	if selfID := sm.client.TGIDValue(); selfID != 0 {
+		hasOwner := false
+		for _, id := range owner {
+			if id == selfID {
+				hasOwner = true
+				break
+			}
 		}
-	}
-	if !hasOwner {
-		owner = append(owner, sm.client.TGID)
+		if !hasOwner {
+			owner = append(owner, selfID)
+		}
 	}
 
 	// Clean up expired rules
@@ -390,17 +395,29 @@ func (sm *SecurityManager) checkCommand(msg *Message, command string, reg *comma
 	L().Debug("security check",
 		zap.Int64("sender_id", msg.SenderID),
 		zap.Bool("out", msg.Out),
-		zap.Int64("client_tgid", sm.client.TGID),
+		zap.Int64("client_tgid", sm.client.TGIDValue()),
 		zap.String("command", command))
-	// First, if owner/client, bypass security check
-	if msg.SenderID == sm.client.TGID || msg.Out {
+	// First, if owner/client, bypass security check.
+	//
+	// SenderID 0 is not an identity: anonymous admins and channel-signed posts
+	// carry no user, and the client TGID is also 0 until the session
+	// authorizes. Comparing them matched, so during startup — or with a client
+	// that never authorized — an anonymous admin's message passed as the owner.
+	selfID := sm.client.TGIDValue()
+	if selfID != 0 && msg.SenderID == selfID {
+		return true
+	}
+	if msg.Out {
 		return true
 	}
 
-	// Read whitelist owner IDs
-	for _, id := range sm.owner.ToSlice() {
-		if msg.SenderID == id {
-			return true
+	// Read whitelist owner IDs. A zero sender is not an identity and must not
+	// match a zero entry that an older build persisted into the list.
+	if msg.SenderID != 0 {
+		for _, id := range sm.owner.ToSlice() {
+			if id != 0 && msg.SenderID == id {
+				return true
+			}
 		}
 	}
 
@@ -974,7 +991,7 @@ func (sm *SecurityManager) IsOwner(userID int64) bool {
 	if sm == nil || sm.client == nil || userID == 0 {
 		return false
 	}
-	if userID == sm.client.TGID || sm.client.GorokuMe != nil && userID == sm.client.GorokuMe.ID {
+	if userID == sm.client.TGIDValue() || sm.client.Me() != nil && userID == sm.client.Me().ID {
 		return true
 	}
 	for _, id := range sm.owner.ToSlice() {
