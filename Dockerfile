@@ -32,11 +32,15 @@ USER goroku:goroku
 EXPOSE 8080
 VOLUME ["/data"]
 
-# Liveness: process is serving HTTP on /healthz (registered in goroku/web/routes.go).
+# Readiness, not liveness: /healthz is deliberately static ("the process answers
+# HTTP"), so it stays 200 with a dead MTProto connection and the container would
+# look healthy while the bot is deaf. /readyz answers 200 during onboarding and
+# 503 once setup has completed with no client connected, which is the state an
+# orchestrator should act on. Registered in goroku/web/routes.go.
 # Port must match CMD --port (default 8080). curl is installed in the runtime image.
 # start-period allows cold start / first-time setup before probes count as failures.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-	CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
+	CMD curl -fsS http://127.0.0.1:8080/readyz || exit 1
 
 ENTRYPOINT ["/usr/local/bin/goroku"]
 CMD ["--data-root", "/data", "--no-git", "--port", "8080"]

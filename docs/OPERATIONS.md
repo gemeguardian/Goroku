@@ -33,9 +33,18 @@ When web is enabled (not `--no-web`):
 
 | Endpoint | Response |
 |----------|----------|
-| `GET /healthz` | `200` + plain `ok` (liveness) |
-| `GET /readyz` | `200` + plain `ok` (readiness; setup-without-client is ready) |
-| `GET /health` | `200` JSON: `status`, `clients`, `setup_completed`, `version` — **no secrets** |
+| `GET /healthz` | `200` + plain `ok` (liveness: the process is serving HTTP). Static by design — it stays `200` even with Telegram down |
+| `GET /readyz` | `200` + `ok` while onboarding, or once at least one client is connected. **`503` + reason** once setup has completed and no registered client has a live MTProto connection |
+| `GET /health` | `200` JSON: `status`, `clients`, `clients_connected`, `stuck_evals`, `setup_completed`, `version` — **no secrets** |
+
+`clients_connected` below `clients` means an account is registered but its
+MTProto transport is down; the supervisor is reconnecting or the process is
+about to restart itself. `stuck_evals` counts `.eval` goroutines abandoned at
+their timeout — Yaegi cannot be cancelled, so a number that only grows means a
+restart is due.
+
+**Point external monitoring at `/readyz`, not only `/healthz`:** a dead
+MTProto connection leaves the process happily serving HTTP.
 
 HEAD is accepted on these routes. Example probe:
 

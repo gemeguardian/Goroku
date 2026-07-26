@@ -48,9 +48,9 @@ Persistence:
 
 - Default bind: `127.0.0.1` (`GOROKU_IP` override; with `DOCKER` set, bind `0.0.0.0`)
 - Routes include setup/login UI plus:
-  - `GET /health` — JSON ops snapshot (`status`, `clients`, `setup_completed`, `version`; no secrets)
-  - `GET /healthz` — liveness
-  - `GET /readyz` — readiness (onboarding without a Telegram client still ready)
+  - `GET /health` — JSON ops snapshot (`status`, `clients`, `clients_connected`, `stuck_evals`, `setup_completed`, `version`; no secrets)
+  - `GET /healthz` — liveness (static: the process answers HTTP)
+  - `GET /readyz` — readiness: `200` during onboarding, `503` with a reason once setup has completed and no registered client is connected
 - SSH reverse tunnel: `--ssh-tunnel`, off by default; stopped with the web server
 
 ## Extension model

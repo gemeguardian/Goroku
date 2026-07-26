@@ -156,14 +156,14 @@ minimal **RU/EN** localization with an in-page language switcher.
 
 When the web panel is enabled:
 
-- `GET /health` — JSON: `status`, `clients`, `setup_completed`, `version` (no secrets)
-- `GET /healthz` — liveness (`ok`)
-- `GET /readyz` — readiness (`ok`; onboarding without a Telegram session is still ready)
+- `GET /health` — JSON: `status`, `clients`, `clients_connected`, `stuck_evals`, `setup_completed`, `version` (no secrets)
+- `GET /healthz` — liveness (`ok`; static — the process answers HTTP)
+- `GET /readyz` — readiness: `ok` during onboarding, **`503`** once setup has completed and no client has a live MTProto connection
 
 ```bash
 curl -fsS "http://127.0.0.1:${PORT:-8080}/health"   # {"status":"ok",...,"version":"1.0.0"}
 curl -fsS "http://127.0.0.1:${PORT:-8080}/healthz"  # ok
-curl -fsS "http://127.0.0.1:${PORT:-8080}/readyz"   # ok
+curl -fsS "http://127.0.0.1:${PORT:-8080}/readyz"   # ok, or 503 with the reason
 ```
 
 Offline pre-flight (no bot/web start): `goroku --doctor` runs config, data-root,

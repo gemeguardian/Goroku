@@ -142,14 +142,14 @@ root передавайте через `--data-root /var/lib/goroku`. Загру
 
 При включённой веб-панели:
 
-- `GET /health` — JSON: `status`, `clients`, `setup_completed`, `version` (без секретов)
-- `GET /healthz` — liveness (`ok`)
-- `GET /readyz` — readiness (`ok`; onboarding без Telegram-сессии тоже ready)
+- `GET /health` — JSON: `status`, `clients`, `clients_connected`, `stuck_evals`, `setup_completed`, `version` (без секретов)
+- `GET /healthz` — liveness (`ok`; статичен — процесс отвечает по HTTP)
+- `GET /readyz` — readiness: `ok` во время онбординга, **`503`** после завершения настройки, если ни один клиент не подключён к MTProto
 
 ```bash
 curl -fsS "http://127.0.0.1:${PORT:-8080}/health"   # {"status":"ok",...,"version":"1.0.0"}
 curl -fsS "http://127.0.0.1:${PORT:-8080}/healthz"  # ok
-curl -fsS "http://127.0.0.1:${PORT:-8080}/readyz"   # ok
+curl -fsS "http://127.0.0.1:${PORT:-8080}/readyz"   # ok либо 503 с причиной
 ```
 
 Офлайн pre-flight (без запуска bot/web): `goroku --doctor` проверяет config,
