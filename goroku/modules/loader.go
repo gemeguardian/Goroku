@@ -309,7 +309,7 @@ func localRuntimeModules() map[string]string {
 		if err != nil {
 			continue
 		}
-		if names, parseErr := moduleStructNames(body); parseErr == nil && len(names) > 0 {
+		if names, parseErr := moduleSourceModuleStructNames(body); parseErr == nil && len(names) > 0 {
 			modules[names[0]] = path
 		}
 	}
@@ -656,7 +656,7 @@ func (m *LoaderModule) LoadmodCmd(msg *goroku.Message) error {
 
 	pyReg := regexp.MustCompile(`class\s+(\w+)\(loader\.Module\):`)
 
-	if names, parseErr := moduleStructNames([]byte(rawArgs)); parseErr == nil && len(names) > 0 {
+	if names, parseErr := moduleSourceModuleStructNames([]byte(rawArgs)); parseErr == nil && len(names) > 0 {
 		modName = names[0]
 		isGo = true
 	} else if loc := pyReg.FindStringSubmatch(rawArgs); len(loc) == 2 {

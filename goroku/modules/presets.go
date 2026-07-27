@@ -268,7 +268,7 @@ func moduleFileAndName(link string) (string, string) {
 }
 
 func extractStructName(source []byte, fallback string) string {
-	if names, err := moduleStructNames(source); err == nil && len(names) > 0 {
+	if names, err := moduleSourceModuleStructNames(source); err == nil && len(names) > 0 {
 		return names[0]
 	}
 	return fallback
