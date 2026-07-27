@@ -151,3 +151,7 @@ coverage.out
 # Go build cache. Some local scripts point GOCACHE here; it reaches gigabytes
 # and must never enter the repository or a Docker build context.
 .cache/
+
+# Локальный план доведения до production (аудит от 2026-07-26).
+# Рабочий документ для агента-исполнителя, в историю не попадает.
+DEADLINE.md
