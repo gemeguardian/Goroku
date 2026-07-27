@@ -56,10 +56,17 @@ jobs:
     - name: Run go vet
       run: go vet ./...
 
+    # Build the pinned linter with the same Go toolchain as this module. The
+    # upstream v1.64.8 binary was built with Go 1.24 and cannot lint go 1.25.
+    # Existing lint debt predates this gate, so block regressions introduced by
+    # each push while it is paid down instead of turning the first compatible
+    # linter run into an all-or-nothing migration.
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6
       with:
         version: v1.64.8
+        install-mode: goinstall
+        args: --new-from-rev=HEAD~1
 
     - name: Build main binary
       run: go build -o "${TMPDIR:-/tmp}/goroku_bin" .
