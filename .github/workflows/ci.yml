@@ -22,8 +22,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    # Incremental lint compares against HEAD~1, so the parent commit must be
+    # present; checkout's default shallow clone has only HEAD.
     - name: Check out code
       uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      with:
+        fetch-depth: 2
 
     - name: Set up Go
       uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
