@@ -65,12 +65,12 @@ type CommandDispatcher struct {
 }
 
 const (
-	defaultCommandCapacity      = 32
-	defaultWatcherCapacity      = 64
+	defaultCommandCapacity = 32
+	defaultWatcherCapacity = 64
 	// defaultOutgoingCapacity bounds Telegram calls moved off the update loop.
 	// These are courtesy messages (the "busy" reply, the double-prefix edit),
 	// so a small pool is enough; excess ones are dropped rather than queued.
-	defaultOutgoingCapacity = 8
+	defaultOutgoingCapacity     = 8
 	defaultRateLimitMaxEntries  = 10_000
 	defaultUserRateLimitWindow  = 60 * time.Second
 	defaultChatRateLimitWindow  = 200 * time.Second
